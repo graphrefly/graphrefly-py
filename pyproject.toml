@@ -1,0 +1,61 @@
+[project]
+name = "graphrefly-py"
+version = "0.1.0"
+description = "Reactive graph protocol for human and LLM co-operation"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+authors = [{ name = "David Chen" }]
+keywords = ["reactive", "graph", "state-management", "orchestration", "llm"]
+classifiers = [
+	"Development Status :: 3 - Alpha",
+	"Intended Audience :: Developers",
+	"License :: OSI Approved :: MIT License",
+	"Programming Language :: Python :: 3",
+	"Programming Language :: Python :: 3.12",
+	"Programming Language :: Python :: 3.13",
+	"Programming Language :: Python :: 3.14",
+	"Topic :: Software Development :: Libraries :: Python Modules",
+	"Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/nicepkg/graphrefly-py"
+Repository = "https://github.com/nicepkg/graphrefly-py"
+Documentation = "https://github.com/nicepkg/graphrefly-py#readme"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/graphrefly"]
+
+[dependency-groups]
+dev = [
+	"pytest>=8.0",
+	"pytest-asyncio>=0.24",
+	"ruff>=0.9",
+	"mypy>=1.14",
+]
+
+[tool.ruff]
+line-length = 100
+indent-width = 4
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "TC"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
