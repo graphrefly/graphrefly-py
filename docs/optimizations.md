@@ -41,6 +41,13 @@ While subscribing upstream deps, `run_fn` is suppressed for re-entrant dep emiss
 
 Union-find over node identity merges components when nodes list dependencies at construction (`union_nodes(self, dep)` and meta companions). A per-component `RLock` serializes `down`, recompute (`_run_fn`), and subscribe/unsubscribe topology changes. `get()` uses a **per-node** `threading.Lock` (`_cache_lock`) for all reads and writes of `_cached`, so the cached value is thread-safe under free-threaded Python (nogil) without holding the subgraph write lock (callers can `get()` from any thread without participating in graph write serialization). Weak references remove GC’d nodes from registry maps; a reverse-children map (`_children`) keeps GC cleanup O(1) per node (no linear scan of `_parent`). `lock_for` retries up to `_MAX_LOCK_RETRIES` (100) if concurrent unions invalidate the acquired lock, then raises `RuntimeError`. `defer_set` / `defer_down` queue cross-subgraph mutations until the current `acquire_subgraph_write_lock_with_defer` exits; errors use `ExceptionGroup` when multiple callbacks fail. Deferred batch phase-2 work re-acquires the emitter’s lock via `emit_with_batch(..., subgraph_lock=node)` so `batch()` drains do not deliver DATA/RESOLVED without serialization.
 
+### 8. Actor & guard (roadmap 1.5)
+
+- **`policy()` precedence:** any matching **deny** blocks the action even if a broader **allow** also matches.
+- **Scoped `describe(actor=…)`:** omit nodes the actor cannot **observe**; drop **edges** touching a hidden endpoint; keep a **subgraph** mount prefix only if some visible path equals it or starts with `mount::` (roadmap D).
+- **`Graph.signal`:** `GuardDenied` aborts the walk on first rejection; nodes visited earlier in the traversal may already have received the message (non-transactional). Prefer guards that allow **system** `signal` when using `destroy()` / lifecycle if you need guaranteed completion.
+- **`Graph.remove` / `_teardown_mounted_graph`:** after the registry drops a name, primary `TEARDOWN` uses `Node.down(..., internal=True)` so a guard cannot reject teardown **after** unregister (would orphan the node instance).
+
 ---
 
 ## Cross-language implementation notes
@@ -253,6 +260,18 @@ Cross-language: `graphrefly-ts/docs/optimizations.md` §15. **Python (shipped):*
 | `Graph` Phase 1.2 | Aligned: `::` path separator, mount `remove` + subtree TEARDOWN, qualified paths, `edges()`, signal mounts-first, `resolve` strips leading name, `:` in names OK; see §14 | Same; see §14 |
 | `Graph` Phase 1.3 | `describe`, `observe`, `GRAPH_META_SEGMENT`, `signal`→meta, `describe_kind` on sugar; see §15 | TS: `describe()`, `observe()`, `GRAPH_META_SEGMENT`, `describeKind` on sugar; see graphrefly-ts §15 | `observe()` order: TS full-path `localeCompare` vs Py per-level sort (§15) |
 | `Graph` Phase 1.4 | `destroy`, `snapshot` (flat `version: 1`), `restore` (name check + type filter + silent catch), `from_snapshot(data, build=)`, `to_json()` → str + `\n`; see §16 | `destroy`, `snapshot`, `restore`, `fromSnapshot(data, build?)`, `toJSON()` → object, `toJSONString()` → str + `\n`; see §16 |
+| `Graph` Phase 1.5 | **Python:** `Actor`, `GuardDenied`, `policy()`, `compose_guards`, node `guard` opt, `down`/`set`/`signal`/`subscribe`/`describe` actor params, `internal` propagation bypass, `remove`/unmount subtree TEARDOWN `internal=True`; see built-in §8 | **TypeScript:** aligned — `GraphActorOptions`, `NodeTransportOptions`, scoped `describe`/`observe`, `GuardDenied.node` getter mirrors `nodeName` |
+| `policy()` semantics | Deny-overrides: any matching deny blocks; if no deny, any matching allow permits; no match → deny | Same (aligned from parity round) |
+| `DEFAULT_ACTOR` | `{"type": "system", "id": ""}` | `{ type: "system", id: "" }` (aligned) |
+| `lastMutation` timestamp | `timestamp_ns` (`time.time_ns()`) | `timestamp_ns` (`Date.now() * 1_000_000`) — both nanoseconds |
+| `accessHintForGuard` | Probes guard with standard actor types → `"both"`, `"human"`, `"restricted"`, etc. | `accessHintForGuard()` — same probing logic (aligned from parity round) |
+| `subscribe()` observe guard | `subscribe(sink, hints, *, actor=)` checks observe guard at node level | `subscribe(sink, { actor? })` checks observe guard at node level (aligned from parity round) |
+| `up()` guard + attribution | `up(msgs, *, actor=, internal=, guard_action=)` checks guard, records `last_mutation` | `up(msgs, opts?)` checks guard, records `lastMutation` (aligned from parity round) |
+| `on_message` (spec §2.6) | `on_message` option on node; checked in `_handle_dep_messages`; `True` consumes, exception → ERROR | `onMessage` option; same semantics |
+| `meta` guard inheritance | Meta companions inherit parent guard at construction | Same |
+| `Graph.destroy()` guard bypass | `_signal_graph(..., internal=True)` bypasses all guards | Same |
+| `Graph.set` internal | `set(name, value, *, internal=False)` | `set(name, value, { internal? })` |
+| `allows_observe()` / `has_guard()` | Public methods on `NodeImpl` | Public methods on `Node` interface |
 
 ### Open design items (low priority)
 

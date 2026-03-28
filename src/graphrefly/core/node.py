@@ -10,6 +10,13 @@ from functools import partial
 from types import MappingProxyType
 from typing import Any, cast
 
+from graphrefly.core.guard import (
+    Actor,
+    GuardAction,
+    GuardDenied,
+    normalize_actor,
+    record_mutation,
+)
 from graphrefly.core.protocol import Messages, MessageType, emit_with_batch
 from graphrefly.core.subgraph_locks import (
     acquire_subgraph_write_lock_with_defer,
@@ -164,11 +171,14 @@ class NodeImpl[T]:
         "_describe_kind",
         "_equals",
         "_fn",
+        "_guard",
         "_has_deps",
         "_last_dep_values",
+        "_last_mutation",
         "_manual_emit_used",
         "_meta",
         "_name",
+        "_on_message",
         "_opts",
         "_producer_started",
         "_resubscribable",
@@ -198,9 +208,17 @@ class NodeImpl[T]:
         self._auto_complete: bool = bool(opts.get("complete_when_deps_complete", True))
         self._thread_safe: bool = bool(opts.get("thread_safe", True))
 
+        self._on_message = opts.get("on_message")
         self._fn = fn
         self._deps = deps
         self._has_deps = len(deps) > 0
+
+        raw_guard = opts.get("guard")
+        if raw_guard is not None and not callable(raw_guard):
+            msg = "node option 'guard' must be callable or None"
+            raise TypeError(msg)
+        self._guard: Callable[[Actor, GuardAction], bool] | None = raw_guard
+        self._last_mutation: dict[str, Any] | None = None
 
         self._cache_lock = threading.Lock() if self._thread_safe else None
         self._cached: T | None = opts.get("initial")
@@ -230,7 +248,12 @@ class NodeImpl[T]:
         self._meta: dict[str, NodeImpl[Any]] = {}
         for k, v in (opts.get("meta") or {}).items():
             meta_name = f"{self._name or 'node'}:meta:{k}"
-            self._meta[k] = node(initial=v, name=meta_name, thread_safe=self._thread_safe)
+            meta_opts: dict[str, Any] = {
+                "initial": v, "name": meta_name, "thread_safe": self._thread_safe,
+            }
+            if self._guard is not None:
+                meta_opts["guard"] = self._guard
+            self._meta[k] = node(**meta_opts)
 
         if self._thread_safe:
             ensure_registered(self)
@@ -242,14 +265,14 @@ class NodeImpl[T]:
         self._actions = NodeActions(
             down=lambda msgs: self._manual_down(msgs),
             emit=lambda v: self._manual_emit(v),
-            up=self.up,
+            up=lambda msgs: self.up(msgs, internal=True),
         )
 
     # --- Private methods (promoted from closures) ---
 
     def _manual_down(self, messages: Messages) -> None:
         self._manual_emit_used = True
-        self.down(messages)
+        self.down(messages, internal=True)
 
     def _manual_emit(self, value: Any) -> None:
         self._manual_emit_used = True
@@ -302,7 +325,7 @@ class NodeImpl[T]:
                 try:
                     for meta_node in self._meta.values():
                         with suppress(Exception):
-                            meta_node.down([(MessageType.TEARDOWN,)])
+                            meta_node.down([(MessageType.TEARDOWN,)], internal=True)
                 finally:
                     self._disconnect_upstream()
                     self._stop_producer()
@@ -324,9 +347,9 @@ class NodeImpl[T]:
         unchanged = self._equals(cached_snapshot, value)
         if unchanged:
             if was_dirty:
-                self.down([(MessageType.RESOLVED,)])
+                self.down([(MessageType.RESOLVED,)], internal=True)
             else:
-                self.down([(MessageType.DIRTY,), (MessageType.RESOLVED,)])
+                self.down([(MessageType.DIRTY,), (MessageType.RESOLVED,)], internal=True)
             return
         if lock is not None:
             with lock:
@@ -334,9 +357,9 @@ class NodeImpl[T]:
         else:
             self._cached = cast("T", value)
         if was_dirty:
-            self.down([(MessageType.DATA, value)])
+            self.down([(MessageType.DATA, value)], internal=True)
         else:
-            self.down([(MessageType.DIRTY,), (MessageType.DATA, value)])
+            self.down([(MessageType.DIRTY,), (MessageType.DATA, value)], internal=True)
 
     def _run_fn_body(self) -> None:
         if self._terminal and not self._resubscribable:
@@ -355,7 +378,7 @@ class NodeImpl[T]:
                 and all(dep_values[i] is prev[i] for i in range(n))
             ):
                 if self._status == "dirty":
-                    self.down([(MessageType.RESOLVED,)])
+                    self.down([(MessageType.RESOLVED,)], internal=True)
                 return
             if self._cleanup is not None:
                 self._cleanup()
@@ -372,7 +395,7 @@ class NodeImpl[T]:
                 return
             self._emit_auto_value(out)
         except Exception as err:
-            self.down([(MessageType.ERROR, err)])
+            self.down([(MessageType.ERROR, err)], internal=True)
 
     def _run_fn(self) -> None:
         if self._fn is None:
@@ -391,7 +414,7 @@ class NodeImpl[T]:
         self._dep_dirty_mask.set(index)
         self._dep_settled_mask.clear(index)
         if not was_dirty:
-            self.down([(MessageType.DIRTY,)])
+            self.down([(MessageType.DIRTY,)], internal=True)
 
     def _on_dep_settled(self, index: int) -> None:
         if not self._dep_dirty_mask.has(index):
@@ -408,17 +431,25 @@ class NodeImpl[T]:
             and len(self._deps) > 0
             and self._dep_complete_mask.covers(self._all_deps_complete_mask)
         ):
-            self.down([(MessageType.COMPLETE,)])
+            self.down([(MessageType.COMPLETE,)], internal=True)
 
     def _handle_dep_messages(self, index: int, messages: Messages) -> None:
         for msg in messages:
             t = msg[0]
+            # User-defined message handler gets first look (spec §2.6).
+            if self._on_message is not None:
+                try:
+                    if self._on_message(msg, index, self._actions):
+                        continue
+                except Exception as err:
+                    self.down([(MessageType.ERROR, err)], internal=True)
+                    return
             if self._fn is None:
                 if t is MessageType.COMPLETE and len(self._deps) > 1:
                     self._dep_complete_mask.set(index)
                     self._maybe_complete_from_deps()
                     continue
-                self.down([msg])
+                self.down([msg], internal=True)
                 continue
             if t is MessageType.DIRTY:
                 self._on_dep_dirty(index)
@@ -445,7 +476,7 @@ class NodeImpl[T]:
                 self._maybe_complete_from_deps()
                 continue
             if t is MessageType.ERROR:
-                self.down([msg])
+                self.down([msg], internal=True)
                 continue
             if (
                 t is MessageType.INVALIDATE
@@ -453,10 +484,10 @@ class NodeImpl[T]:
                 or t is MessageType.PAUSE
                 or t is MessageType.RESUME
             ):
-                self.down([msg])
+                self.down([msg], internal=True)
                 continue
             # Forward unknown message types
-            self.down([msg])
+            self.down([msg], internal=True)
 
     def _connect_upstream(self) -> None:
         if not self._has_deps or self._connected:
@@ -554,15 +585,27 @@ class NodeImpl[T]:
             self._disconnect_upstream()
             self._stop_producer()
 
+    def _guard_observe_or_raise(self, actor: Mapping[str, Any] | Actor | None) -> None:
+        g = self._guard
+        if g is None:
+            return
+        a = normalize_actor(actor)
+        if not g(cast("Actor", a), "observe"):
+            raise GuardDenied(a, self._name or "<unnamed>", "observe")
+
     def subscribe(
         self,
         sink: Callable[[Messages], None],
         hints: SubscribeHints | None = None,
+        *,
+        actor: Mapping[str, Any] | Actor | None = None,
     ) -> Callable[[], None]:
         if self._thread_safe:
             with acquire_subgraph_write_lock_with_defer(self):
+                self._guard_observe_or_raise(actor)
                 self._subscribe_body(sink, hints)
         else:
+            self._guard_observe_or_raise(actor)
             self._subscribe_body(sink, hints)
 
         removed = False
@@ -607,6 +650,23 @@ class NodeImpl[T]:
                 return self._cached
         return self._cached
 
+    @property
+    def last_mutation(self) -> dict[str, Any] | None:
+        """Last non-internal ``write`` attribution (``actor``, ``timestamp_ns``), if any."""
+        return self._last_mutation
+
+    def _guard_and_record(
+        self,
+        actor: Mapping[str, Any] | Actor | None,
+        guard_action: GuardAction,
+    ) -> None:
+        a = normalize_actor(actor)
+        g = self._guard
+        if g is not None and not g(cast("Actor", a), guard_action):
+            raise GuardDenied(a, self._name or "<unnamed>", guard_action)
+        if guard_action == "write":
+            self._last_mutation = record_mutation(a)
+
     def _down_body(self, messages: Messages, sg_lock: object | None) -> None:
         lifecycle_messages = messages
         sink_messages = messages
@@ -647,23 +707,54 @@ class NodeImpl[T]:
             subgraph_lock=sg_lock,
         )
 
-    def down(self, messages: Messages) -> None:
+    def down(
+        self,
+        messages: Messages,
+        *,
+        actor: Mapping[str, Any] | Actor | None = None,
+        internal: bool = False,
+        guard_action: GuardAction = "write",
+    ) -> None:
         if not messages:
             return
         if self._thread_safe:
             with acquire_subgraph_write_lock_with_defer(self):
+                if not internal:
+                    self._guard_and_record(actor, guard_action)
                 self._down_body(messages, self)
         else:
+            if not internal:
+                self._guard_and_record(actor, guard_action)
             self._down_body(messages, None)
 
-    def up(self, messages: Messages) -> None:
+    def up(
+        self,
+        messages: Messages,
+        *,
+        actor: Any = None,
+        internal: bool = False,
+        guard_action: GuardAction = "write",
+    ) -> None:
         """Send messages upstream (no-op on source nodes; matches TS optional ``up``)."""
         if not self._has_deps:
             return
+        if not internal and self._guard is not None:
+            self._guard_and_record(actor, guard_action)
         for dep in self._deps:
             u = getattr(dep, "up", None)
             if u is not None:
                 u(messages)
+
+    def allows_observe(self, actor: Any = None) -> bool:
+        """Whether ``actor`` may observe this node (``True`` if no guard is set)."""
+        if self._guard is None:
+            return True
+        a = normalize_actor(actor)
+        return bool(self._guard(cast("Actor", a), "observe"))
+
+    def has_guard(self) -> bool:
+        """Whether a guard is installed on this node."""
+        return self._guard is not None
 
     def unsubscribe(self) -> None:
         """Disconnect from upstream deps (no-op on source nodes)."""
@@ -721,6 +812,8 @@ def node(
         opts["complete_when_deps_complete"] = opts.pop("completeWhenDepsComplete")
     if "threadSafe" in opts and "thread_safe" not in opts:
         opts["thread_safe"] = opts.pop("threadSafe")
+    if "Guard" in opts and "guard" not in opts:
+        opts["guard"] = opts.pop("Guard")
 
     return NodeImpl(deps, fn, opts)
 

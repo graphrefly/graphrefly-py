@@ -8,6 +8,7 @@ import threading
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
+from graphrefly.core.guard import GuardDenied, normalize_actor
 from graphrefly.core.meta import describe_node
 from graphrefly.core.protocol import Messages, MessageType
 from graphrefly.core.sugar import state
@@ -30,6 +31,13 @@ META_PATH_SEG = GRAPH_META_SEGMENT
 #: Snapshot envelope version for :meth:`Graph.snapshot` / :meth:`Graph.restore` /
 #: :meth:`Graph.from_snapshot` (GRAPHREFLY-SPEC §3.8).
 GRAPH_SNAPSHOT_VERSION = 1
+
+#: Sentinel: :meth:`Graph.describe` without ``actor`` returns the full graph (backward compat).
+_DESCRIBE_UNSCOPED = object()
+
+
+def _node_allows_observe(n: NodeImpl[Any], actor: dict[str, Any]) -> bool:
+    return n.allows_observe(actor)
 
 
 def _parse_snapshot_envelope(data: dict[str, Any]) -> dict[str, Any]:
@@ -241,7 +249,8 @@ class Graph:
         if child is not None:
             _teardown_mounted_graph(child)
             return
-        n.down([(MessageType.TEARDOWN,)])
+        # Registry already dropped this name — teardown must not fail on guards (orphan risk).
+        n.down([(MessageType.TEARDOWN,)], internal=True)
 
     def _edge_touches_mount(self, f: str, t: str, mount_name: str) -> bool:
         prefix = f"{mount_name}{PATH_SEP}"
@@ -318,15 +327,22 @@ class Graph:
             children = list(self._mounts.values())
         return any(c._graph_reachable(target) for c in children)
 
-    def signal(self, messages: Messages) -> None:
-        """Deliver ``messages`` to every node, meta companions, and mounted subgraphs."""
-        _signal_graph(self, messages, set())
+    def signal(
+        self, messages: Messages, *, actor: Any | None = None, internal: bool = False,
+    ) -> None:
+        """Deliver ``messages`` to every node, meta companions, and mounted subgraphs.
+
+        When a node has a ``guard``, it is checked with action ``"signal"`` (see roadmap 1.5).
+        """
+        _signal_graph(self, messages, set(), normalize_actor(actor), "", internal=internal)
 
     def destroy(self) -> None:
         """Send ``[[TEARDOWN]]`` to every node (same visitation as :meth:`signal`), then clear
         this graph's registry and all mounted subgraphs (GRAPHREFLY-SPEC §3.7).
         """
-        _signal_graph(self, [(MessageType.TEARDOWN,)], set())
+        _signal_graph(
+            self, [(MessageType.TEARDOWN,)], set(), normalize_actor(None), "", internal=True,
+        )
         _clear_graph_registry(self)
 
     def snapshot(self) -> dict[str, Any]:
@@ -446,32 +462,53 @@ class Graph:
             owner.add(local, n)
         return root
 
-    def describe(self) -> dict[str, Any]:
+    def describe(self, *, actor: Any = _DESCRIBE_UNSCOPED) -> dict[str, Any]:
         """Static structure snapshot (GRAPHREFLY-SPEC §3.6, Appendix B).
 
         ``nodes`` keys are qualified paths (including ``::__meta__::`` for companions).
         ``edges`` use the same qualified naming. ``subgraphs`` lists every mount point
         in the hierarchy with paths from this graph's root.
+
+        With ``actor=...``, only nodes the actor may observe are included; **edges** whose
+        ``from`` or ``to`` is hidden are dropped (roadmap 1.5 D). **Subgraphs** are kept
+        only if at least one visible node path lies under that mount prefix.
+        Omitting ``actor`` preserves the previous unfiltered behavior.
         """
         targets = _collect_observe_targets(self, "")
         paths_by_id = {id(n): p for p, n in targets}
         nodes_out = {p: _node_describe_for_graph(n, paths_by_id) for p, n in targets}
         edges_out = _collect_edges_qualified(self, "")
         edges_out.sort(key=lambda e: (e["from"], e["to"]))
-        return {
+        subgraphs_out = _collect_subgraphs_qualified(self, "")
+        nodes_map: dict[str, Any] = nodes_out
+        raw: dict[str, Any] = {
             "name": self._name,
-            "nodes": nodes_out,
+            "nodes": nodes_map,
             "edges": edges_out,
-            "subgraphs": _collect_subgraphs_qualified(self, ""),
+            "subgraphs": subgraphs_out,
         }
+        if actor is _DESCRIBE_UNSCOPED:
+            return raw
+        a = normalize_actor(actor)
+        visible = {p for p, n in targets if _node_allows_observe(n, a)}
+        nodes_f = {k: v for k, v in nodes_map.items() if k in visible}
+        edges_f = [e for e in edges_out if e["from"] in visible and e["to"] in visible]
+        sep = PATH_SEP
+        subgraphs_f = [
+            s for s in subgraphs_out if any(p == s or p.startswith(f"{s}{sep}") for p in visible)
+        ]
+        return {**raw, "nodes": nodes_f, "edges": edges_f, "subgraphs": subgraphs_f}
 
-    def observe(self, path: str | None = None) -> GraphObserveSource:
+    def observe(self, path: str | None = None, *, actor: Any | None = None) -> GraphObserveSource:
         """Live message stream for one node (and its path) or the whole graph (§3.6).
 
         Use :meth:`GraphObserveSource.subscribe` to attach a sink. Graph-wide mode
         prefixes each batch with the node's qualified path.
+
+        Nodes with a ``guard`` require ``actor`` such that ``guard(actor, "observe")`` is
+        true (default actor is system — :func:`~graphrefly.core.guard.system_actor`).
         """
-        return GraphObserveSource(self, path)
+        return GraphObserveSource(self, path, actor)
 
     def node(self, path: str) -> NodeImpl[Any]:
         """Return the node for a local name or a ``::`` qualified path."""
@@ -487,12 +524,22 @@ class Graph:
         """Shorthand for ``graph.node(name).get()`` — accepts ``::`` qualified paths."""
         return self.node(node_name).get()
 
-    def set(self, node_name: str, value: Any) -> None:
-        """Shorthand for ``graph.node(name).down([[DATA, value]])``.
+    def set(
+        self, node_name: str, value: Any, *, actor: Any | None = None, internal: bool = False,
+    ) -> None:
+        """Shorthand for ``graph.node(name).down([[DATA, value]], ...)``.
 
         ``node_name`` accepts ``::`` qualified paths.
         """
-        self.node(node_name).down([(MessageType.DATA, value)])
+        try:
+            self.node(node_name).down(
+                [(MessageType.DATA, value)],
+                actor=actor,
+                internal=internal,
+                guard_action="write",
+            )
+        except GuardDenied as e:
+            raise GuardDenied(e.actor, node_name, e.action) from e
 
     def connect(self, from_path: str, to_path: str) -> None:
         """Record a pure wire; ``to`` must already list ``from`` as a constructor dependency.
@@ -605,17 +652,32 @@ def _is_teardown_only(messages: Messages) -> bool:
     return bool(messages) and all(m[0] == MessageType.TEARDOWN for m in messages)
 
 
-def _signal_node_subtree(n: NodeImpl[Any], messages: Messages, visited: set[int]) -> None:
+def _signal_node_subtree(
+    n: NodeImpl[Any],
+    messages: Messages,
+    visited: set[int],
+    actor: dict[str, Any],
+    path: str,
+    *,
+    internal: bool = False,
+) -> None:
     nid = id(n)
     if nid in visited:
         return
     visited.add(nid)
-    n.down(messages)
+    if internal:
+        n.down(messages, internal=True)
+    else:
+        try:
+            n.down(messages, actor=actor, guard_action="signal")
+        except GuardDenied as e:
+            raise GuardDenied(e.actor, path, e.action) from e
     # Primary's down() already cascades TEARDOWN to meta companions.
     if _is_teardown_only(messages):
         return
     for k in sorted(n.meta):
-        _signal_node_subtree(n.meta[k], messages, visited)
+        mp = f"{path}{PATH_SEP}{GRAPH_META_SEGMENT}{PATH_SEP}{k}"
+        _signal_node_subtree(n.meta[k], messages, visited, actor, mp, internal=internal)
 
 
 def _collect_observe_targets(g: Graph, prefix: str) -> list[tuple[str, NodeImpl[Any]]]:
@@ -683,11 +745,12 @@ def _collect_subgraphs_qualified(g: Graph, prefix: str) -> list[str]:
 class GraphObserveSource:
     """Live observation handle from :meth:`Graph.observe` (GRAPHREFLY-SPEC §3.6)."""
 
-    __slots__ = ("_graph", "_path")
+    __slots__ = ("_actor", "_graph", "_path")
 
-    def __init__(self, graph: Graph, path: str | None) -> None:
+    def __init__(self, graph: Graph, path: str | None, actor: Any | None) -> None:
         self._graph = graph
         self._path = path
+        self._actor = actor
 
     def subscribe(self, sink: Any) -> Any:
         """Attach ``sink``.
@@ -697,16 +760,23 @@ class GraphObserveSource:
         With the graph-wide stream (``path is None``), ``sink(qualified_path, messages)``.
         Returns an unsubscribe callable.
         """
+        act = self._actor
         if self._path is not None:
             n = self._graph.node(self._path)
-            return n.subscribe(sink)
+            try:
+                return n.subscribe(sink, actor=act)
+            except GuardDenied as e:
+                raise GuardDenied(e.actor, self._path, e.action) from e
         unsubs: list[Any] = []
+        a = normalize_actor(act)
         for qpath, n in _collect_observe_targets(self._graph, ""):
+            if not _node_allows_observe(n, a):
+                continue
 
             def on_msgs(msgs: Messages, *, _p: str = qpath) -> None:
                 sink(_p, msgs)
 
-            unsubs.append(n.subscribe(on_msgs))
+            unsubs.append(n.subscribe(on_msgs, actor=act))
 
         def cleanup() -> None:
             for u in unsubs:
@@ -723,14 +793,24 @@ def _teardown_mounted_graph(root: Graph) -> None:
     with root._locked():
         nodes = list(root._nodes.values())
     for n in nodes:
-        n.down([(MessageType.TEARDOWN,)])
+        n.down([(MessageType.TEARDOWN,)], internal=True)
 
 
-def _signal_graph(g: Graph, messages: Messages, visited: set[int]) -> None:
+def _signal_graph(
+    g: Graph,
+    messages: Messages,
+    visited: set[int],
+    actor: dict[str, Any],
+    prefix: str,
+    *,
+    internal: bool = False,
+) -> None:
     with g._locked():
         mounts = sorted(g._mounts.items())
         nodes = sorted(g._nodes.items())
-    for _mn, m in mounts:
-        _signal_graph(m, messages, visited)
-    for _name, n in nodes:
-        _signal_node_subtree(n, messages, visited)
+    for mn, m in mounts:
+        wp = f"{prefix}{mn}{PATH_SEP}" if prefix else f"{mn}{PATH_SEP}"
+        _signal_graph(m, messages, visited, actor, wp, internal=internal)
+    for name, n in nodes:
+        q = f"{prefix}{name}" if prefix else name
+        _signal_node_subtree(n, messages, visited, actor, q, internal=internal)

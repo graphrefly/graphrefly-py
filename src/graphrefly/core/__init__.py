@@ -1,5 +1,17 @@
 """Core node primitives and protocol types for graphrefly."""
 
+from graphrefly.core.guard import (
+    Actor,
+    GuardAction,
+    GuardDenied,
+    GuardFn,
+    access_hint_for_guard,
+    compose_guards,
+    normalize_actor,
+    policy,
+    record_mutation,
+    system_actor,
+)
 from graphrefly.core.meta import describe_node, meta_snapshot
 from graphrefly.core.node import (
     Node,
@@ -41,8 +53,12 @@ from graphrefly.core.sugar import (
 )
 
 __all__ = [
+    "Actor",
     "DeferWhen",
     "EmitStrategy",
+    "GuardAction",
+    "GuardDenied",
+    "GuardFn",
     "Message",
     "MessageType",
     "Messages",
@@ -53,9 +69,11 @@ __all__ = [
     "NodeImpl",
     "NodeStatus",
     "SubscribeHints",
+    "access_hint_for_guard",
     "acquire_subgraph_write_lock",
     "acquire_subgraph_write_lock_with_defer",
     "batch",
+    "compose_guards",
     "defer_down",
     "defer_set",
     "describe_node",
@@ -66,7 +84,11 @@ __all__ = [
     "is_phase2_message",
     "meta_snapshot",
     "node",
+    "normalize_actor",
     "partition_for_batch",
+    "policy",
+    "record_mutation",
+    "system_actor",
     "union_nodes",
     "derived",
     "effect",

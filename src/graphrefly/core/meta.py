@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING, Any, Protocol
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from graphrefly.core.node import NodeImpl
+from graphrefly.core.guard import access_hint_for_guard
+from graphrefly.core.node import NodeImpl  # noqa: TC001 — runtime type for describe_node
 
 __all__ = ["describe_node", "meta_snapshot"]
 
@@ -73,4 +74,10 @@ def describe_node(n: NodeImpl[Any]) -> dict[str, Any]:
         out["name"] = n.name
     with suppress(Exception):
         out["value"] = n.get()
+    g = n._guard
+    if g is not None:
+        meta = dict(out.get("meta") or {})
+        if "access" not in meta:
+            meta["access"] = access_hint_for_guard(g)
+        out["meta"] = meta
     return out

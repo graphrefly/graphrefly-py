@@ -110,10 +110,10 @@
 
 Built-in ABAC at the node level. Replaces external authz libraries (e.g. CASL) — the graph is the single enforcement point.
 
-- [ ] `Actor` type: `TypedDict` with `type` (`"human" | "llm" | "wallet" | "system" | str`), `id` (`str`), and extensible claims
-- [ ] Actor context parameter on `down()`, `set()`, `signal()` — optional, defaults to `Actor(type="system")`
-- [ ] `guard` node option: `(actor: Actor, action: Literal["write", "signal", "observe"]) -> bool` — checked on `down()`/`set()`/`signal()`; raises `GuardDenied` on rejection
-- [ ] `policy()` declarative builder — CASL-style ergonomics without the dependency:
+- [x] `Actor` type: `TypedDict` with `type` (`"human" | "llm" | "wallet" | "system" | str`), `id` (`str`), and extensible claims
+- [x] Actor context parameter on `down()`, `set()`, `signal()` — optional, defaults to `Actor(type="system")`
+- [x] `guard` node option: `(actor: Actor, action: Literal["write", "signal", "observe"]) -> bool` — checked on `down()`/`set()`/`signal()`; raises `GuardDenied` on rejection
+- [x] `policy()` declarative builder — CASL-style ergonomics without the dependency:
   ```python
   policy(lambda allow, deny: [
       allow("write",  where=lambda actor: actor["role"] == "admin"),
@@ -122,10 +122,10 @@ Built-in ABAC at the node level. Replaces external authz libraries (e.g. CASL) �
       deny("write",  where=lambda actor: actor["type"] == "llm"),
   ])
   ```
-- [ ] Scoped `describe(actor=)` / `observe(name=, actor=)` — filters output to nodes the actor may observe
-- [ ] Attribution: each mutation records `{ actor, timestamp }` on the node (accessible via `node.last_mutation`)
-- [ ] `meta.access` derived from guard when present (backward compat)
-- [ ] `GuardDenied` exception with `actor`, `node`, `action` for diagnostics
+- [x] Scoped `describe(actor=)` / `observe(name=, actor=)` — filters output to nodes the actor may observe
+- [x] Attribution: each mutation records `{ actor, timestamp }` on the node (accessible via `node.last_mutation`)
+- [x] `meta.access` derived from guard when present (backward compat)
+- [x] `GuardDenied` exception with `actor`, `node`, `action` for diagnostics
 
 ### 1.6 — Tests
 
@@ -134,11 +134,11 @@ Built-in ABAC at the node level. Replaces external authz libraries (e.g. CASL) �
 - [ ] describe() output validation
 - [ ] observe() message stream tests
 - [ ] Snapshot round-trip tests
-- [ ] Guard enforcement: allowed/denied writes, signals, observe filtering
-- [ ] Policy builder: allow/deny precedence, wildcard, composed policies
+- [x] Guard enforcement: allowed/denied writes, signals, observe filtering (`tests/test_guard.py`)
+- [x] Policy builder: allow/deny precedence, wildcard, composed policies
 - [ ] Actor attribution: mutation records, actor propagation through subgraphs
-- [ ] Scoped describe: filtered output matches guard permissions
-- [ ] GuardDenied exception: correct actor/node/action in diagnostics
+- [x] Scoped describe: filtered output matches guard permissions
+- [x] GuardDenied exception: correct actor/node/action in diagnostics
 
 ---
 
@@ -166,7 +166,7 @@ Port proven operators from callbag-recharge-py + new ones from TS.
 
 ### 2.3 — Sources & sinks
 
-- [ ] `from_timer`, `from_iter`, `from_any`
+- [ ] `from_timer`, `from_cron`, `from_iter`, `from_any`
 - [ ] `from_awaitable`, `from_async_iter`
 - [ ] `first_value_from` (the ONE bridge to sync/Future)
 - [ ] `of`, `empty`, `never`, `throw_error`
@@ -231,6 +231,19 @@ Each returns a `Graph` — uniform introspection, lifecycle, persistence.
 - [ ] `tool_registry()` → Graph
 - [ ] `agent_memory()` → Graph
 - [ ] `system_prompt_builder()`
+
+### 4.5 — CQRS
+
+Composition layer over 3.2 (`reactive_log`), 4.1 (sagas), 4.2 (event bus), 4.3 (projections). Guards (1.5) enforce command/query boundary.
+
+- [ ] `cqrs(name, definition)` → Graph — top-level factory
+- [ ] `command(name, handler)` — write-only node; guard rejects `observe`
+- [ ] `event(name)` — backed by `reactive_log`; append-only, immutable
+- [ ] `projection(events, reducer)` — read-only derived node; guard rejects `write`
+- [ ] `saga(events, handler)` — event-driven side effects (delegates to `pipeline()`)
+- [ ] `event_store` adapter interface — pluggable persistence (in-memory, SQLite, Postgres)
+- [ ] Projection rebuilding: replay events to reconstruct read models
+- [ ] `describe()` output distinguishes command / event / projection / saga node roles
 
 ---
 

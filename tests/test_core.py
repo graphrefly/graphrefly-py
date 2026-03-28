@@ -587,10 +587,10 @@ def test_parent_teardown_disconnects_when_one_meta_down_throws() -> None:
     flaky = n.meta["flaky"]
     real_down = NodeImpl.down
 
-    def down_wrap(self: NodeImpl[object], msgs: list) -> None:
+    def down_wrap(self: NodeImpl[object], msgs: list, **kwargs: object) -> None:
         if self is flaky and msgs and msgs[0][0] == MessageType.TEARDOWN:
             raise RuntimeError("meta teardown boom")
-        return real_down(self, msgs)
+        return real_down(self, msgs, **kwargs)
 
     stable_saw_teardown = False
 
@@ -638,10 +638,10 @@ def test_teardown_stops_producer_when_meta_down_throws() -> None:
     mchild = p.meta["m"]
     real_down = NodeImpl.down
 
-    def down_wrap(self: NodeImpl[object], msgs: list) -> None:
+    def down_wrap(self: NodeImpl[object], msgs: list, **kwargs: object) -> None:
         if self is mchild and msgs and msgs[0][0] == MessageType.TEARDOWN:
             raise RuntimeError("meta teardown boom")
-        return real_down(self, msgs)
+        return real_down(self, msgs, **kwargs)
 
     with patch.object(NodeImpl, "down", down_wrap):
         u1 = p.subscribe(lambda _m: None)
