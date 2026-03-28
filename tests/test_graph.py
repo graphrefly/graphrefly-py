@@ -1,4 +1,4 @@
-"""Graph container — roadmap Phase 1.1 (GRAPHREFLY-SPEC §3.1–3.3)."""
+"""Graph container — roadmap Phase 1.1–1.2 (GRAPHREFLY-SPEC §3.1–3.5)."""
 
 from __future__ import annotations
 
@@ -153,3 +153,201 @@ def test_graph_connect_idempotent() -> None:
 def test_graph_name_must_be_non_empty() -> None:
     with pytest.raises(ValueError, match="non-empty"):
         Graph("")
+
+
+def test_mount_resolve_qualified_path() -> None:
+    parent = Graph("parent")
+    child = Graph("child")
+    a = node(initial=42)
+    child.add("a", a)
+    parent.mount("sub", child)
+    assert parent.resolve("sub::a") is a
+    assert parent.node("sub::a") is a
+    assert parent.get("sub::a") == 42
+
+
+def test_connect_delegates_to_child_for_same_owner() -> None:
+    parent = Graph("parent")
+    child = Graph("child")
+    a = node(initial=1)
+    b = node([a], lambda deps, _: deps[0] * 2)
+    child.add("a", a)
+    child.add("b", b)
+    parent.mount("sub", child)
+    parent.connect("sub::a", "sub::b")
+    assert child.edges() == frozenset({("a", "b")})
+    assert parent.edges() == frozenset()
+
+
+def test_connect_cross_subgraph_on_parent_edges() -> None:
+    parent = Graph("parent")
+    child = Graph("child")
+    root = node(initial=10)
+    inner = node([root], lambda deps, _: deps[0] + 1)
+    parent.add("root", root)
+    child.add("inner", inner)
+    parent.mount("sub", child)
+    parent.connect("root", "sub::inner")
+    assert parent.edges() == frozenset({("root", "sub::inner")})
+
+
+def test_signal_propagates_to_mounted_nodes() -> None:
+    parent = Graph("parent")
+    child = Graph("child")
+    a = node(initial=0)
+    seen: list = []
+    child.add("a", a)
+    parent.mount("sub", child)
+    unsub = a.subscribe(lambda msgs: seen.extend(msgs))
+    parent.signal([(MessageType.PAUSE,)])
+    unsub()
+    assert any(m[0] == MessageType.PAUSE for m in seen)
+
+
+def test_remove_mount_teardowns_child_nodes() -> None:
+    parent = Graph("parent")
+    child = Graph("child")
+    a = node(initial=0)
+    flat: list = []
+
+    def sink(msgs: object) -> None:
+        for m in msgs:
+            flat.append(m[0])
+
+    child.add("a", a)
+    parent.mount("sub", child)
+    unsub = a.subscribe(sink)
+    parent.remove("sub")
+    unsub()
+    assert MessageType.TEARDOWN in flat
+
+
+def test_mount_cycle_rejected() -> None:
+    g1 = Graph("g1")
+    g2 = Graph("g2")
+    g1.mount("two", g2)
+    with pytest.raises(ValueError, match="cycle"):
+        g2.mount("back", g1)
+
+
+def test_mount_self_rejected() -> None:
+    g = Graph("g")
+    with pytest.raises(ValueError, match="itself"):
+        g.mount("s", g)
+
+
+def test_add_rejects_double_colon_in_name() -> None:
+    g = Graph("g")
+    with pytest.raises(ValueError, match="path separator"):
+        g.add("bad::name", node(initial=0))
+
+
+def test_single_colon_in_names_allowed() -> None:
+    g = Graph("g")
+    a = node(initial=5)
+    g.add("my:node", a)
+    assert g.node("my:node") is a
+    assert g.get("my:node") == 5
+    g.set("my:node", 10)
+    assert g.get("my:node") == 10
+
+
+def test_graph_name_with_single_colon_allowed() -> None:
+    g = Graph("app:v2")
+    assert g.name == "app:v2"
+
+
+def test_graph_name_with_double_colon_rejected() -> None:
+    with pytest.raises(ValueError, match="must not contain"):
+        Graph("a::b")
+
+
+def test_mount_name_collides_with_node() -> None:
+    parent = Graph("parent")
+    child = Graph("child")
+    parent.add("sub", node(initial=1))
+    with pytest.raises(KeyError, match="already a registered node"):
+        parent.mount("sub", child)
+
+
+def test_add_rejects_name_used_as_mount() -> None:
+    parent = Graph("parent")
+    child = Graph("child")
+    parent.mount("sub", child)
+    with pytest.raises(KeyError, match="mounted subgraph"):
+        parent.add("sub", node(initial=1))
+
+
+def test_single_colon_in_mount_name_allowed() -> None:
+    root = Graph("r")
+    child = Graph("c")
+    child.add("x", node(initial=0))
+    root.mount("my:mount", child)
+    assert root.resolve("my:mount::x").get() == 0
+
+
+def test_resolve_strips_leading_graph_name() -> None:
+    root = Graph("app")
+    child = Graph("pay")
+    n = node(initial=1)
+    child.add("x", n)
+    root.mount("payment", child)
+    assert root.resolve("app::payment::x") is n
+
+
+def test_resolve_on_child_strips_graph_name() -> None:
+    child = Graph("pay")
+    n = node(initial=2)
+    child.add("x", n)
+    assert child.resolve("pay::x") is n
+    assert child.resolve("x") is n
+
+
+def test_node_get_set_accept_qualified_paths() -> None:
+    root = Graph("app")
+    child = Graph("sub")
+    n = node(initial=10)
+    child.add("val", n)
+    root.mount("sub", child)
+    assert root.node("sub::val") is n
+    assert root.get("sub::val") == 10
+    root.set("sub::val", 42)
+    assert root.get("sub::val") == 42
+
+
+def test_remove_mount_prunes_cross_subgraph_edges() -> None:
+    root = Graph("root")
+    child = Graph("child")
+    a = node(initial=0)
+    b = node([a], lambda deps, _: deps[0])
+    root.add("a", a)
+    child.add("b", b)
+    root.mount("sub", child)
+    root.connect("a", "sub::b")
+    assert len(root.edges()) == 1
+    root.remove("sub")
+    assert root.edges() == frozenset()
+
+
+def test_same_child_mounted_twice_rejected() -> None:
+    root = Graph("root")
+    child = Graph("ch")
+    child.add("n", node(initial=0))
+    root.mount("c1", child)
+    with pytest.raises(ValueError, match="already mounted"):
+        root.mount("c2", child)
+
+
+def test_signal_visits_mounts_before_local_nodes() -> None:
+    root = Graph("root")
+    child = Graph("child")
+    order: list[str] = []
+    root_node = node(initial=0)
+    child_node = node(initial=0)
+    child.add("cn", child_node)
+    root.add("rn", root_node)
+    root.mount("c", child)
+    child_node.subscribe(lambda _msgs: order.append("child"))
+    root_node.subscribe(lambda _msgs: order.append("root"))
+    root.signal([(MessageType.PAUSE,)])
+    assert order == ["child", "root"]

@@ -88,10 +88,10 @@
 
 ### 1.2 — Composition
 
-- [ ] `graph.mount(name, child_graph)` — subgraph embedding
-- [ ] Colon-delimited namespace: `"parent:child:node"`
-- [ ] `graph.resolve(path)` — node lookup by qualified path
-- [ ] Lifecycle signal propagation through mount hierarchy
+- [x] `graph.mount(name, child_graph)` — subgraph embedding
+- [x] Colon-delimited namespace: `"parent:child:node"`
+- [x] `graph.resolve(path)` — node lookup by qualified path
+- [x] Lifecycle signal propagation through mount hierarchy
 
 ### 1.3 — Introspection
 
