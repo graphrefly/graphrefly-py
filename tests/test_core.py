@@ -126,6 +126,113 @@ def test_up_forwards_without_error_when_subscribed() -> None:
     unsub()
 
 
+def test_lifecycle_pause_resume_propagate_through_multi_hop_chain() -> None:
+    """PAUSE / RESUME from upstream reach downstream sinks (multi-hop ``node`` chain)."""
+    src = node(initial=1)
+    # Identity derived (not a no-fn wire): passthrough wires do not mirror ``initial``,
+    # so the first recompute would see ``None`` before any ``down`` from the source.
+    hop = node([src], lambda d, _: d[0])
+    leaf = node([hop], lambda deps, _: deps[0] * 2)
+    batches: list[list[MessageType]] = []
+
+    def sink(msgs: list) -> None:
+        batches.append([m[0] for m in msgs])
+
+    unsub = leaf.subscribe(sink)
+    src.down([(MessageType.PAUSE, "lock-a")])
+    src.down([(MessageType.RESUME, "lock-a")])
+    unsub()
+
+    flat = [t for b in batches for t in b]
+    assert MessageType.PAUSE in flat
+    assert MessageType.RESUME in flat
+    assert flat.index(MessageType.PAUSE) < flat.index(MessageType.RESUME)
+
+
+def test_lifecycle_invalidate_propagates_and_clears_caches_along_chain() -> None:
+    """INVALIDATE clears each node's cache (spec §1.2) and propagates through a multi-hop chain."""
+    src = node(initial=42)
+    hop = node([src], lambda d, _: d[0])
+    leaf = node([hop], lambda deps, _: deps[0] + 1)
+    saw_inv: list[bool] = []
+
+    def sink(msgs: list) -> None:
+        saw_inv.append(any(m[0] == MessageType.INVALIDATE for m in msgs))
+
+    unsub = leaf.subscribe(sink)
+    assert leaf.get() == 43
+    src.down([(MessageType.INVALIDATE,)])
+    unsub()
+
+    assert any(saw_inv)
+    assert src.get() is None
+    assert hop.get() is None
+    assert leaf.get() is None
+    assert src.status == "dirty"
+
+
+def test_invalidate_clears_dep_memo_so_identical_data_triggers_recompute() -> None:
+    """After INVALIDATE, a derived node must not skip ``fn`` solely via dep identity memo."""
+    src = node(initial=7)
+    runs = 0
+
+    def fn(deps: list, _a: object) -> int:
+        nonlocal runs
+        runs += 1
+        return deps[0] + 1
+
+    d = node([src], fn)
+    unsub = d.subscribe(lambda _m: None)
+    assert runs == 1
+    assert d.get() == 8
+    src.down([(MessageType.INVALIDATE,)])
+    src.down([(MessageType.DIRTY,), (MessageType.DATA, 7)])
+    unsub()
+
+    assert runs == 2
+    assert d.get() == 8
+
+
+def test_invalidate_after_complete_reaches_sinks_and_clears_cache() -> None:
+    """INVALIDATE passes the terminal gate like TEARDOWN (optimizations §9 / §9b)."""
+    src = node(initial=1)
+    types: list[MessageType] = []
+
+    def sink(msgs: list) -> None:
+        for m in msgs:
+            types.append(m[0])
+
+    unsub = src.subscribe(sink)
+    src.down([(MessageType.COMPLETE,)])
+    src.down([(MessageType.INVALIDATE,)])
+    unsub()
+
+    assert MessageType.INVALIDATE in types
+    assert src.get() is None
+
+
+def test_invalidate_runs_fn_cleanup_once() -> None:
+    """INVALIDATE invokes a registered ``fn`` cleanup callable (then clears cache)."""
+    src = node(initial=0)
+    cleanups = 0
+
+    def fn(_deps: list, _a: object):
+        def cleanup() -> None:
+            nonlocal cleanups
+            cleanups += 1
+
+        return cleanup
+
+    n = node([src], fn)
+    unsub = n.subscribe(lambda _m: None)
+    assert cleanups == 0
+    n.down([(MessageType.INVALIDATE,)])
+    assert cleanups == 1
+    n.down([(MessageType.INVALIDATE,)])
+    assert cleanups == 1
+    unsub()
+
+
 def test_reset_on_teardown_clears_cached_value() -> None:
     n = node(initial=42, reset_on_teardown=True)
     unsub = n.subscribe(lambda _m: None)

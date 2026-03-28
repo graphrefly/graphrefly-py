@@ -69,9 +69,9 @@
 - [x] Diamond resolution tests — classic diamond + many-deps bitmask stress
 - [x] Batch tests — `tests/test_protocol.py` (deferral, nesting, terminals) + core batch exception path
 - [x] Meta companion store tests — `test_meta_*`, `meta_snapshot`, TEARDOWN to meta (B3)
-- [ ] Lifecycle signal tests — **covered today:** TEARDOWN (incl. reset-on-teardown), COMPLETE (incl. `complete_when_deps_complete`), ERROR, unknown forward; **still add:** INVALIDATE, PAUSE, RESUME through multi-node `node` chains (see `GRAPHREFLY-SPEC.md` lifecycle vocabulary and `node.up` examples)
+- [x] Lifecycle signal tests — TEARDOWN, COMPLETE, ERROR, unknown forward; INVALIDATE / PAUSE / RESUME through multi-node chains (`tests/test_core.py`)
 - [x] Concurrency stress tests — `tests/test_concurrency.py` (get under write, independent subgraphs, merged serialization, defer, batch + lock)
-- [ ] Benchmarks vs callbag-recharge-py — regression guard / perf baseline; not started
+- [x] Benchmarks / perf smoke — `tests/test_perf_smoke.py` (loose wall-time when `CI` unset; twin in graphrefly-ts: `perf-smoke.test.ts`; not a comparison to callbag-recharge-py)
 
 **Sugar tests:** `tests/test_sugar.py` (constructors, `pipe`, `|`, single-dep wire via `node([dep], fn)`).
 

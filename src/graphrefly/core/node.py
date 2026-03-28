@@ -269,6 +269,15 @@ class NodeImpl[T]:
             if t == MessageType.DATA:
                 with self._cache_lock:
                     self._cached = m[1]  # type: ignore[misc]
+            if t == MessageType.INVALIDATE:
+                # GRAPHREFLY-SPEC §1.2: clear cached state; do not auto-emit from here.
+                if self._cleanup is not None:
+                    cb = self._cleanup
+                    self._cleanup = None
+                    cb()
+                with self._cache_lock:
+                    self._cached = None
+                self._last_dep_values = None
             self._status = _status_after_message(self._status, m)
             if t in (MessageType.COMPLETE, MessageType.ERROR):
                 self._terminal = True
@@ -328,8 +337,7 @@ class NodeImpl[T]:
                     and self._last_dep_values is not None
                     and len(self._last_dep_values) == len(dep_values)
                     and all(
-                        dep_values[i] is self._last_dep_values[i]
-                        for i in range(len(dep_values))
+                        dep_values[i] is self._last_dep_values[i] for i in range(len(dep_values))
                     )
                 ):
                     if self._status == "dirty":
@@ -553,11 +561,15 @@ class NodeImpl[T]:
             lifecycle_messages = messages
             sink_messages = messages
             if self._terminal and not self._resubscribable:
-                teardown_only = [m for m in messages if m[0] == MessageType.TEARDOWN]
-                if not teardown_only:
+                terminal_passthrough = [
+                    m
+                    for m in messages
+                    if m[0] in (MessageType.TEARDOWN, MessageType.INVALIDATE)
+                ]
+                if not terminal_passthrough:
                     return
-                lifecycle_messages = teardown_only
-                sink_messages = teardown_only
+                lifecycle_messages = terminal_passthrough
+                sink_messages = terminal_passthrough
             self._handle_local_lifecycle(lifecycle_messages)
             if self._can_skip_dirty() and any(
                 m[0] in (MessageType.DATA, MessageType.RESOLVED) for m in sink_messages
