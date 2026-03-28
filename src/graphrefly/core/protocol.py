@@ -78,11 +78,12 @@ class _BatchState:
 
 
 def _batch_state() -> _BatchState:
-    bs: _BatchState | None = getattr(_batch_tls, "state", None)
-    if bs is None:
+    try:
+        return _batch_tls.state  # type: ignore[no-any-return]
+    except AttributeError:
         bs = _BatchState()
         _batch_tls.state = bs
-    return bs
+        return bs
 
 
 def _drain_pending(bs: _BatchState) -> None:
@@ -156,7 +157,8 @@ def is_batching() -> bool:
 
 def is_phase2_message(msg: Message) -> bool:
     """True for DATA and RESOLVED (phase-2 tuples deferred under batching)."""
-    return msg[0] in _BATCH_DEFER_TYPES
+    t = msg[0]
+    return t is MessageType.DATA or t is MessageType.RESOLVED
 
 
 def partition_for_batch(messages: Messages) -> tuple[Messages, Messages]:
@@ -219,8 +221,26 @@ def _emit_partition(
     defer_when: DeferWhen,
     subgraph_lock: object | None,
 ) -> None:
-    immediate, deferred = partition_for_batch(messages)
     bs = _batch_state()
+    # Fast path: single-message batches (most common in graph-internal propagation)
+    # skip partition_for_batch allocation entirely.
+    if len(messages) == 1:
+        t = messages[0][0]
+        if t is MessageType.DATA or t is MessageType.RESOLVED:
+            if _should_defer_phase2(bs, defer_when):
+
+                def _emit_single() -> None:
+                    sink(messages)
+
+                bs.pending.append(_wrap_deferred_subgraph(_emit_single, subgraph_lock))
+            else:
+                sink(messages)
+        else:
+            sink(messages)
+        return
+    # Multi-message: partition into immediate and deferred to preserve
+    # two-phase ordering (DIRTY propagates before DATA for diamond settlement).
+    immediate, deferred = partition_for_batch(messages)
     if immediate:
         sink(immediate)
     if not deferred:

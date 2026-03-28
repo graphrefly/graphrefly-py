@@ -57,19 +57,19 @@ def _create_bit_set(size: int) -> _BitSet:
 
 def _status_after_message(status: NodeStatus, msg: Message) -> NodeStatus:
     t = msg[0]
-    if t == MessageType.DIRTY:
+    if t is MessageType.DIRTY:
         return "dirty"
-    if t == MessageType.DATA:
+    if t is MessageType.DATA:
         return "settled"
-    if t == MessageType.RESOLVED:
+    if t is MessageType.RESOLVED:
         return "resolved"
-    if t == MessageType.COMPLETE:
+    if t is MessageType.COMPLETE:
         return "completed"
-    if t == MessageType.ERROR:
+    if t is MessageType.ERROR:
         return "errored"
-    if t == MessageType.INVALIDATE:
+    if t is MessageType.INVALIDATE:
         return "dirty"
-    if t == MessageType.TEARDOWN:
+    if t is MessageType.TEARDOWN:
         return "disconnected"
     return status
 
@@ -178,6 +178,7 @@ class NodeImpl[T]:
         "_sinks",
         "_status",
         "_terminal",
+        "_thread_safe",
         "_upstream_unsubs",
     )
 
@@ -193,14 +194,14 @@ class NodeImpl[T]:
         self._resubscribable: bool = bool(opts.get("resubscribable", False))
         self._reset_on_teardown: bool = bool(opts.get("reset_on_teardown", False))
         self._auto_complete: bool = bool(opts.get("complete_when_deps_complete", True))
+        self._thread_safe: bool = bool(opts.get("thread_safe", True))
 
         self._fn = fn
         self._deps = deps
         self._has_deps = len(deps) > 0
 
-        self._cache_lock = threading.Lock()
-        with self._cache_lock:
-            self._cached: T | None = opts.get("initial")
+        self._cache_lock = threading.Lock() if self._thread_safe else None
+        self._cached: T | None = opts.get("initial")
         self._status: NodeStatus = "disconnected" if self._has_deps else "settled"
         self._terminal = False
         self._connected = False
@@ -227,13 +228,14 @@ class NodeImpl[T]:
         self._meta: dict[str, NodeImpl[Any]] = {}
         for k, v in (opts.get("meta") or {}).items():
             meta_name = f"{self._name or 'node'}:meta:{k}"
-            self._meta[k] = node(initial=v, name=meta_name)
+            self._meta[k] = node(initial=v, name=meta_name, thread_safe=self._thread_safe)
 
-        ensure_registered(self)
-        for d in self._deps:
-            union_nodes(self, d)
-        for meta_node in self._meta.values():
-            union_nodes(self, meta_node)
+        if self._thread_safe:
+            ensure_registered(self)
+            for d in self._deps:
+                union_nodes(self, d)
+            for meta_node in self._meta.values():
+                union_nodes(self, meta_node)
 
         self._actions = NodeActions(
             down=lambda msgs: self._manual_down(msgs),
@@ -264,26 +266,36 @@ class NodeImpl[T]:
             self._sinks(msgs)
 
     def _handle_local_lifecycle(self, messages: Messages) -> None:
+        lock = self._cache_lock
         for m in messages:
             t = m[0]
-            if t == MessageType.DATA:
-                with self._cache_lock:
+            if t is MessageType.DATA:
+                if lock is not None:
+                    with lock:
+                        self._cached = m[1]  # type: ignore[misc]
+                else:
                     self._cached = m[1]  # type: ignore[misc]
-            if t == MessageType.INVALIDATE:
+            if t is MessageType.INVALIDATE:
                 # GRAPHREFLY-SPEC §1.2: clear cached state; do not auto-emit from here.
                 if self._cleanup is not None:
                     cb = self._cleanup
                     self._cleanup = None
                     cb()
-                with self._cache_lock:
+                if lock is not None:
+                    with lock:
+                        self._cached = None
+                else:
                     self._cached = None
                 self._last_dep_values = None
             self._status = _status_after_message(self._status, m)
-            if t in (MessageType.COMPLETE, MessageType.ERROR):
+            if t is MessageType.COMPLETE or t is MessageType.ERROR:
                 self._terminal = True
-            if t == MessageType.TEARDOWN:
+            if t is MessageType.TEARDOWN:
                 if self._reset_on_teardown:
-                    with self._cache_lock:
+                    if lock is not None:
+                        with lock:
+                            self._cached = None
+                    else:
                         self._cached = None
                 try:
                     for meta_node in self._meta.values():
@@ -301,7 +313,11 @@ class NodeImpl[T]:
         # callers always hold the subgraph RLock (via _run_fn or down), which
         # serializes all writes. _cache_lock only guards get() reads from outside.
         was_dirty = self._status == "dirty"
-        with self._cache_lock:
+        lock = self._cache_lock
+        if lock is not None:
+            with lock:
+                cached_snapshot = self._cached
+        else:
             cached_snapshot = self._cached
         unchanged = self._equals(cached_snapshot, value)
         if unchanged:
@@ -310,12 +326,51 @@ class NodeImpl[T]:
             else:
                 self.down([(MessageType.DIRTY,), (MessageType.RESOLVED,)])
             return
-        with self._cache_lock:
+        if lock is not None:
+            with lock:
+                self._cached = cast("T", value)
+        else:
             self._cached = cast("T", value)
         if was_dirty:
             self.down([(MessageType.DATA, value)])
         else:
             self.down([(MessageType.DIRTY,), (MessageType.DATA, value)])
+
+    def _run_fn_body(self) -> None:
+        if self._terminal and not self._resubscribable:
+            return
+
+        try:
+            dep_values = [d.get() for d in self._deps]
+            # Identity check BEFORE cleanup: if all dep values are unchanged,
+            # skip cleanup+fn entirely so effect nodes don't teardown/restart on no-op.
+            prev = self._last_dep_values
+            n = len(dep_values)
+            if (
+                n > 0
+                and prev is not None
+                and len(prev) == n
+                and all(dep_values[i] is prev[i] for i in range(n))
+            ):
+                if self._status == "dirty":
+                    self.down([(MessageType.RESOLVED,)])
+                return
+            if self._cleanup is not None:
+                self._cleanup()
+                self._cleanup = None
+            self._manual_emit_used = False
+            self._last_dep_values = dep_values
+            out = self._fn(dep_values, self._actions)  # type: ignore[misc]
+            if _is_cleanup_fn(out):
+                self._cleanup = out
+                return
+            if self._manual_emit_used:
+                return
+            if out is None:
+                return
+            self._emit_auto_value(out)
+        except Exception as err:
+            self.down([(MessageType.ERROR, err)])
 
     def _run_fn(self) -> None:
         if self._fn is None:
@@ -323,42 +378,11 @@ class NodeImpl[T]:
         # Suppress re-entrant recompute while wiring upstream deps (TS connect order).
         if self._connecting:
             return
-
-        with acquire_subgraph_write_lock_with_defer(self):
-            if self._terminal and not self._resubscribable:
-                return
-
-            try:
-                dep_values = [d.get() for d in self._deps]
-                # Identity check BEFORE cleanup: if all dep values are unchanged,
-                # skip cleanup+fn entirely so effect nodes don't teardown/restart on no-op.
-                if (
-                    len(dep_values) > 0
-                    and self._last_dep_values is not None
-                    and len(self._last_dep_values) == len(dep_values)
-                    and all(
-                        dep_values[i] is self._last_dep_values[i] for i in range(len(dep_values))
-                    )
-                ):
-                    if self._status == "dirty":
-                        self.down([(MessageType.RESOLVED,)])
-                    return
-                if self._cleanup is not None:
-                    self._cleanup()
-                    self._cleanup = None
-                self._manual_emit_used = False
-                self._last_dep_values = list(dep_values)
-                out = self._fn(dep_values, self._actions)
-                if _is_cleanup_fn(out):
-                    self._cleanup = out
-                    return
-                if self._manual_emit_used:
-                    return
-                if out is None:
-                    return
-                self._emit_auto_value(out)
-            except Exception as err:
-                self.down([(MessageType.ERROR, err)])
+        if self._thread_safe:
+            with acquire_subgraph_write_lock_with_defer(self):
+                self._run_fn_body()
+        else:
+            self._run_fn_body()
 
     def _on_dep_dirty(self, index: int) -> None:
         was_dirty = self._dep_dirty_mask.has(index)
@@ -388,19 +412,19 @@ class NodeImpl[T]:
         for msg in messages:
             t = msg[0]
             if self._fn is None:
-                if t == MessageType.COMPLETE and len(self._deps) > 1:
+                if t is MessageType.COMPLETE and len(self._deps) > 1:
                     self._dep_complete_mask.set(index)
                     self._maybe_complete_from_deps()
                     continue
                 self.down([msg])
                 continue
-            if t == MessageType.DIRTY:
+            if t is MessageType.DIRTY:
                 self._on_dep_dirty(index)
                 continue
-            if t in (MessageType.DATA, MessageType.RESOLVED):
+            if t is MessageType.DATA or t is MessageType.RESOLVED:
                 self._on_dep_settled(index)
                 continue
-            if t == MessageType.COMPLETE:
+            if t is MessageType.COMPLETE:
                 self._dep_complete_mask.set(index)
                 self._dep_dirty_mask.clear(index)
                 self._dep_settled_mask.clear(index)
@@ -418,14 +442,14 @@ class NodeImpl[T]:
                     self._run_fn()
                 self._maybe_complete_from_deps()
                 continue
-            if t == MessageType.ERROR:
+            if t is MessageType.ERROR:
                 self.down([msg])
                 continue
-            if t in (
-                MessageType.INVALIDATE,
-                MessageType.TEARDOWN,
-                MessageType.PAUSE,
-                MessageType.RESUME,
+            if (
+                t is MessageType.INVALIDATE
+                or t is MessageType.TEARDOWN
+                or t is MessageType.PAUSE
+                or t is MessageType.RESUME
             ):
                 self.down([msg])
                 continue
@@ -480,61 +504,83 @@ class NodeImpl[T]:
 
     # --- Public interface ---
 
+    def _subscribe_body(
+        self, sink: Callable[[Messages], None], hints: SubscribeHints | None,
+    ) -> None:
+        if self._terminal and self._resubscribable:
+            self._terminal = False
+            self._status = "disconnected" if self._has_deps else "settled"
+
+        h = hints or SubscribeHints()
+        self._sink_count += 1
+        if h.single_dep:
+            self._single_dep_sink_count += 1
+            self._single_dep_sinks.add(sink)
+
+        if self._sinks is None:
+            self._sinks = sink
+        elif isinstance(self._sinks, set):
+            self._sinks.add(sink)
+        else:
+            self._sinks = {self._sinks, sink}
+
+        if self._has_deps:
+            self._connect_upstream()
+        elif self._fn is not None:
+            self._start_producer()
+
+    def _unsubscribe_body(self, sink: Callable[[Messages], None]) -> None:
+        self._sink_count -= 1
+        if sink in self._single_dep_sinks:
+            self._single_dep_sink_count -= 1
+            self._single_dep_sinks.discard(sink)
+
+        if self._sinks is None:
+            return
+        if isinstance(self._sinks, set):
+            self._sinks.discard(sink)
+            if len(self._sinks) == 1:
+                self._sinks = next(iter(self._sinks))
+            elif len(self._sinks) == 0:
+                self._sinks = None
+        elif self._sinks is sink:
+            self._sinks = None
+
+        if self._sinks is None:
+            self._disconnect_upstream()
+            self._stop_producer()
+
     def subscribe(
         self,
         sink: Callable[[Messages], None],
         hints: SubscribeHints | None = None,
     ) -> Callable[[], None]:
-        with acquire_subgraph_write_lock_with_defer(self):
-            if self._terminal and self._resubscribable:
-                self._terminal = False
-                self._status = "disconnected" if self._has_deps else "settled"
-
-            h = hints or SubscribeHints()
-            self._sink_count += 1
-            if h.single_dep:
-                self._single_dep_sink_count += 1
-                self._single_dep_sinks.add(sink)
-
-            if self._sinks is None:
-                self._sinks = sink
-            elif isinstance(self._sinks, set):
-                self._sinks.add(sink)
-            else:
-                self._sinks = {self._sinks, sink}
-
-            if self._has_deps:
-                self._connect_upstream()
-            elif self._fn is not None:
-                self._start_producer()
+        if self._thread_safe:
+            with acquire_subgraph_write_lock_with_defer(self):
+                self._subscribe_body(sink, hints)
+        else:
+            self._subscribe_body(sink, hints)
 
         removed = False
 
-        def unsubscribe() -> None:
-            nonlocal removed
-            with acquire_subgraph_write_lock_with_defer(self):
+        if self._thread_safe:
+
+            def unsubscribe() -> None:
+                nonlocal removed
+                with acquire_subgraph_write_lock_with_defer(self):
+                    if removed:
+                        return
+                    removed = True
+                    self._unsubscribe_body(sink)
+
+        else:
+
+            def unsubscribe() -> None:
+                nonlocal removed
                 if removed:
                     return
                 removed = True
-                self._sink_count -= 1
-                if sink in self._single_dep_sinks:
-                    self._single_dep_sink_count -= 1
-                    self._single_dep_sinks.discard(sink)
-
-                if self._sinks is None:
-                    return
-                if isinstance(self._sinks, set):
-                    self._sinks.discard(sink)
-                    if len(self._sinks) == 1:
-                        self._sinks = next(iter(self._sinks))
-                    elif len(self._sinks) == 0:
-                        self._sinks = None
-                elif self._sinks is sink:
-                    self._sinks = None
-
-                if self._sinks is None:
-                    self._disconnect_upstream()
-                    self._stop_producer()
+                self._unsubscribe_body(sink)
 
         return unsubscribe
 
@@ -551,46 +597,60 @@ class NodeImpl[T]:
         return MappingProxyType(self._meta)
 
     def get(self) -> T | None:
-        with self._cache_lock:
-            return self._cached
+        lock = self._cache_lock
+        if lock is not None:
+            with lock:
+                return self._cached
+        return self._cached
 
-    def down(self, messages: Messages) -> None:
-        if not messages:
-            return
-        with acquire_subgraph_write_lock_with_defer(self):
-            lifecycle_messages = messages
-            sink_messages = messages
-            if self._terminal and not self._resubscribable:
-                terminal_passthrough = [
-                    m
-                    for m in messages
-                    if m[0] in (MessageType.TEARDOWN, MessageType.INVALIDATE)
-                ]
-                if not terminal_passthrough:
-                    return
-                lifecycle_messages = terminal_passthrough
-                sink_messages = terminal_passthrough
-            self._handle_local_lifecycle(lifecycle_messages)
-            if self._can_skip_dirty() and any(
-                m[0] in (MessageType.DATA, MessageType.RESOLVED) for m in sink_messages
-            ):
-                filtered = [m for m in sink_messages if m[0] != MessageType.DIRTY]
+    def _down_body(self, messages: Messages, sg_lock: object | None) -> None:
+        lifecycle_messages = messages
+        sink_messages = messages
+        if self._terminal and not self._resubscribable:
+            terminal_passthrough = [
+                m
+                for m in messages
+                if m[0] is MessageType.TEARDOWN or m[0] is MessageType.INVALIDATE
+            ]
+            if not terminal_passthrough:
+                return
+            lifecycle_messages = terminal_passthrough
+            sink_messages = terminal_passthrough
+        self._handle_local_lifecycle(lifecycle_messages)
+        if self._can_skip_dirty():
+            has_phase2 = False
+            for m in sink_messages:
+                t = m[0]
+                if t is MessageType.DATA or t is MessageType.RESOLVED:
+                    has_phase2 = True
+                    break
+            if has_phase2:
+                filtered = [m for m in sink_messages if m[0] is not MessageType.DIRTY]
                 if filtered:
                     emit_with_batch(
                         self._emit_to_sinks,
                         filtered,
                         strategy="partition",
                         defer_when="depth",
-                        subgraph_lock=self,
+                        subgraph_lock=sg_lock,
                     )
-            else:
-                emit_with_batch(
-                    self._emit_to_sinks,
-                    sink_messages,
-                    strategy="partition",
-                    defer_when="depth",
-                    subgraph_lock=self,
-                )
+                return
+        emit_with_batch(
+            self._emit_to_sinks,
+            sink_messages,
+            strategy="partition",
+            defer_when="depth",
+            subgraph_lock=sg_lock,
+        )
+
+    def down(self, messages: Messages) -> None:
+        if not messages:
+            return
+        if self._thread_safe:
+            with acquire_subgraph_write_lock_with_defer(self):
+                self._down_body(messages, self)
+        else:
+            self._down_body(messages, None)
 
     def up(self, messages: Messages) -> None:
         """Send messages upstream (no-op on source nodes; matches TS optional ``up``)."""
@@ -605,7 +665,10 @@ class NodeImpl[T]:
         """Disconnect from upstream deps (no-op on source nodes)."""
         if not self._has_deps:
             return
-        with acquire_subgraph_write_lock_with_defer(self):
+        if self._thread_safe:
+            with acquire_subgraph_write_lock_with_defer(self):
+                self._disconnect_upstream()
+        else:
             self._disconnect_upstream()
 
     def __or__(self, other: object) -> Any:
@@ -652,6 +715,8 @@ def node(
         opts["reset_on_teardown"] = opts.pop("resetOnTeardown")
     if "completeWhenDepsComplete" in opts and "complete_when_deps_complete" not in opts:
         opts["complete_when_deps_complete"] = opts.pop("completeWhenDepsComplete")
+    if "threadSafe" in opts and "thread_safe" not in opts:
+        opts["thread_safe"] = opts.pop("threadSafe")
 
     return NodeImpl(deps, fn, opts)
 

@@ -1,6 +1,6 @@
 # Benchmarks
 
-Python mirrors the graphrefly-ts micro-benchmarks in [`src/__bench__/graphrefly.bench.ts`](https://github.com/nicepkg/graphrefly-ts/blob/main/src/__bench__/graphrefly.bench.ts) using [pytest-benchmark](https://pytest-benchmark.readthedocs.io/).
+Python mirrors the graphrefly-ts / callbag-style suite using [pytest-benchmark](https://pytest-benchmark.readthedocs.io/). Scenarios match [`tests/bench_core.py`](../tests/bench_core.py) and graphrefly-ts `src/__bench__/graphrefly.bench.ts` (aligned with callbag-recharge `compare.bench.ts`).
 
 ## Default test run
 
@@ -29,11 +29,10 @@ uv run pytest tests/bench_core.py -m benchmark --benchmark-only --benchmark-json
 
 Numbers are machine-specific. The file is a **snapshot** for human review and future tooling; pytest-benchmark’s compare workflows usually use the `.benchmarks/` directory on a single machine.
 
-## Sources
+## Other checks
 
-- Bench module: [`tests/bench_core.py`](../tests/bench_core.py)
 - Loose wall-clock guard (timing only when `CI` is unset): [`tests/test_perf_smoke.py`](../tests/test_perf_smoke.py)
 
 ## Setup note
 
-Like the TypeScript benches, graphs are built at **import time** so the hot loops run against initialized nodes.
+Each benchmark builds its graph once per test function, then `benchmark(...)` runs the hot loop only. That matches the TS pattern of defining graphs inside each `describe` block at load time.

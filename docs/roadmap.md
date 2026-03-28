@@ -71,7 +71,7 @@
 - [x] Meta companion store tests — `test_meta_*`, `meta_snapshot`, TEARDOWN to meta (B3)
 - [x] Lifecycle signal tests — TEARDOWN, COMPLETE, ERROR, unknown forward; INVALIDATE / PAUSE / RESUME through multi-node chains (`tests/test_core.py`)
 - [x] Concurrency stress tests — `tests/test_concurrency.py` (get under write, independent subgraphs, merged serialization, defer, batch + lock)
-- [x] Benchmarks / perf smoke — `tests/test_perf_smoke.py` (loose wall-time when `CI` unset; twin in graphrefly-ts: `perf-smoke.test.ts`; not a comparison to callbag-recharge-py)
+- [x] Benchmarks / perf smoke — `tests/bench_core.py` (pytest-benchmark; parity with graphrefly-ts / callbag `compare.bench.ts` shapes); `tests/test_perf_smoke.py` (loose wall-time when `CI` unset; twin: graphrefly-ts `perf-smoke.test.ts`)
 
 **Sugar tests:** `tests/test_sugar.py` (constructors, `pipe`, `|`, single-dep wire via `node([dep], fn)`).
 
