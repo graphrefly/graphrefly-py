@@ -149,6 +149,36 @@ def test_graph_remove_teardown_is_internal_after_registry_pop() -> None:
         g.node("x")
 
 
+def test_policy_wildcard_matches_any_action() -> None:
+    """Wildcard ``"*"`` in allow/deny matches any concrete action."""
+    g = policy(lambda allow, deny: [allow("*", where=lambda a: a.get("type") == "human")])
+    assert g({"type": "human", "id": ""}, "write") is True
+    assert g({"type": "human", "id": ""}, "signal") is True
+    assert g({"type": "human", "id": ""}, "observe") is True
+    assert g({"type": "llm", "id": ""}, "write") is False
+
+
+def test_policy_list_of_actions() -> None:
+    """allow/deny accept a list of actions (aligned with TS array support)."""
+    g = policy(lambda allow, deny: [allow(["write", "signal"])])
+    assert g({"type": "any", "id": ""}, "write") is True
+    assert g({"type": "any", "id": ""}, "signal") is True
+    assert g({"type": "any", "id": ""}, "observe") is False
+
+
+def test_policy_wildcard_deny_overrides_allow() -> None:
+    """Deny with ``"*"`` blocks all actions even if specific allows exist."""
+    g = policy(
+        lambda allow, deny: [
+            allow("write"),
+            deny("*", where=lambda a: a.get("type") == "llm"),
+        ]
+    )
+    assert g({"type": "human", "id": ""}, "write") is True
+    assert g({"type": "llm", "id": ""}, "write") is False
+    assert g({"type": "llm", "id": ""}, "observe") is False
+
+
 def test_compose_guards_and() -> None:
     g1 = policy(lambda a, d: [a("write", where=lambda x: x.get("role") == "admin")])
     g2 = policy(lambda a, d: [a("write", where=lambda x: x.get("type") == "human")])
@@ -244,6 +274,7 @@ def test_node_subscribe_observe_guard() -> None:
 
 def test_up_guard_check() -> None:
     """up() on an external call checks the guard; internal call bypasses."""
+
     # Allow observe (so subscribe works) but deny write
     def deny_write(a: object, act: str) -> bool:
         return act == "observe"
@@ -298,6 +329,7 @@ def test_allows_observe_and_has_guard() -> None:
 
 def test_meta_inherits_guard() -> None:
     """Meta companion nodes inherit their parent's guard."""
+
     def guard_fn(a: object, act: str) -> bool:
         return a.get("type") == "human"  # type: ignore[union-attr]
 

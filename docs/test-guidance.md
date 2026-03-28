@@ -38,7 +38,7 @@ tests/
 ├── test_protocol.py         — message types, invariants, batch semantics (Phase 0.2)
 ├── test_core.py             — node primitive, sugar, diamond, lifecycle (Phase 0.3+)
 ├── test_concurrency.py      — locks, threads, free-threaded concerns (Phase 0.4)
-├── test_graph.py            — Graph container, mount, describe, observe, signal, destroy, snapshot/restore (Phase 1)
+├── test_graph.py            — Graph container (Phase 1) + roadmap **1.6** acceptance (`Graph.set` attribution, describe shape, graph-wide `observe`, snapshot `to_json` identity)
 ├── test_guard.py            — Actor, guard, `policy()`, scoped describe/observe (Phase 1.5)
 ├── test_extra_tier1.py      — sync operators (Phase 2.1)
 ├── test_extra_tier2.py      — async/dynamic operators (Phase 2.2)

@@ -328,7 +328,11 @@ class Graph:
         return any(c._graph_reachable(target) for c in children)
 
     def signal(
-        self, messages: Messages, *, actor: Any | None = None, internal: bool = False,
+        self,
+        messages: Messages,
+        *,
+        actor: Any | None = None,
+        internal: bool = False,
     ) -> None:
         """Deliver ``messages`` to every node, meta companions, and mounted subgraphs.
 
@@ -341,7 +345,12 @@ class Graph:
         this graph's registry and all mounted subgraphs (GRAPHREFLY-SPEC §3.7).
         """
         _signal_graph(
-            self, [(MessageType.TEARDOWN,)], set(), normalize_actor(None), "", internal=True,
+            self,
+            [(MessageType.TEARDOWN,)],
+            set(),
+            normalize_actor(None),
+            "",
+            internal=True,
         )
         _clear_graph_registry(self)
 
@@ -525,7 +534,12 @@ class Graph:
         return self.node(node_name).get()
 
     def set(
-        self, node_name: str, value: Any, *, actor: Any | None = None, internal: bool = False,
+        self,
+        node_name: str,
+        value: Any,
+        *,
+        actor: Any | None = None,
+        internal: bool = False,
     ) -> None:
         """Shorthand for ``graph.node(name).down([[DATA, value]], ...)``.
 

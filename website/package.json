@@ -1,0 +1,28 @@
+{
+	"name": "@graphrefly/docs-site",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"sync-docs": "node scripts/sync-docs.mjs",
+		"predev": "pnpm sync-docs",
+		"prebuild": "pnpm sync-docs",
+		"dev": "astro dev",
+		"start": "astro dev",
+		"build": "astro build",
+		"preview": "astro preview"
+	},
+	"dependencies": {
+		"@astrojs/react": "^4.4.2",
+		"@astrojs/starlight": "^0.37.2",
+		"astro": "^5.16.0",
+		"pyodide": "^0.27.7",
+		"react": "^19.2.0",
+		"react-dom": "^19.2.0",
+		"sharp": "^0.34.5"
+	},
+	"devDependencies": {
+		"@types/react": "^19.2.0",
+		"@types/react-dom": "^19.2.0",
+		"typescript": "^5.7.0"
+	}
+}

@@ -6,7 +6,13 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any, Literal, TypedDict
 
-GuardAction = Literal["write", "signal", "observe"]
+GuardAction = str
+"""Known actions: ``"write"``, ``"signal"``, ``"observe"``.
+
+Open type (plain ``str``) so callers can define domain-specific actions
+(e.g. ``"admin"``, ``"delete"``) or use the wildcard ``"*"`` in
+:func:`policy` rules.  Aligned with the TS ``(string & {})`` pattern.
+"""
 
 #: ``(actor, action) -> bool`` — when ``False``, APIs raise :exc:`GuardDenied`.
 GuardFn = Callable[["Actor", GuardAction], bool]
@@ -53,14 +59,28 @@ class GuardDenied(Exception):
         super().__init__(f"guard denied {action!r} on node {node!r} for actor {self.actor!r}")
 
 
+def _normalize_actions(
+    action: GuardAction | list[GuardAction] | tuple[GuardAction, ...],
+) -> frozenset[str]:
+    """Accept a single action string or a sequence and return a frozen set."""
+    if isinstance(action, str):
+        return frozenset((action,))
+    return frozenset(action)
+
+
+def _matches_actions(actions: frozenset[str], guard_action: GuardAction) -> bool:
+    """Check membership with ``"*"`` wildcard support (aligned with TS)."""
+    return guard_action in actions or "*" in actions
+
+
 def _policy_rule_result(
     *,
-    action: GuardAction,
+    actions: frozenset[str],
     where: Callable[[Actor], bool] | None,
     actor: Mapping[str, Any],
     guard_action: GuardAction,
 ) -> bool:
-    return action == guard_action and (where is None or where(actor))  # type: ignore[arg-type]
+    return _matches_actions(actions, guard_action) and (where is None or where(actor))  # type: ignore[arg-type]
 
 
 def policy(
@@ -85,13 +105,22 @@ def policy(
             deny("write", where=lambda a: a.get("type") == "llm"),
         ])
     """
-    rules: list[tuple[Literal["allow", "deny"], GuardAction, Callable[[Actor], bool] | None]] = []
+    Rule = tuple[Literal["allow", "deny"], frozenset[str], Callable[[Actor], bool] | None]
+    rules: list[Rule] = []
 
-    def allow(action: GuardAction, *, where: Callable[[Actor], bool] | None = None) -> None:
-        rules.append(("allow", action, where))
+    def allow(
+        action: GuardAction | list[GuardAction] | tuple[GuardAction, ...],
+        *,
+        where: Callable[[Actor], bool] | None = None,
+    ) -> None:
+        rules.append(("allow", _normalize_actions(action), where))
 
-    def deny(action: GuardAction, *, where: Callable[[Actor], bool] | None = None) -> None:
-        rules.append(("deny", action, where))
+    def deny(
+        action: GuardAction | list[GuardAction] | tuple[GuardAction, ...],
+        *,
+        where: Callable[[Actor], bool] | None = None,
+    ) -> None:
+        rules.append(("deny", _normalize_actions(action), where))
 
     build(allow, deny)
 
@@ -99,8 +128,11 @@ def policy(
         a = normalize_actor(actor)
         denied = False
         allowed = False
-        for kind, act, where in rules:
-            if not _policy_rule_result(action=act, where=where, actor=a, guard_action=guard_action):
+        for kind, acts, where in rules:
+            matched = _policy_rule_result(
+                actions=acts, where=where, actor=a, guard_action=guard_action,
+            )
+            if not matched:
                 continue
             if kind == "deny":
                 denied = True

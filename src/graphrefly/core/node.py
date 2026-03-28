@@ -249,7 +249,9 @@ class NodeImpl[T]:
         for k, v in (opts.get("meta") or {}).items():
             meta_name = f"{self._name or 'node'}:meta:{k}"
             meta_opts: dict[str, Any] = {
-                "initial": v, "name": meta_name, "thread_safe": self._thread_safe,
+                "initial": v,
+                "name": meta_name,
+                "thread_safe": self._thread_safe,
             }
             if self._guard is not None:
                 meta_opts["guard"] = self._guard

@@ -1,4 +1,4 @@
-"""Graph container — roadmap Phase 1.1–1.3 (GRAPHREFLY-SPEC §3.1–3.6)."""
+"""Graph container — Phase 1.1–1.4 + 1.6 acceptance (GRAPHREFLY-SPEC §3.1–3.8)."""
 
 from __future__ import annotations
 
@@ -654,3 +654,179 @@ def test_to_json_has_trailing_newline() -> None:
     g.add("a", state(0))
     j = g.to_json()
     assert j.endswith("\n")
+
+
+# --- Phase 1.6 — explicit acceptance tests (roadmap) ---
+
+
+def test_graph_set_records_last_mutation() -> None:
+    g = Graph("g")
+    n = state(0)
+    g.add("n", n)
+    actor = {"type": "human", "id": "u1"}
+    g.set("n", 5, actor=actor)
+    lm = n.last_mutation
+    assert lm is not None
+    assert lm["actor"]["type"] == "human"
+    assert lm["actor"]["id"] == "u1"
+    assert "timestamp_ns" in lm
+
+
+def test_graph_set_qualified_mount_path_records_last_mutation_on_inner_node() -> None:
+    root = Graph("root")
+    child = Graph("child")
+    inner = state(0)
+    child.add("x", inner)
+    root.mount("sub", child)
+    root.set("sub::x", 9, actor={"type": "wallet", "id": "0x1"})
+    lm = inner.last_mutation
+    assert lm is not None
+    assert lm["actor"]["type"] == "wallet"
+    assert lm["actor"]["id"] == "0x1"
+
+
+def test_internal_down_preserves_last_mutation_after_graph_set() -> None:
+    """Internal ``down`` skips attribution; prior write record stays (spec / Phase 1.5)."""
+    g = Graph("g")
+    n = state(0)
+    g.add("n", n)
+    g.set("n", 1, actor={"type": "human", "id": "h1"})
+    recorded = n.last_mutation
+    assert recorded is not None
+    n.down([(MessageType.DATA, 2)], internal=True)
+    assert n.last_mutation == recorded
+    assert n.get() == 2
+
+
+def test_describe_output_has_expected_top_level_and_node_shape() -> None:
+    """Validate describe() shape including Appendix B enum values."""
+    g = Graph("g")
+    a = state(1)
+    b = derived([a], lambda d, _: d[0] + 1)
+    g.add("a", a)
+    g.add("b", b)
+    g.connect("a", "b")
+    d = g.describe()
+    for key in ("name", "nodes", "edges", "subgraphs"):
+        assert key in d
+    assert d["name"] == "g"
+    assert isinstance(d["nodes"], dict)
+    assert isinstance(d["edges"], list)
+    assert isinstance(d["subgraphs"], list)
+    valid_types = {"state", "derived", "producer", "operator", "effect"}
+    valid_statuses = {"disconnected", "dirty", "settled", "resolved", "completed", "errored"}
+    for _path, spec in d["nodes"].items():
+        assert isinstance(spec, dict)
+        assert {"type", "status", "deps", "meta"} <= spec.keys()
+        assert spec["type"] in valid_types, f"bad type: {spec['type']}"
+        assert spec["status"] in valid_statuses, f"bad status: {spec['status']}"
+        assert isinstance(spec["deps"], list)
+        assert isinstance(spec["meta"], dict)
+    for e in d["edges"]:
+        assert set(e) == {"from", "to"}
+
+
+def test_observe_graph_wide_reports_qualified_paths_on_data() -> None:
+    g = Graph("g")
+    a = state(1)
+    b = state(2)
+    g.add("a", a)
+    g.add("b", b)
+    data_paths: set[str] = set()
+
+    def sink(p: str, msgs: object) -> None:
+        for m in msgs:
+            if m[0] is MessageType.DATA:
+                data_paths.add(p)
+
+    unsub = g.observe().subscribe(sink)
+    g.set("a", 10)
+    g.set("b", 20)
+    unsub()
+    assert data_paths == {"a", "b"}
+
+
+def test_observe_mount_prefix_in_graph_wide_mode() -> None:
+    root = Graph("root")
+    child = Graph("child")
+    n = state(0)
+    child.add("v", n)
+    root.mount("sub", child)
+    seen: set[str] = set()
+
+    def sink(p: str, msgs: object) -> None:
+        for m in msgs:
+            if m[0] is MessageType.DATA:
+                seen.add(p)
+
+    unsub = root.observe().subscribe(sink)
+    root.set("sub::v", 7)
+    unsub()
+    assert seen == {"sub::v"}
+
+
+def test_from_snapshot_round_trip_matches_to_json() -> None:
+    g = Graph("app")
+    g.add("z", state(3))
+    g.add("a", state(1))
+    snap = g.snapshot()
+    g2 = Graph.from_snapshot(snap)
+    assert g2.to_json() == g.to_json()
+
+
+def test_observe_derived_sees_dirty_before_data() -> None:
+    """observe(path) on a derived node sees DIRTY before DATA on upstream set (parity with TS)."""
+    g = Graph("g")
+    a = state(0)
+    b = derived([a], lambda deps, _: deps[0] + 1)
+    g.add("a", a)
+    g.add("b", b)
+    g.connect("a", "b")
+    seq: list[MessageType] = []
+    unsub = g.observe("b").subscribe(lambda msgs: seq.extend(m[0] for m in msgs))
+    g.set("a", 5)
+    unsub()
+    i_dirty = next((i for i, t in enumerate(seq) if t is MessageType.DIRTY), -1)
+    i_data = next((i for i, t in enumerate(seq) if t is MessageType.DATA), -1)
+    assert i_dirty >= 0, "expected DIRTY in observe stream"
+    assert i_data > i_dirty, "expected DATA after DIRTY"
+    assert g.get("b") == 6
+
+
+def test_snapshot_json_wire_round_trip_with_mount() -> None:
+    """Serialize snapshot to JSON text, parse back, and restore with mounted subgraph."""
+    root = Graph("app")
+    child = Graph("sub")
+    child.add("x", state(42, meta={"tag": "hi"}))
+    root.mount("sub", child)
+    snap_json = root.to_json()
+    parsed = json.loads(snap_json)
+
+    def build(g: Graph) -> None:
+        ch = Graph("sub")
+        ch.add("x", state(0, meta={"tag": ""}))
+        g.mount("sub", ch)
+
+    restored = Graph.from_snapshot(parsed, build=build)
+    assert restored.name == "app"
+    assert restored.get("sub::x") == 42
+    meta_path = f"x{PATH_SEP}{GRAPH_META_SEGMENT}{PATH_SEP}tag"
+    assert restored.get(f"sub::{meta_path}") == "hi"
+
+
+def test_signal_reaches_sibling_mounts() -> None:
+    """Signal from root graph reaches nodes in two sibling mounted subgraphs."""
+    root = Graph("root")
+    c1 = Graph("c1")
+    c2 = Graph("c2")
+    n1 = state(0)
+    n2 = state(0)
+    c1.add("n1", n1)
+    c2.add("n2", n2)
+    root.mount("m1", c1)
+    root.mount("m2", c2)
+    pauses: list[str] = []
+    n1.subscribe(lambda msgs: pauses.extend("n1" for m in msgs if m[0] is MessageType.PAUSE))
+    n2.subscribe(lambda msgs: pauses.extend("n2" for m in msgs if m[0] is MessageType.PAUSE))
+    root.signal([(MessageType.PAUSE, "k")])
+    assert sorted(pauses) == ["n1", "n2"]

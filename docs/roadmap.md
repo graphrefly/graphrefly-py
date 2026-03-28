@@ -129,14 +129,14 @@ Built-in ABAC at the node level. Replaces external authz libraries (e.g. CASL) �
 
 ### 1.6 — Tests
 
-- [ ] Graph add/remove/connect/disconnect
-- [ ] Mount and namespace resolution
-- [ ] describe() output validation
-- [ ] observe() message stream tests
-- [ ] Snapshot round-trip tests
+- [x] Graph add/remove/connect/disconnect (`tests/test_graph.py`)
+- [x] Mount and namespace resolution (`tests/test_graph.py`)
+- [x] describe() output validation (`tests/test_graph.py` — shape + `test_describe_includes_*`)
+- [x] observe() message stream tests (`tests/test_graph.py` — single, graph-wide, mount prefix)
+- [x] Snapshot round-trip tests (`tests/test_graph.py` — `from_snapshot`, `restore`, JSON identity)
 - [x] Guard enforcement: allowed/denied writes, signals, observe filtering (`tests/test_guard.py`)
 - [x] Policy builder: allow/deny precedence, wildcard, composed policies
-- [ ] Actor attribution: mutation records, actor propagation through subgraphs
+- [x] Actor attribution: `Graph.set` + qualified mount paths (`tests/test_graph.py`); direct `down` (`tests/test_guard.py`)
 - [x] Scoped describe: filtered output matches guard permissions
 - [x] GuardDenied exception: correct actor/node/action in diagnostics
 
