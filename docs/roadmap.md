@@ -101,10 +101,10 @@
 
 ### 1.4 — Lifecycle & persistence
 
-- [ ] `graph.signal(messages)` — broadcast to all nodes
-- [ ] `graph.destroy()` — TEARDOWN all
-- [ ] `graph.snapshot()` / `graph.restore(data)` / `Graph.from_snapshot(data)`
-- [ ] `graph.to_json()` — deterministic serialization
+- [x] `graph.signal(messages)` — broadcast to all nodes
+- [x] `graph.destroy()` — TEARDOWN all
+- [x] `graph.snapshot()` / `graph.restore(data)` / `Graph.from_snapshot(data)`
+- [x] `graph.to_json()` — deterministic serialization
 
 ### 1.5 — Actor & Guard (access control)
 
@@ -242,13 +242,19 @@ Each returns a `Graph` — uniform introspection, lifecycle, persistence.
 - [ ] Django integration
 - [ ] asyncio / trio Runner protocol
 
-### 5.2 — Adapters
+### 5.2 — ORM Adapters
+
+- [ ] SQLAlchemy ORM integration
+- [ ] Django ORM integration
+- [ ] Tortoise ORM integration
+
+### 5.3 — Adapters
 
 - [ ] `from_http`, `from_websocket` / `to_websocket`
 - [ ] `from_webhook`, `to_sse`
 - [ ] `from_mcp` (Model Context Protocol)
 
-### 5.3 — LLM tool integration
+### 5.4 — LLM tool integration
 
 - [ ] `knobs_as_tools(graph, actor=)` → OpenAI/MCP tool schemas from scoped describe()
 - [ ] `gauges_as_context(graph, actor=)` → formatted gauge values for system prompts

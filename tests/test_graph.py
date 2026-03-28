@@ -2,9 +2,20 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from graphrefly import GRAPH_META_SEGMENT, PATH_SEP, Graph, MessageType, node
+from graphrefly import (
+    GRAPH_META_SEGMENT,
+    GRAPH_SNAPSHOT_VERSION,
+    PATH_SEP,
+    Graph,
+    MessageType,
+    derived,
+    node,
+    state,
+)
 
 
 def test_graph_add_get_node_set() -> None:
@@ -459,3 +470,187 @@ def test_observe_single_vs_all() -> None:
     b.down([(MessageType.DATA, 3)])
     unsub_all()
     assert ("b", MessageType.DATA) in all_rows
+
+
+def test_destroy_teardowns_and_clears_registry() -> None:
+    g = Graph("g")
+    a = node(initial=0)
+    seen: list = []
+    g.add("a", a)
+    unsub = a.subscribe(lambda msgs: seen.extend(m[0] for m in msgs))
+    g.destroy()
+    unsub()
+    assert MessageType.TEARDOWN in seen
+    with pytest.raises(KeyError):
+        g.node("a")
+
+
+def test_destroy_recurses_into_mounts() -> None:
+    root = Graph("root")
+    child = Graph("child")
+    a = node(initial=0)
+    flat: list = []
+    child.add("a", a)
+    root.mount("sub", child)
+    unsub = a.subscribe(lambda msgs: flat.extend(m[0] for m in msgs))
+    root.destroy()
+    unsub()
+    assert MessageType.TEARDOWN in flat
+    with pytest.raises(KeyError):
+        child.node("a")
+
+
+def test_snapshot_envelope_and_sorted_nodes() -> None:
+    g = Graph("g")
+    g.add("z", state(1))
+    g.add("a", state(2))
+    s = g.snapshot()
+    assert s["version"] == GRAPH_SNAPSHOT_VERSION
+    assert list(s["nodes"]) == ["a", "z"]
+
+
+def test_to_json_is_deterministic() -> None:
+    g = Graph("g")
+    g.add("b", state(2))
+    g.add("a", state(1))
+    j1 = g.to_json()
+    j2 = g.to_json()
+    assert j1 == j2
+    parsed = json.loads(j1)
+    assert list(parsed["nodes"]) == ["a", "b"]
+
+
+def test_restore_applies_values() -> None:
+    g = Graph("g")
+    g.add("x", state(10))
+    snap = g.snapshot()
+    g.set("x", 99)
+    g.restore(snap)
+    assert g.get("x") == 10
+
+
+def test_restore_rejects_snapshot_when_nodes_not_dict() -> None:
+    g = Graph("g")
+    bad = {
+        "version": GRAPH_SNAPSHOT_VERSION,
+        "name": "g",
+        "nodes": [],
+        "edges": [],
+        "subgraphs": [],
+    }
+    with pytest.raises(TypeError, match="nodes"):
+        g.restore(bad)
+
+
+def test_from_snapshot_round_trip_flat_state() -> None:
+    g = Graph("app")
+    g.add("n", state(42, meta={"tag": "x"}))
+    s = g.snapshot()
+    g2 = Graph.from_snapshot(s)
+    assert g2.name == "app"
+    assert g2.get("n") == 42
+    meta_p = f"n{PATH_SEP}{GRAPH_META_SEGMENT}{PATH_SEP}tag"
+    assert g2.get(meta_p) == "x"
+
+
+def test_from_snapshot_round_trip_with_mount() -> None:
+    root = Graph("root")
+    child = Graph("child")
+    child.add("v", state(7))
+    root.mount("sub", child)
+    s = root.snapshot()
+    r2 = Graph.from_snapshot(s)
+    assert r2.get("sub::v") == 7
+
+
+def test_from_snapshot_rejects_edges() -> None:
+    g = Graph("g")
+    a = state(1)
+    b = derived([a], lambda deps, _: deps[0] * 2)
+    g.add("a", a)
+    g.add("b", b)
+    g.connect("a", "b")
+    snap = g.snapshot()
+    assert snap["edges"]
+    with pytest.raises(ValueError, match="edges"):
+        Graph.from_snapshot(snap)
+
+
+def test_from_snapshot_rejects_non_state_nodes() -> None:
+    snap = {
+        "version": GRAPH_SNAPSHOT_VERSION,
+        "name": "g",
+        "nodes": {
+            "x": {"type": "derived", "status": "settled", "value": 1, "deps": [], "meta": {}}
+        },
+        "edges": [],
+        "subgraphs": [],
+    }
+    with pytest.raises(ValueError, match="state"):
+        Graph.from_snapshot(snap)
+
+
+def test_restore_skips_derived_and_recomputes() -> None:
+    """Restore applies state values; derived recomputes from deps (parity with TS)."""
+    g = Graph("g")
+    a = state(10)
+    b = derived([a], lambda deps, _: deps[0] * 2)
+    g.add("a", a)
+    g.add("b", b)
+    g.connect("a", "b")
+    b.subscribe(lambda _: None)  # activate
+    snap = g.snapshot()
+    g.set("a", 0)
+    assert g.get("b") == 0
+    g.restore(snap)
+    assert g.get("a") == 10
+    assert g.get("b") == 20
+
+
+def test_restore_rejects_name_mismatch() -> None:
+    g = Graph("one")
+    snap = {
+        "version": GRAPH_SNAPSHOT_VERSION,
+        "name": "other",
+        "nodes": {},
+        "edges": [],
+        "subgraphs": [],
+    }
+    with pytest.raises(ValueError, match="other"):
+        g.restore(snap)
+
+
+def test_restore_sets_meta_companion_from_snapshot() -> None:
+    n0 = node(initial=0, meta={"tag": "hi"})
+    g0 = Graph("g")
+    g0.add("n", n0)
+    snap = g0.snapshot()
+    meta_path = f"n{PATH_SEP}{GRAPH_META_SEGMENT}{PATH_SEP}tag"
+
+    n1 = node(initial=0, meta={"tag": ""})
+    g1 = Graph("g")
+    g1.add("n", n1)
+    g1.restore(snap)
+    assert g1.get(meta_path) == "hi"
+
+
+def test_from_snapshot_with_build_restores_derived() -> None:
+    """from_snapshot with build callback can handle graphs with edges (parity with TS)."""
+    a = state(0)
+    g0 = Graph("app")
+    g0.add("a", a)
+    g0.set("a", 7)
+    snap = g0.snapshot()
+
+    def build(g: Graph) -> None:
+        g.add("a", state(0))
+
+    g1 = Graph.from_snapshot(snap, build=build)
+    assert g1.get("a") == 7
+
+
+def test_to_json_has_trailing_newline() -> None:
+    g = Graph("g")
+    g.add("a", state(0))
+    j = g.to_json()
+    assert j.endswith("\n")

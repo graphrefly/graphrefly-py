@@ -2,10 +2,18 @@
 
 from graphrefly.graph.graph import (
     GRAPH_META_SEGMENT,
+    GRAPH_SNAPSHOT_VERSION,
     META_PATH_SEG,
     PATH_SEP,
     Graph,
     GraphObserveSource,
 )
 
-__all__ = ["GRAPH_META_SEGMENT", "Graph", "GraphObserveSource", "META_PATH_SEG", "PATH_SEP"]
+__all__ = [
+    "GRAPH_META_SEGMENT",
+    "GRAPH_SNAPSHOT_VERSION",
+    "Graph",
+    "GraphObserveSource",
+    "META_PATH_SEG",
+    "PATH_SEP",
+]

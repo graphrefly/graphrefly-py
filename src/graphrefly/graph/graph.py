@@ -1,13 +1,16 @@
-"""Graph container — GRAPHREFLY-SPEC §3.1–3.6 (Phase 1.1–1.3)."""
+"""Graph container — GRAPHREFLY-SPEC §3.1–3.8 (Phase 1.1–1.4)."""
 
 from __future__ import annotations
 
+import contextlib
+import json
 import threading
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from graphrefly.core.meta import describe_node
 from graphrefly.core.protocol import Messages, MessageType
+from graphrefly.core.sugar import state
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -23,6 +26,85 @@ GRAPH_META_SEGMENT = "__meta__"
 
 #: Backward-compat alias — prefer :data:`GRAPH_META_SEGMENT`.
 META_PATH_SEG = GRAPH_META_SEGMENT
+
+#: Snapshot envelope version for :meth:`Graph.snapshot` / :meth:`Graph.restore` /
+#: :meth:`Graph.from_snapshot` (GRAPHREFLY-SPEC §3.8).
+GRAPH_SNAPSHOT_VERSION = 1
+
+
+def _parse_snapshot_envelope(data: dict[str, Any]) -> dict[str, Any]:
+    """Validate flat snapshot envelope (``version`` field) and return ``data``."""
+    ver = data.get("version")
+    if ver != GRAPH_SNAPSHOT_VERSION:
+        msg = f"unsupported snapshot version {ver!r} (expected {GRAPH_SNAPSHOT_VERSION})"
+        raise ValueError(msg)
+    for key in ("name", "nodes", "edges", "subgraphs"):
+        if key not in data:
+            msg = f"snapshot missing required key {key!r}"
+            raise ValueError(msg)
+    if not isinstance(data["name"], str):
+        msg = f"snapshot 'name' must be a str, got {type(data['name']).__name__}"
+        raise TypeError(msg)
+    if not isinstance(data["nodes"], dict):
+        msg = f"snapshot 'nodes' must be a dict, got {type(data['nodes']).__name__}"
+        raise TypeError(msg)
+    if not isinstance(data["edges"], list):
+        msg = f"snapshot 'edges' must be a list, got {type(data['edges']).__name__}"
+        raise TypeError(msg)
+    if not isinstance(data["subgraphs"], list):
+        msg = f"snapshot 'subgraphs' must be a list, got {type(data['subgraphs']).__name__}"
+        raise TypeError(msg)
+    return data
+
+
+def _path_has_meta_segment(path: str) -> bool:
+    return GRAPH_META_SEGMENT in path.split(PATH_SEP)
+
+
+def _clear_graph_registry(root: Graph) -> None:
+    """Remove all mounts, nodes, and edges without sending messages (after TEARDOWN)."""
+    with root._locked():
+        mounts = list(root._mounts.items())
+        root._mounts.clear()
+        root._nodes.clear()
+        root._edges.clear()
+    for _mn, ch in mounts:
+        _clear_graph_registry(ch)
+
+
+def _ensure_qualified_mount(root: Graph, qualified: str) -> None:
+    """Create ``mount::...`` chain on ``root`` if missing (``from_snapshot`` helper)."""
+    parts = qualified.split(PATH_SEP)
+    g = root
+    for seg in parts:
+        with g._locked():
+            in_mounts = seg in g._mounts
+            in_nodes = seg in g._nodes
+        if in_nodes:
+            msg = f"snapshot mount path {qualified!r} collides with existing node {seg!r}"
+            raise ValueError(msg)
+        if not in_mounts:
+            g.mount(seg, Graph(seg))
+        with g._locked():
+            g = g._mounts[seg]
+
+
+def _owner_graph_and_local(root: Graph, path: str) -> tuple[Graph, str]:
+    parts = path.split(PATH_SEP)
+    if not parts or any(not p for p in parts):
+        raise ValueError(f"invalid path {path!r}")
+    if _path_has_meta_segment(path):
+        msg = f"expected primary node path without {GRAPH_META_SEGMENT!r} segment, got {path!r}"
+        raise ValueError(msg)
+    *mounts, local = parts
+    g = root
+    for seg in mounts:
+        with g._locked():
+            try:
+                g = g._mounts[seg]
+            except KeyError as e:
+                raise KeyError(f"unknown mount {seg!r} in path {path!r}") from e
+    return g, local
 
 
 class Graph:
@@ -51,6 +133,11 @@ class Graph:
     **Introspection (§3.6):** :meth:`describe` returns Appendix B-shaped JSON;
     :meth:`observe` exposes a live message stream. Meta fields are addressed as
     ``parent::__meta__::<key>`` (nested meta repeats the segment).
+
+    **Lifecycle & persistence (§3.7–3.8):** :meth:`destroy` broadcasts teardown and
+    clears registries; :meth:`snapshot` / :meth:`to_json`, :meth:`restore`, and
+    :meth:`from_snapshot` support deterministic JSON (see method docs for
+    ``from_snapshot`` limits on derived graphs).
     """
 
     __slots__ = ("_edges", "_lock", "_mounts", "_name", "_nodes", "_thread_safe")
@@ -234,6 +321,130 @@ class Graph:
     def signal(self, messages: Messages) -> None:
         """Deliver ``messages`` to every node, meta companions, and mounted subgraphs."""
         _signal_graph(self, messages, set())
+
+    def destroy(self) -> None:
+        """Send ``[[TEARDOWN]]`` to every node (same visitation as :meth:`signal`), then clear
+        this graph's registry and all mounted subgraphs (GRAPHREFLY-SPEC §3.7).
+        """
+        _signal_graph(self, [(MessageType.TEARDOWN,)], set())
+        _clear_graph_registry(self)
+
+    def snapshot(self) -> dict[str, Any]:
+        """Serialize structure and current values to a JSON-friendly dict (§3.8).
+
+        Wraps :meth:`describe` with a version envelope and canonical key ordering so
+        :meth:`to_json` is stable for the same logical state.
+        """
+        body = self.describe()
+        nodes_sorted = dict(sorted(body["nodes"].items()))
+        subgraphs_sorted = sorted(body["subgraphs"])
+        return {
+            "version": GRAPH_SNAPSHOT_VERSION,
+            "name": body["name"],
+            "nodes": nodes_sorted,
+            "edges": body["edges"],
+            "subgraphs": subgraphs_sorted,
+        }
+
+    def to_json(self) -> str:
+        """Deterministic JSON text for the current :meth:`snapshot` (§3.8).
+
+        Returns compact JSON with a trailing newline (git-versionable).
+        Raises :exc:`TypeError` if any node value or meta value is not JSON-serializable.
+        """
+        return (
+            json.dumps(
+                self.snapshot(),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+
+    def restore(self, data: dict[str, Any]) -> None:
+        """Apply ``value`` fields from a prior :meth:`snapshot` onto this graph (§3.8).
+
+        Only ``state`` and ``producer`` entries with a ``value`` key are written;
+        ``derived`` / ``operator`` / ``effect`` are skipped so deps drive recomputation.
+        Unknown paths are silently ignored. Does not add or remove nodes.
+
+        :raises ValueError: If ``data["name"]`` does not match this graph's name.
+        """
+        _parse_snapshot_envelope(data)
+        if data["name"] != self._name:
+            msg = (
+                f'Graph "{self._name}": restore snapshot name '
+                f'"{data["name"]}" does not match this graph'
+            )
+            raise ValueError(msg)
+        for path in sorted(data["nodes"]):
+            spec = data["nodes"][path]
+            if not isinstance(spec, dict) or "value" not in spec:
+                continue
+            ntype = spec.get("type")
+            if ntype in ("derived", "operator", "effect"):
+                continue
+            with contextlib.suppress(KeyError, ValueError):
+                self.set(path, spec["value"])
+
+    @classmethod
+    def from_snapshot(
+        cls,
+        data: dict[str, Any],
+        build: Any | None = None,
+    ) -> Graph:
+        """Build a new graph from :meth:`snapshot` data (§3.8).
+
+        When *build* is provided it is called with the empty graph before
+        :meth:`restore`, letting callers register nodes with compute functions
+        so that ``restore`` can write state values while derived nodes recompute.
+
+        Without *build*, only snapshots whose ``nodes`` are entirely
+        ``type: "state"`` and whose ``edges`` list is empty are supported
+        (dependency functions cannot be serialized).
+
+        For graphs with derived wiring, pass a *build* callback or construct
+        the graph in code and use :meth:`restore` to apply values.
+        """
+        _parse_snapshot_envelope(data)
+        root = cls(data["name"])
+        if build is not None:
+            build(root)
+            root.restore(data)
+            return root
+        if data["edges"]:
+            msg = (
+                "Graph.from_snapshot does not support non-empty edges; node functions "
+                "cannot be reconstructed from JSON. Build the graph in code and use "
+                "graph.restore(snapshot) to apply values, or pass a build callback."
+            )
+            raise ValueError(msg)
+        for q in sorted(data["subgraphs"], key=lambda p: (p.count(PATH_SEP), p)):
+            _ensure_qualified_mount(root, q)
+        for path in sorted(data["nodes"]):
+            if _path_has_meta_segment(path):
+                continue
+            spec = data["nodes"][path]
+            if not isinstance(spec, dict):
+                continue
+            ntype = spec.get("type", "state")
+            if ntype != "state":
+                msg = (
+                    f"Graph.from_snapshot only supports state nodes (got type {ntype!r} "
+                    f"at {path!r})"
+                )
+                raise ValueError(msg)
+            owner, local = _owner_graph_and_local(root, path)
+            meta_plain = spec.get("meta")
+            meta_kw: dict[str, Any] = dict(meta_plain) if isinstance(meta_plain, dict) else {}
+            n = state(spec.get("value"), meta=meta_kw)
+            with owner._locked():
+                if local in owner._nodes or local in owner._mounts:
+                    msg = f"snapshot path {path!r} collides with an existing name"
+                    raise ValueError(msg)
+            owner.add(local, n)
+        return root
 
     def describe(self) -> dict[str, Any]:
         """Static structure snapshot (GRAPHREFLY-SPEC §3.6, Appendix B).

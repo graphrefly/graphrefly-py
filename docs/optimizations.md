@@ -201,6 +201,26 @@ Cross-language: `graphrefly-ts/docs/optimizations.md` §15. **Python (shipped):*
 | **`connect` self-loop** | Both reject `connect(x, x)` before dep validation. |
 | **`signal` / `_collect_observe_targets` ordering** | Both sort local nodes and mounts by name within each graph level. |
 
+### 16. `Graph` Phase 1.4 lifecycle & persistence (`destroy`, `snapshot`, `restore`, `from_snapshot`, `to_json`)
+
+**Aligned:**
+
+| | |
+|--|--|
+| **`destroy()`** | Both: `signal([[TEARDOWN]])` then clear all registries recursively through mounts. |
+| **`snapshot()`** | Both: `{ version: 1, ...describe() }` — flat `version` field, sorted `nodes` keys. |
+| **`restore(data)`** | Both: validate `data.name` matches graph name; skip `derived`/`operator`/`effect` types; silently ignore unknown/failing paths. |
+| **`from_snapshot(data, build?)`** | Both: optional `build` callback registers topology before `restore()` applies values. Without `build`, only all-state zero-edge graphs are supported. |
+| **`to_json()` / `toJSON()`** | Python returns compact JSON **string** with trailing newline. TS returns a plain sorted-key **object** (for `JSON.stringify(graph)`). Language-appropriate. |
+| **`toJSONString()`** | TS only — `JSON.stringify(toJSON()) + "\n"`. Python's `to_json()` serves the same role. |
+
+**Intentional divergence:**
+
+| Topic | Python | TypeScript | Rationale |
+|-------|--------|------------|-----------|
+| `to_json` return type | `to_json()` → `str` (no universal `__json__` hook in Python) | `toJSON()` → plain object (ECMAScript `JSON.stringify` protocol) | Language idiom |
+| `_parse_snapshot_envelope` | Validates `version`, `name`, `nodes`, `edges`, `subgraphs` types | Only validates `data.name` match | Python is stricter; both correct |
+
 ---
 
 ## Summary
@@ -232,6 +252,7 @@ Cross-language: `graphrefly-ts/docs/optimizations.md` §15. **Python (shipped):*
 | `Graph` Phase 1.1 | `thread_safe` + `RLock`; TEARDOWN after unlock on `remove`; `disconnect` vs `_deps` → §C | Registry only; `connect` / `disconnect` errors aligned; see §C |
 | `Graph` Phase 1.2 | Aligned: `::` path separator, mount `remove` + subtree TEARDOWN, qualified paths, `edges()`, signal mounts-first, `resolve` strips leading name, `:` in names OK; see §14 | Same; see §14 |
 | `Graph` Phase 1.3 | `describe`, `observe`, `GRAPH_META_SEGMENT`, `signal`→meta, `describe_kind` on sugar; see §15 | TS: `describe()`, `observe()`, `GRAPH_META_SEGMENT`, `describeKind` on sugar; see graphrefly-ts §15 | `observe()` order: TS full-path `localeCompare` vs Py per-level sort (§15) |
+| `Graph` Phase 1.4 | `destroy`, `snapshot` (flat `version: 1`), `restore` (name check + type filter + silent catch), `from_snapshot(data, build=)`, `to_json()` → str + `\n`; see §16 | `destroy`, `snapshot`, `restore`, `fromSnapshot(data, build?)`, `toJSON()` → object, `toJSONString()` → str + `\n`; see §16 |
 
 ### Open design items (low priority)
 
