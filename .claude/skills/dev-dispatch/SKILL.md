@@ -22,6 +22,7 @@ Load context and plan the implementation in a single pass. **Parallelize all rea
 Read in parallel:
 
 - **`docs/GRAPHREFLY-SPEC.md`** — primary behavioral authority; read sections relevant to the task
+- **`docs/optimizations.md`** — built-in optimizations, cross-language notes, and **open design decisions** (read when touching protocol, batch, node lifecycle, or parity with graphrefly-ts)
 - **`docs/test-guidance.md`** — checklists for the layer you touch (protocol, node, graph, operators)
 - **`docs/roadmap.md`** — phase alignment and acceptance criteria (read for new features or scope questions)
 - **`archive/docs/SESSION-graphrefly-spec-design.md`** — design lineage, simplifications vs callbag-recharge, scenario validation
@@ -67,6 +68,8 @@ Prioritize (in order):
 
 Do NOT treat backward compatibility as a primary constraint pre-1.0 unless the user says otherwise.
 
+**Cross-language decision log:** If Phase 1–2 surface an **architectural or product-level** question (protocol semantics, batch/node invariants, parity with TypeScript, or anything that needs a spec/product call), **jot it down** in **`docs/optimizations.md`** — use **Open design decisions** or **Cross-language implementation notes** as appropriate. If the sibling repo **`graphrefly-ts`** is available (e.g. `../graphrefly-ts` next to this checkout), add a **matching** entry to **`graphrefly-ts/docs/optimizations.md`** so both implementations stay visible. If the sibling tree is not in the workspace, tell the user to mirror the note there.
+
 **Wait for user approval before proceeding.**
 
 ### Light mode — Skip unless escalation needed
@@ -104,5 +107,7 @@ After user approves (full mode) or after Phase 1 (light mode, no escalation):
    ```
 
 4. Fix any failures
+
+If implementation leaves an **open architectural decision** (deferred behavior, parity caveat, or “needs spec” item), update **`docs/optimizations.md`** here and mirror to **`graphrefly-ts/docs/optimizations.md`** when that repo is available.
 
 When done, briefly list files changed and new exports. Suggest running **`/qa`** for adversarial review and final checks.

@@ -13,6 +13,146 @@ from graphrefly.core import (
 )
 
 
+def test_node_factory_overloads_and_get_status() -> None:
+    """``node(deps?, fn?, opts?)`` and ``.get()`` / ``.status`` on source and derived."""
+    src = node(initial=7)
+    assert src.get() == 7
+    assert src.status == "settled"
+
+    d = node([src], lambda deps, _: deps[0] * 2)
+    assert d.get() is None
+    unsub = d.subscribe(lambda _m: None)
+    assert d.get() == 14
+    assert d.status in ("settled", "resolved")
+    src.down([(MessageType.DATA, 10)])
+    assert d.get() == 20
+    unsub()
+
+
+def test_derived_compute_not_run_until_subscribe() -> None:
+    """Upstream is not wired until the first ``subscribe`` (lazy connect)."""
+    a = node(initial=0)
+    runs = 0
+
+    def fn(deps: list, _a: object) -> int:
+        nonlocal runs
+        runs += 1
+        return deps[0] + 1
+
+    b = node([a], fn)
+    assert runs == 0
+    a.down([(MessageType.DIRTY,), (MessageType.DATA, 5)])
+    assert runs == 0
+    assert b.get() is None
+    unsub = b.subscribe(lambda _m: None)
+    assert runs >= 1
+    assert b.get() == 6
+    unsub()
+
+
+def test_two_sinks_both_receive() -> None:
+    """Multiple subscribers: output path uses a set of sinks; each receives."""
+    s = node(initial=1)
+    a: list[MessageType] = []
+    b: list[MessageType] = []
+
+    def sink_a(msgs: list) -> None:
+        for m in msgs:
+            a.append(m[0])
+
+    def sink_b(msgs: list) -> None:
+        for m in msgs:
+            b.append(m[0])
+
+    ua = s.subscribe(sink_a)
+    ub = s.subscribe(sink_b)
+    s.down([(MessageType.DIRTY,), (MessageType.DATA, 2)])
+    ua()
+    ub()
+
+    assert a == [MessageType.DIRTY, MessageType.DATA]
+    assert b == [MessageType.DIRTY, MessageType.DATA]
+
+
+def test_two_phase_dirty_before_data_on_derived() -> None:
+    """Phase 1 DIRTY, then phase 2 DATA (may be one or two sink batches)."""
+    src = node(initial=0)
+    derived = node([src], lambda deps, _: deps[0] + 1)
+    batches: list[list[MessageType]] = []
+
+    def sink(msgs: list) -> None:
+        batches.append([m[0] for m in msgs])
+
+    unsub = derived.subscribe(sink)
+    src.down([(MessageType.DIRTY,), (MessageType.DATA, 3)])
+    unsub()
+
+    flat = [t for batch in batches for t in batch]
+    assert flat[0] == MessageType.DIRTY
+    assert MessageType.DATA in flat
+    assert flat.index(MessageType.DIRTY) < flat.index(MessageType.DATA)
+
+
+def test_node_unsubscribe_disconnects_upstream() -> None:
+    """``Node.unsubscribe()`` drops upstream wiring; updates no longer propagate."""
+    src = node(initial=0)
+    seen: list[MessageType] = []
+
+    def sink(msgs: list) -> None:
+        for m in msgs:
+            seen.append(m[0])
+
+    derived = node([src], lambda deps, _: deps[0] + 1)
+    derived.subscribe(sink)
+    src.down([(MessageType.DATA, 1)])
+    assert MessageType.DATA in seen
+    seen.clear()
+    derived.unsubscribe()
+    src.down([(MessageType.DATA, 99)])
+    assert seen == []
+
+
+def test_up_forwards_without_error_when_subscribed() -> None:
+    """``up()`` forwards to dependencies (no-op on sources); must not raise."""
+    src = node(initial=0)
+    mid = node([src], lambda deps, _: deps[0])
+    unsub = mid.subscribe(lambda _m: None)
+    mid.up([(MessageType.RESUME,)])
+    unsub()
+
+
+def test_reset_on_teardown_clears_cached_value() -> None:
+    n = node(initial=42, reset_on_teardown=True)
+    unsub = n.subscribe(lambda _m: None)
+    assert n.get() == 42
+    n.down([(MessageType.TEARDOWN,)])
+    assert n.get() is None
+    unsub()
+
+
+def test_error_payload_is_exception_instance() -> None:
+    source = node(initial=0)
+    err = RuntimeError("boom")
+
+    def _fail(_d: list, _a: object) -> None:
+        raise err
+
+    broken = node([source], _fail)
+    payloads: list[object] = []
+
+    def sink(msgs: list) -> None:
+        for m in msgs:
+            if m[0] == MessageType.ERROR:
+                payloads.append(m[1])
+
+    unsub = broken.subscribe(sink)
+    source.down([(MessageType.DATA, 1)])
+    unsub()
+
+    assert len(payloads) == 1
+    assert payloads[0] is err
+
+
 def test_source_node_emits_to_subscribers() -> None:
     s = node(initial=0)
     seen: list[list[MessageType]] = []
@@ -250,6 +390,34 @@ def test_meta_standalone_without_parent_subscribe() -> None:
     n.meta["tag"].down([(MessageType.DATA, "b")])
     assert n.meta["tag"].get() == "b"
     assert meta_snapshot(n) == {"tag": "b"}
+
+
+def test_teardown_after_complete_runs_lifecycle_and_reaches_sinks_b3() -> None:
+    """TEARDOWN after COMPLETE runs lifecycle and reaches sinks (decision B3)."""
+    src = node(initial=1)
+    n = node([src], lambda deps, _: deps[0], meta={"m": 0})
+    meta_saw_teardown = False
+
+    def meta_sink(msgs: list) -> None:
+        nonlocal meta_saw_teardown
+        if any(m[0] == MessageType.TEARDOWN for m in msgs):
+            meta_saw_teardown = True
+
+    sink_types: list[MessageType] = []
+
+    def parent_sink(msgs: list) -> None:
+        for m in msgs:
+            sink_types.append(m[0])
+
+    unsub_meta = n.meta["m"].subscribe(meta_sink)
+    unsub = n.subscribe(parent_sink)
+    src.down([(MessageType.COMPLETE,)])
+    assert n.status == "completed"
+    n.down([(MessageType.TEARDOWN,)])
+    assert meta_saw_teardown is True
+    assert sum(1 for t in sink_types if t == MessageType.TEARDOWN) >= 1
+    unsub()
+    unsub_meta()
 
 
 def test_batch_discards_deferred_on_outer_exception() -> None:

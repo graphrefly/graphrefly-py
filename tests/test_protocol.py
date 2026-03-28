@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+import pytest
+
 from graphrefly.core.protocol import (
     MessageType,
     batch,
     dispatch_messages,
+    emit_with_batch,
     is_batching,
 )
 
@@ -133,6 +136,26 @@ def test_terminal_flushes_deferred_phase2_first() -> None:
         assert log == ["DATA", "COMPLETE"], "deferred DATA must flush before COMPLETE in one send"
 
     assert log == ["DATA", "COMPLETE"]
+
+
+def test_nested_batch_throw_during_drain_does_not_clear_outer_queue_a4() -> None:
+    """Nested ``batch()`` error while draining must not wipe the global phase-2 queue."""
+    log: list[str] = []
+
+    def deferred_from_outer_data0(
+        _msgs: list[tuple[MessageType, object] | tuple[MessageType]],
+    ) -> None:
+        emit_with_batch(
+            lambda _m: log.append("deferred-from-callback"),
+            [(MessageType.DATA, 1)],
+        )
+        with batch():
+            raise RuntimeError("inner")
+
+    with pytest.raises(RuntimeError, match="inner"), batch():
+        emit_with_batch(deferred_from_outer_data0, [(MessageType.DATA, 0)])
+
+    assert log == ["deferred-from-callback"]
 
 
 def test_is_batching_true_while_draining_deferred() -> None:

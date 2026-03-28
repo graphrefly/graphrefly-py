@@ -37,6 +37,10 @@ Aligned with TS: `SubscribeHints(single_dep=True)` and sole-subscriber detection
 
 While subscribing upstream deps, `run_fn` is suppressed for re-entrant dep emissions until **all** deps are wired, then one initial `run_fn` runs. Prevents `dep.get()` being `None` mid-connect (see cross-language §6).
 
+### 7. Per-subgraph write locks (roadmap 0.4)
+
+Union-find over node identity merges components when nodes list dependencies at construction (`union_nodes(self, dep)` and meta companions). A per-component `RLock` serializes `down`, recompute (`_run_fn`), and subscribe/unsubscribe topology changes. `get()` uses a **per-node** `threading.Lock` (`_cache_lock`) for all reads and writes of `_cached`, so the cached value is thread-safe under free-threaded Python (nogil) without holding the subgraph write lock (callers can `get()` from any thread without participating in graph write serialization). Weak references remove GC’d nodes from registry maps; a reverse-children map (`_children`) keeps GC cleanup O(1) per node (no linear scan of `_parent`). `lock_for` retries up to `_MAX_LOCK_RETRIES` (100) if concurrent unions invalidate the acquired lock, then raises `RuntimeError`. `defer_set` / `defer_down` queue cross-subgraph mutations until the current `acquire_subgraph_write_lock_with_defer` exits; errors use `ExceptionGroup` when multiple callbacks fail. Deferred batch phase-2 work re-acquires the emitter’s lock via `emit_with_batch(..., subgraph_lock=node)` so `batch()` drains do not deliver DATA/RESOLVED without serialization.
+
 ---
 
 ## Cross-language implementation notes
@@ -99,7 +103,14 @@ Both ports treat “`fn` returned a callable” as a **cleanup** (TS: `typeof ou
 | **TypeScript** | In the `batchDepth === 0 && threw` branch: run `pendingPhase2.length = 0` (or equivalent) **only if** `!flushInProgress`. |
 | **Python** | Same invariant: never clear the process-global phase-2 queue solely because a nested `batch` failed while the outer drain is active. Verify `batch()` / `emit_with_batch` teardown matches. |
 
-### 8. `TEARDOWN` after terminal (`COMPLETE` / `ERROR`) — full pass-through (**decision B3**)
+### 8. Concurrency model (**Python vs TypeScript**)
+
+| | |
+|--|--|
+| **Python** | Per-subgraph `RLock` + union-find + TLS defer queue; thread-local `batch()` state (spec §6.1); per-node `_cache_lock` for `get()` / `_cached`. |
+| **TypeScript** | Single-threaded assumption; no subgraph lock layer in core today. |
+
+### 9. `TEARDOWN` after terminal (`COMPLETE` / `ERROR`) — full pass-through (**decision B3**)
 
 **Decision:** The terminal gate on `down()` **does not apply** to **`TEARDOWN`**. For a non-resubscribable node that has already reached `COMPLETE` or `ERROR`, a `down` payload that includes `TEARDOWN` must still:
 
@@ -112,7 +123,7 @@ Both ports treat “`fn` returned a callable” as a **cleanup** (TS: `typeof ou
 | **TypeScript** | If `terminal && !resubscribable`, skip the early return when the payload contains `TEARDOWN`; handle lifecycle + emit teardown to sinks. |
 | **Python** | Mirror in `NodeImpl.down` (or equivalent): teardown is not swallowed after terminal. |
 
-### 9. Batch drain: partial apply before rethrow (**decision C1**)
+### 10. Batch drain: partial apply before rethrow (**decision C1**)
 
 **Decision:** Treat **best-effort drain** as the specified behavior: run **all** queued phase-2 callbacks with **per-callback** error isolation; surface the **first** error only **after** the queue is quiescent. Callers may observe a **partially updated** graph — this is **intentional** (prefer that to orphaned deferrals or fail-fast leaving dirty state). **Document** in module docstrings / spec prose; optional future knobs (`fail_fast`, `AggregateError`) are not required for parity.
 
@@ -128,7 +139,8 @@ Both ports treat “`fn` returned a callable” as a **cleanup** (TS: `typeof ou
 | Topic | Python | TypeScript |
 |-------|--------|------------|
 | Message tags | `StrEnum` | `Symbol` |
-| Batch emit API | `emit_with_batch` (+ `dispatch_messages` alias) | `emitWithBatch` |
+| Subgraph write locks | Union-find + `RLock`; `defer_set` / `defer_down`; per-node `_cache_lock` for `get()`/`_cached`; bounded retry (`_MAX_LOCK_RETRIES=100`) | N/A (single-threaded) |
+| Batch emit API | `emit_with_batch` (+ `dispatch_messages` alias); optional `subgraph_lock` for node emissions | `emitWithBatch` |
 | Defer phase-2 | `defer_when`: `depth` vs `batching` | depth **or** draining (aligned with Py `batching`) |
 | `isBatching` / `is_batching` | depth **or** draining | depth **or** draining |
 | Batch drain resilience | per-emission try/catch, `ExceptionGroup` | per-emission try/catch, first error re-thrown |
@@ -138,6 +150,10 @@ Both ports treat “`fn` returned a callable” as a **cleanup** (TS: `typeof ou
 | Source `up` / `unsubscribe` | no-op | omitted |
 | `fn` returns callable | cleanup | cleanup |
 | Connect re-entrancy | `_connecting` | `connecting` (aligned) |
+| Sink snapshot during delivery | TBD | `[...sinks]` snapshot before iterating |
+| Drain cycle detection | TBD | `MAX_DRAIN_ITERATIONS = 1000` cap |
+| TEARDOWN → `"disconnected"` status | TBD | `statusAfterMessage` maps TEARDOWN |
+| DIRTY→COMPLETE settlement | TBD | `runFn()` when no dirty deps remain but node is dirty |
 
 ---
 

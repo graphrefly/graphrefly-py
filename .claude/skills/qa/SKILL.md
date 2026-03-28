@@ -59,6 +59,8 @@ Group:
 1. **Needs Decision** — architecture-affecting or ambiguous
 2. **Auto-applicable** — clear fixes matching existing patterns
 
+**Cross-language decision log:** For **Needs Decision** items that are architectural or affect Python/TypeScript parity, note them in **`docs/optimizations.md`** (e.g. **Open design decisions** or **Cross-language implementation notes**). If **`graphrefly-ts`** is available alongside this repo, add the same bullet to **`graphrefly-ts/docs/optimizations.md`**. If not available, call out mirroring for the user.
+
 **Wait for user decisions on group 1. Group 2 can be applied when the user approves the batch.**
 
 ---
@@ -89,6 +91,7 @@ If a failure implies a design question, **HALT** and ask the user before paperin
 Update documentation as appropriate:
 
 - **`docs/GRAPHREFLY-SPEC.md`** — only if the user-owned spec change is part of this task (usually avoid; spec is shared with graphrefly-ts)
+- **`docs/optimizations.md`** — when this review records **open architectural decisions** or cross-language parity notes; mirror substantive entries to **`graphrefly-ts/docs/optimizations.md`** if that repo is in the workspace
 - **`docs/roadmap.md`** — mark items done, add items if scope changed
 - **`docs/test-guidance.md`** — if new test patterns or file conventions were established
 - **`docs/docs-guidance.md`** — if documentation conventions changed

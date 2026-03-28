@@ -23,6 +23,14 @@ from graphrefly.core.protocol import (
     is_phase2_message,
     partition_for_batch,
 )
+from graphrefly.core.subgraph_locks import (
+    acquire_subgraph_write_lock,
+    acquire_subgraph_write_lock_with_defer,
+    defer_down,
+    defer_set,
+    ensure_registered,
+    union_nodes,
+)
 
 __all__ = [
     "DeferWhen",
@@ -36,12 +44,18 @@ __all__ = [
     "NodeImpl",
     "NodeStatus",
     "SubscribeHints",
+    "acquire_subgraph_write_lock",
+    "acquire_subgraph_write_lock_with_defer",
     "batch",
+    "defer_down",
+    "defer_set",
     "dispatch_messages",
     "emit_with_batch",
+    "ensure_registered",
     "is_batching",
     "is_phase2_message",
     "meta_snapshot",
     "node",
     "partition_for_batch",
+    "union_nodes",
 ]

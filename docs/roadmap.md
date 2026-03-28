@@ -28,24 +28,24 @@
 
 ### 0.3 — Node primitive
 
-- [ ] `node(deps?, fn?, opts?)` — single primitive
-- [ ] Node interface: `.get()`, `.status`, `.down()`, `.up()`, `.unsubscribe()`
-- [ ] Output slot: None → single sink → set (optimization)
-- [ ] Two-phase push: DIRTY propagation (phase 1), DATA/RESOLVED propagation (phase 2)
-- [ ] Diamond resolution via bitmask (unlimited-precision Python int)
-- [ ] `equals` option for RESOLVED check
-- [ ] Lazy connect/disconnect on subscribe/unsubscribe
-- [ ] Error handling: fn throws → `[[ERROR, err]]` downstream
-- [ ] `resubscribable` and `reset_on_teardown` options
+- [x] `node(deps?, fn?, opts?)` — single primitive
+- [x] Node interface: `.get()`, `.status`, `.down()`, `.up()`, `.unsubscribe()`
+- [x] Output slot: None → single sink → set (optimization)
+- [x] Two-phase push: DIRTY propagation (phase 1), DATA/RESOLVED propagation (phase 2)
+- [x] Diamond resolution via bitmask (unlimited-precision Python int)
+- [x] `equals` option for RESOLVED check
+- [x] Lazy connect/disconnect on subscribe/unsubscribe
+- [x] Error handling: fn throws → `[[ERROR, err]]` downstream
+- [x] `resubscribable` and `reset_on_teardown` options
 
 ### 0.4 — Concurrency
 
-- [ ] Lock-free `get()` — any thread, any time
-- [ ] Per-subgraph write locks via Union-Find (port from callbag-recharge-py)
-- [ ] Weak-ref registry auto-cleanup
-- [ ] `defer_set()` for safe cross-subgraph writes
-- [ ] Thread-local batch isolation
-- [ ] Free-threaded Python 3.14 compatibility
+- [x] Thread-safe `get()` — any thread, any time (`_cache_lock` on `_cached`; independent of subgraph `RLock`)
+- [x] Per-subgraph write locks via Union-Find (port from callbag-recharge-py)
+- [x] Weak-ref registry auto-cleanup
+- [x] `defer_set()` / `defer_down()` for safe cross-subgraph writes
+- [x] Thread-local batch isolation
+- [x] Free-threaded Python 3.14 compatibility (suite passes; optional `test_free_threaded_build_detected` when GIL disabled)
 
 ### 0.5 — Meta (companion stores)
 
@@ -65,13 +65,15 @@
 
 ### 0.7 — Tests & validation
 
-- [ ] Core node tests (state, derived, effect patterns)
-- [ ] Diamond resolution tests
-- [ ] Lifecycle signal tests (INVALIDATE, PAUSE, RESUME, TEARDOWN)
-- [ ] Batch tests
-- [ ] Meta companion store tests
-- [ ] Concurrency stress tests (port from callbag-recharge-py)
-- [ ] Benchmarks vs callbag-recharge-py (regression guard)
+- [x] Core node tests — source/initial, derived, wire (no-fn deps), producer-style fn, errors, resubscribe, two-phase ordering (`tests/test_core.py`)
+- [x] Diamond resolution tests — classic diamond + many-deps bitmask stress
+- [x] Batch tests — `tests/test_protocol.py` (deferral, nesting, terminals) + core batch exception path
+- [x] Meta companion store tests — `test_meta_*`, `meta_snapshot`, TEARDOWN to meta (B3)
+- [ ] Lifecycle signal tests — **covered today:** TEARDOWN (incl. reset-on-teardown), COMPLETE (incl. `complete_when_deps_complete`), ERROR, unknown forward; **still add:** INVALIDATE, PAUSE, RESUME through multi-node `node` chains (see `GRAPHREFLY-SPEC.md` lifecycle vocabulary and `node.up` examples)
+- [x] Concurrency stress tests — `tests/test_concurrency.py` (get under write, independent subgraphs, merged serialization, defer, batch + lock)
+- [ ] Benchmarks vs callbag-recharge-py — regression guard / perf baseline; not started
+
+**Deferred with 0.6 sugar:** named `state` / `derived` / `effect` / `pipe` constructor tests (current coverage uses `node()` directly).
 
 ---
 
