@@ -41,6 +41,8 @@ def meta_snapshot(node: _MetaNode) -> dict[str, Any]:
 
 def _infer_describe_type(n: NodeImpl[Any]) -> str:
     """Best-effort ``type`` for GRAPHREFLY-SPEC describe node shape (§3.6, Appendix B)."""
+    if n._describe_kind is not None:
+        return n._describe_kind
     if not n._has_deps:
         return "state" if n._fn is None else "producer"
     if n._fn is None:
@@ -57,10 +59,9 @@ def describe_node(n: NodeImpl[Any]) -> dict[str, Any]:
     field uses :func:`meta_snapshot` (plain values), matching the spec's describe
     examples.
 
-    ``type`` is inferred from configuration and last-run hints (``_manual_emit_used``).
-    Nodes whose function returns ``None`` without using ``down()``/``emit()`` may still
-    be reported as ``"derived"`` until sugar constructors supply explicit kinds
-    (roadmap 0.6).
+    ``type`` is inferred from factory configuration, optional ``describe_kind`` in node
+    options, and the last ``_manual_emit_used`` hint (operator vs derived). Sugar
+    constructors (``effect``, ``producer``, ``derived``) set ``describe_kind``.
     """
     out: dict[str, Any] = {
         "type": _infer_describe_type(n),

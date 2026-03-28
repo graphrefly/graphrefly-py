@@ -1,10 +1,10 @@
-"""Graph container — roadmap Phase 1.1–1.2 (GRAPHREFLY-SPEC §3.1–3.5)."""
+"""Graph container — roadmap Phase 1.1–1.3 (GRAPHREFLY-SPEC §3.1–3.6)."""
 
 from __future__ import annotations
 
 import pytest
 
-from graphrefly import Graph, MessageType, node
+from graphrefly import GRAPH_META_SEGMENT, PATH_SEP, Graph, MessageType, node
 
 
 def test_graph_add_get_node_set() -> None:
@@ -351,3 +351,111 @@ def test_signal_visits_mounts_before_local_nodes() -> None:
     root_node.subscribe(lambda _msgs: order.append("root"))
     root.signal([(MessageType.PAUSE,)])
     assert order == ["child", "root"]
+
+
+def test_reserved_meta_segment_rejected_for_add_and_mount() -> None:
+    g = Graph("g")
+    with pytest.raises(ValueError, match="reserved"):
+        g.add(GRAPH_META_SEGMENT, node(initial=0))
+    with pytest.raises(ValueError, match="reserved"):
+        g.mount(GRAPH_META_SEGMENT, Graph("c"))
+
+
+def test_resolve_meta_path_requires_key_after_segment() -> None:
+    g = Graph("g")
+    n = node(initial=1, meta={"tag": 0})
+    g.add("a", n)
+    incomplete = f"a{PATH_SEP}{GRAPH_META_SEGMENT}"
+    with pytest.raises(ValueError, match="meta path requires"):
+        g.resolve(incomplete)
+
+
+def test_resolve_meta_path_and_get_set() -> None:
+    g = Graph("g")
+    n = node(initial=1, meta={"tag": "hello"})
+    g.add("a", n)
+    meta_path = f"a{PATH_SEP}{GRAPH_META_SEGMENT}{PATH_SEP}tag"
+    assert g.node(meta_path) is n.meta["tag"]
+    assert g.get(meta_path) == "hello"
+    g.set(meta_path, "bye")
+    assert g.get(meta_path) == "bye"
+
+
+def test_connect_rejects_meta_path() -> None:
+    g = Graph("g")
+    a = node(initial=1, meta={"m": 0})
+    b = node([a], lambda deps, _: deps[0])
+    g.add("a", a)
+    g.add("b", b)
+    mp = f"a{PATH_SEP}{GRAPH_META_SEGMENT}{PATH_SEP}m"
+    with pytest.raises(ValueError, match="meta paths"):
+        g.connect(mp, "b")
+
+
+def test_signal_reaches_meta_companions() -> None:
+    g = Graph("g")
+    n = node(initial=0, meta={"m": 0})
+    g.add("a", n)
+    meta_path = f"a{PATH_SEP}{GRAPH_META_SEGMENT}{PATH_SEP}m"
+    seen: list = []
+    g.node(meta_path).subscribe(lambda msgs: seen.extend(m[0] for m in msgs))
+    g.signal([(MessageType.PAUSE,)])
+    assert MessageType.PAUSE in seen
+
+
+def test_signal_teardown_not_duplicated_to_meta() -> None:
+    g = Graph("g")
+    n = node(initial=0, meta={"m": 0})
+    g.add("a", n)
+    meta_path = f"a{PATH_SEP}{GRAPH_META_SEGMENT}{PATH_SEP}m"
+    teardowns = 0
+
+    def sink(msgs: object) -> None:
+        nonlocal teardowns
+        for m in msgs:
+            if m[0] == MessageType.TEARDOWN:
+                teardowns += 1
+
+    g.node(meta_path).subscribe(sink)
+    g.signal([(MessageType.TEARDOWN,)])
+    assert teardowns == 1
+
+
+def test_describe_includes_nodes_edges_subgraphs_and_meta_paths() -> None:
+    parent = Graph("parent")
+    child = Graph("child")
+    a = node(initial=1, meta={"desc": "x"})
+    b = node([a], lambda deps, _: deps[0] * 2)
+    parent.add("a", a)
+    parent.add("b", b)
+    parent.connect("a", "b")
+    child.add("x", node(initial=0))
+    parent.mount("sub", child)
+    d = parent.describe()
+    assert d["name"] == "parent"
+    assert "a" in d["nodes"] and "b" in d["nodes"]
+    meta_k = f"a{PATH_SEP}{GRAPH_META_SEGMENT}{PATH_SEP}desc"
+    assert meta_k in d["nodes"]
+    assert d["nodes"]["b"]["deps"] == ["a"]
+    assert {"from": "a", "to": "b"} in d["edges"]
+    assert "sub" in d["subgraphs"]
+    assert f"sub{PATH_SEP}x" in d["nodes"]
+
+
+def test_observe_single_vs_all() -> None:
+    g = Graph("g")
+    a = node(initial=0)
+    b = node(initial=0)
+    g.add("a", a)
+    g.add("b", b)
+    single: list = []
+    unsub = g.observe("a").subscribe(lambda msgs: single.extend(msgs))
+    a.down([(MessageType.DATA, 7)])
+    unsub()
+    assert any(m[0] == MessageType.DATA for m in single)
+
+    all_rows: list[tuple[str, object]] = []
+    unsub_all = g.observe().subscribe(lambda path, msgs: all_rows.append((path, msgs[0][0])))
+    b.down([(MessageType.DATA, 3)])
+    unsub_all()
+    assert ("b", MessageType.DATA) in all_rows

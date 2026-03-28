@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from graphrefly.core import node
+from graphrefly.core.meta import describe_node
 from graphrefly.core.protocol import Messages, MessageType
 from graphrefly.core.sugar import (
     derived,
@@ -68,6 +69,15 @@ def test_derived_deps_and_value_returning_fn() -> None:
     unsub()
     assert d.get() == 9
     assert MessageType.DATA in seen
+
+
+def test_effect_and_producer_set_describe_kind() -> None:
+    e = effect([state(0)], lambda _d, _a: None)
+    assert describe_node(e)["type"] == "effect"
+    p = producer(lambda _d, a: a.emit(1))
+    assert describe_node(p)["type"] == "producer"
+    d = derived([state(0)], lambda deps, _a: deps[0])
+    assert describe_node(d)["type"] == "derived"
 
 
 def test_effect_runs_without_auto_emit_from_return() -> None:

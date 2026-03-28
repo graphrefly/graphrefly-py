@@ -34,12 +34,16 @@ from graphrefly.core import (
     state,
     union_nodes,
 )
-from graphrefly.graph import Graph
+from graphrefly.graph import GRAPH_META_SEGMENT, META_PATH_SEG, PATH_SEP, Graph, GraphObserveSource
 
 __version__ = "0.1.0"
 
 __all__ = [
+    "GRAPH_META_SEGMENT",
     "Graph",
+    "GraphObserveSource",
+    "META_PATH_SEG",
+    "PATH_SEP",
     "DeferWhen",
     "EmitStrategy",
     "Message",

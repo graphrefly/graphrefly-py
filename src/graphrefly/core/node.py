@@ -161,6 +161,7 @@ class NodeImpl[T]:
         "_dep_dirty_mask",
         "_dep_settled_mask",
         "_deps",
+        "_describe_kind",
         "_equals",
         "_fn",
         "_has_deps",
@@ -190,6 +191,7 @@ class NodeImpl[T]:
     ) -> None:
         self._opts = opts
         self._name: str | None = opts.get("name")
+        self._describe_kind: str | None = opts.get("describe_kind")
         self._equals: Callable[[Any, Any], bool] = opts.get("equals", operator.is_)
         self._resubscribable: bool = bool(opts.get("resubscribable", False))
         self._reset_on_teardown: bool = bool(opts.get("reset_on_teardown", False))

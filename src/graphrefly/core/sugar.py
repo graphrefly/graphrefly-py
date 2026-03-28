@@ -17,17 +17,17 @@ def state(initial: Any, **opts: Any) -> Node[Any]:
 
 def producer(fn: NodeFn, **opts: Any) -> Node[Any]:
     """Auto source: ``node([], fn, opts)`` (same as ``node(fn, **opts)``)."""
-    return node(fn, **opts)
+    return node(fn, describe_kind="producer", **opts)
 
 
 def derived(deps: Sequence[Node[Any]], fn: NodeFn, **opts: Any) -> Node[Any]:
     """``node(deps, fn, opts)`` — spec operator pattern is the same primitive."""
-    return node(list(deps), fn, **opts)
+    return node(list(deps), fn, describe_kind="derived", **opts)
 
 
 def effect(deps: Sequence[Node[Any]], fn: NodeFn, **opts: Any) -> Node[Any]:
     """Side-effect leaf: ``node(deps, fn)`` — ``fn`` should return ``None`` (no auto-emit)."""
-    return node(list(deps), fn, **opts)
+    return node(list(deps), fn, describe_kind="effect", **opts)
 
 
 def pipe(source: Node[Any], *ops: PipeOperator) -> Node[Any]:

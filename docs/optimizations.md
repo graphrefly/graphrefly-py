@@ -138,7 +138,7 @@ Both ports treat “`fn` returned a callable” as a **cleanup** (TS: `typeof ou
 |--|--|
 | **Python** | `describe_node(n)` reads `NodeImpl` internals; `node.meta` is `MappingProxyType` (read-only mapping of companion nodes). |
 | **TypeScript** | `describeNode(n)` uses `instanceof NodeImpl` to read class fields directly; `node.meta` is `Object.freeze({...})`. |
-| **Shared** | `meta_snapshot` / `metaSnapshot` omit keys when a companion `get()` throws; same best-effort `type` inference for GRAPHREFLY-SPEC Appendix B describe entries (full `graph.describe()` remains Phase 1). |
+| **Shared** | `meta_snapshot` / `metaSnapshot` omit keys when a companion `get()` throws; same best-effort `type` inference for Appendix B entries; `Graph.describe()` aggregates slices (Python + TS Phase 1.3). |
 
 ### 12. `INVALIDATE` local lifecycle (**GRAPHREFLY-SPEC §1.2**)
 
@@ -183,6 +183,24 @@ Both ports treat “`fn` returned a callable” as a **cleanup** (TS: `typeof ou
 
 **Docs:** This repo’s `docs/roadmap.md` still lists `graph.signal` under Phase 1.4 unchecked while Phase 1.2 marks composition done; `signal` exists — checklist drift only.
 
+### 15. `Graph` Phase 1.3 introspection (`describe`, `observe`, meta paths)
+
+Cross-language: `graphrefly-ts/docs/optimizations.md` §15. **Python (shipped):**
+
+| | |
+|--|--|
+| **Meta path segment** | Exported as `GRAPH_META_SEGMENT` (`__meta__`; alias `META_PATH_SEG`). Address: `registeredNode::__meta__::<metaKey>`; repeat for nested companion meta. |
+| **Forbidden names** | `Graph.add` / `Graph.mount` reject `__meta__`. |
+| **`connect` / `disconnect`** | Paths containing `__meta__` raise `ValueError` (wires stay on primary endpoints). |
+| **`signal` → meta** | After mount-first recursion, each local primary node gets the batch, then depth-first through `meta` subtrees (**meta keys sorted** per parent, aligned with TS); per-call `visited` on `id(node)` avoids duplicate delivery if a node is shared. **TEARDOWN-only** batches skip the meta subtree walk — `NodeImpl.down` already cascades TEARDOWN to companions (matches graphrefly-ts). |
+| **`describe()`** | Appendix B-shaped JSON; `nodes` / `edges` use qualified paths; `subgraphs` lists all mount points from this graph root; `deps` rewritten via the same id→path map. |
+| **`observe()`** | `GraphObserveSource.subscribe` — one path: `sink(messages)`; whole graph: `sink(qualified_path, messages)`. Target order matches `signal` (mount-first, then sorted locals + sorted-key meta DFS). Graph-wide subscription order vs TS may still differ for **primary** nodes (TS `localeCompare` on full paths). |
+| **Describe `type`** | Both: `describe_kind` / `describeKind` on node options; sugar constructors (`effect`, `producer`, `derived`) set it; `_infer_describe_type` / `inferDescribeType` prefers explicit kind when set. |
+| **`describe().nodes`** | Both strip `name` from per-node entries (dict key is the qualified path). |
+| **`describe().subgraphs`** | Both recursively collect all nested mount paths. |
+| **`connect` self-loop** | Both reject `connect(x, x)` before dep validation. |
+| **`signal` / `_collect_observe_targets` ordering** | Both sort local nodes and mounts by name within each graph level. |
+
 ---
 
 ## Summary
@@ -213,12 +231,13 @@ Both ports treat “`fn` returned a callable” as a **cleanup** (TS: `typeof ou
 | `INVALIDATE` (§1.2) | Cleanup + clear `_cached` + `_last_dep_values`; terminal passthrough (§9); no auto recompute | Same |
 | `Graph` Phase 1.1 | `thread_safe` + `RLock`; TEARDOWN after unlock on `remove`; `disconnect` vs `_deps` → §C | Registry only; `connect` / `disconnect` errors aligned; see §C |
 | `Graph` Phase 1.2 | Aligned: `::` path separator, mount `remove` + subtree TEARDOWN, qualified paths, `edges()`, signal mounts-first, `resolve` strips leading name, `:` in names OK; see §14 | Same; see §14 |
+| `Graph` Phase 1.3 | `describe`, `observe`, `GRAPH_META_SEGMENT`, `signal`→meta, `describe_kind` on sugar; see §15 | TS: `describe()`, `observe()`, `GRAPH_META_SEGMENT`, `describeKind` on sugar; see graphrefly-ts §15 | `observe()` order: TS full-path `localeCompare` vs Py per-level sort (§15) |
 
 ### Open design items (low priority)
 
 1. **`_is_cleanup_fn` / `isCleanupFn` treats any callable return as cleanup.** Both languages use `callable(value)` / `typeof value === "function"`. A compute function cannot emit a callable as a data value — it will be silently swallowed as cleanup. Fix: accept `{ cleanup: fn }` wrapper or add an opt-out flag. Low priority because the pattern is well-documented and rarely needed.
 
-2. **`inferDescribeType` cannot distinguish effect/passthrough/pre-run-operator from `"derived"`.** Type inference relies on `_manualEmitUsed` (runtime), so an operator that hasn't run yet reports `"derived"`. Fix: sugar constructors (`effect()`, `operator()`) set an `_explicitKind` field on `NodeImpl`. Low priority until Graph.describe() is implemented (Phase 1).
+2. **Describe `type` before first run (operator vs derived).** Both ports: `describe_kind` / `describeKind` on node options and sugar (`effect`, `producer`, `derived`); operators that only use `down()`/`emit()` still infer via `_manual_emit_used` after a run unless `describe_kind="operator"` is set.
 
 ---
 
