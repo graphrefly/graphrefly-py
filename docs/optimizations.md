@@ -149,6 +149,16 @@ Both ports treat “`fn` returned a callable” as a **cleanup** (TS: `typeof ou
 | **Python** | `NodeImpl._handle_local_lifecycle` |
 | **TypeScript** | `NodeImpl._handleLocalLifecycle` |
 
+### 13. `Graph` Phase 1.1 (registry + edges)
+
+| | |
+|--|--|
+| **Shared** | `connect` validates that the target node’s dependency list includes the source node (**reference identity**). Edges are **pure wires** (no transforms). `connect` is **idempotent** for the same `(from, to)` pair. |
+| **disconnect** | Both ports **throw** if the edge was not registered. Dropping an edge does **not** remove constructor-time deps on the node (registry / future `describe()`). **See Open design decisions §C** (QA 1d #2). |
+| **remove** | Unregisters the node, drops incident edges, sends **`[[TEARDOWN]]`** to that node. |
+| **Python** | `Graph(..., {"thread_safe": True})` (default): registry uses an `RLock`; **`down([[TEARDOWN]])` runs after the lock is released** on `remove`. |
+| **TypeScript** | No graph-level lock (single-threaded spec). |
+
 ---
 
 ## Summary
@@ -177,6 +187,7 @@ Both ports treat “`fn` returned a callable” as a **cleanup** (TS: `typeof ou
 | Node internals | Class-based `NodeImpl`, all methods on class | Class-based `NodeImpl`, V8 hidden class optimization, prototype methods |
 | Dep-value identity check | Before cleanup (skip cleanup+fn on no-op) | Before cleanup (skip cleanup+fn on no-op) |
 | `INVALIDATE` (§1.2) | Cleanup + clear `_cached` + `_last_dep_values`; terminal passthrough (§9); no auto recompute | Same |
+| `Graph` Phase 1.1 | `thread_safe` + `RLock`; TEARDOWN after unlock on `remove`; `disconnect` vs `_deps` → §C | Registry only; `connect` / `disconnect` errors aligned; see §C |
 
 ### Open design items (low priority)
 
@@ -201,3 +212,11 @@ These are tracked primarily in `graphrefly-ts/docs/optimizations.md`; listed her
 ### B. More than 31 dependencies
 
 **Resolved.** Python uses unlimited-precision `int` bitmasks natively. TypeScript uses a `BitSet` abstraction with `Uint32Array` fallback for >31 deps.
+
+### C. `graph.disconnect` vs `NodeImpl` dependency lists (QA 1d #2)
+
+**Current behavior:** Phase 1.1 `Graph.disconnect(from, to)` removes the `(from, to)` pair from the graph’s **edge registry** only. It does **not** mutate the target node’s constructor-time dependency list (`NodeImpl._deps` in Python; the fixed deps array inside `NodeImpl` in TypeScript). Upstream/downstream **message wiring** tied to those deps is unchanged.
+
+**Why:** Dependencies are fixed when the node is created. True single-edge removal would require core APIs (partial upstream unsubscribe, bitmask width and diamond invariants, thread-safety on the Python side, etc.).
+
+**Decision needed:** Is registry-only `disconnect` the long-term contract (documentation + `describe()` as source of truth), or should a later phase add **dynamic topology** so `disconnect` (or a new API) actually detaches one dep? Align with `GRAPHREFLY-SPEC.md` §3.3 when the spec is tightened.

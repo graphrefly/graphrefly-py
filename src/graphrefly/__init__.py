@@ -34,10 +34,12 @@ from graphrefly.core import (
     state,
     union_nodes,
 )
+from graphrefly.graph import Graph
 
 __version__ = "0.1.0"
 
 __all__ = [
+    "Graph",
     "DeferWhen",
     "EmitStrategy",
     "Message",

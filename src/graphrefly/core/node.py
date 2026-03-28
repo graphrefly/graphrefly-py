@@ -505,7 +505,9 @@ class NodeImpl[T]:
     # --- Public interface ---
 
     def _subscribe_body(
-        self, sink: Callable[[Messages], None], hints: SubscribeHints | None,
+        self,
+        sink: Callable[[Messages], None],
+        hints: SubscribeHints | None,
     ) -> None:
         if self._terminal and self._resubscribable:
             self._terminal = False
