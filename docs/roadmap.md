@@ -49,9 +49,9 @@
 
 ### 0.5 — Meta (companion stores)
 
-- [ ] `meta` option: each key becomes a subscribable node
-- [ ] Meta nodes participate in describe() output
-- [ ] Meta nodes independently observable
+- [x] `meta` option: each key becomes a subscribable node
+- [x] Meta nodes participate in describe() output (via `describe_node` / `meta_snapshot`; full `Graph.describe()` in Phase 1.3)
+- [x] Meta nodes independently observable
 
 ### 0.6 — Sugar constructors
 

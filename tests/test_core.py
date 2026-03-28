@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
 from graphrefly.core import (
     MessageType,
+    NodeActions,
     batch,
+    describe_node,
     emit_with_batch,
     meta_snapshot,
     node,
 )
+from graphrefly.core.node import NodeImpl
 
 
 def test_node_factory_overloads_and_get_status() -> None:
@@ -433,3 +438,140 @@ def test_batch_discards_deferred_on_outer_exception() -> None:
         raise RuntimeError("abort")
 
     assert log == []
+
+
+def test_meta_snapshot_empty_without_meta_option() -> None:
+    n = node(initial=1)
+    assert meta_snapshot(n) == {}
+
+
+def test_meta_snapshot_omits_keys_when_child_get_raises() -> None:
+    n = node(initial=0, meta={"fine": 1, "bad": 2})
+    bad = n.meta["bad"]
+    real_get = NodeImpl.get
+
+    def get_wrap(self: NodeImpl[object]) -> object:
+        if self is bad:
+            raise RuntimeError("no snapshot")
+        return real_get(self)
+
+    with patch.object(NodeImpl, "get", get_wrap):
+        assert meta_snapshot(n) == {"fine": 1}
+
+
+def test_meta_snapshot_omits_all_keys_that_throw() -> None:
+    n = node(initial=0, meta={"ok": 0, "x": 1, "y": 2})
+    xn = n.meta["x"]
+    yn = n.meta["y"]
+    real_get = NodeImpl.get
+
+    def get_wrap(self: NodeImpl[object]) -> object:
+        if self is xn or self is yn:
+            raise RuntimeError("bad")
+        return real_get(self)
+
+    with patch.object(NodeImpl, "get", get_wrap):
+        assert meta_snapshot(n) == {"ok": 0}
+
+
+def test_parent_teardown_disconnects_when_one_meta_down_throws() -> None:
+    src = node(initial=1)
+    n = node([src], lambda d, _: d[0] * 2, meta={"flaky": 0, "stable": 1})
+    flaky = n.meta["flaky"]
+    real_down = NodeImpl.down
+
+    def down_wrap(self: NodeImpl[object], msgs: list) -> None:
+        if self is flaky and msgs and msgs[0][0] == MessageType.TEARDOWN:
+            raise RuntimeError("meta teardown boom")
+        return real_down(self, msgs)
+
+    stable_saw_teardown = False
+
+    def stable_sink(msgs: list) -> None:
+        nonlocal stable_saw_teardown
+        if any(m[0] == MessageType.TEARDOWN for m in msgs):
+            stable_saw_teardown = True
+
+    with patch.object(NodeImpl, "down", down_wrap):
+        unsub_stable = n.meta["stable"].subscribe(stable_sink)
+        unsub = n.subscribe(lambda _m: None)
+        n.down([(MessageType.TEARDOWN,)])
+    assert stable_saw_teardown is True
+    assert n.status == "disconnected"
+    unsub()
+    unsub_stable()
+
+
+def test_parent_teardown_propagates_to_every_meta_child() -> None:
+    n = node(initial=0, meta={"a": 1, "b": 2, "c": 3})
+    saw: list[str] = []
+    unsubs = [
+        n.meta[k].subscribe(
+            lambda msgs, key=k: saw.append(key)
+            if any(m[0] == MessageType.TEARDOWN for m in msgs)
+            else None
+        )
+        for k in ("a", "b", "c")
+    ]
+    n.down([(MessageType.TEARDOWN,)])
+    assert sorted(saw) == ["a", "b", "c"]
+    for u in unsubs:
+        u()
+
+
+def test_teardown_stops_producer_when_meta_down_throws() -> None:
+    producer_runs = 0
+
+    def prod(_deps: list[object], actions: NodeActions) -> None:
+        nonlocal producer_runs
+        producer_runs += 1
+        actions.down([(MessageType.DATA, producer_runs)])
+
+    p = node(prod, meta={"m": 0})
+    mchild = p.meta["m"]
+    real_down = NodeImpl.down
+
+    def down_wrap(self: NodeImpl[object], msgs: list) -> None:
+        if self is mchild and msgs and msgs[0][0] == MessageType.TEARDOWN:
+            raise RuntimeError("meta teardown boom")
+        return real_down(self, msgs)
+
+    with patch.object(NodeImpl, "down", down_wrap):
+        u1 = p.subscribe(lambda _m: None)
+        assert producer_runs == 1
+        p.down([(MessageType.TEARDOWN,)])
+        assert producer_runs == 1
+        u1()
+        u2 = p.subscribe(lambda _m: None)
+        assert producer_runs == 2
+        u2()
+
+
+def test_describe_node_includes_meta_and_spec_fields() -> None:
+    n = node(
+        initial=0,
+        meta={"description": "purpose", "type_hint": "integer"},
+        name="retry_limit",
+    )
+    d = describe_node(n)
+    assert d["type"] == "state"
+    assert d["status"] == "settled"
+    assert d["name"] == "retry_limit"
+    assert d["deps"] == []
+    assert d["meta"] == {"description": "purpose", "type_hint": "integer"}
+    assert d["value"] == 0
+
+
+def test_describe_node_derived_lists_dep_names() -> None:
+    src = node(initial=1, name="input")
+    n = node([src], lambda deps, _: deps[0] * 2, name="validate", meta={"description": "ok"})
+    snap = describe_node(n)
+    assert snap["type"] == "derived"
+    assert snap["deps"] == ["input"]
+    assert snap["meta"] == {"description": "ok"}
+
+
+def test_meta_mapping_is_read_only() -> None:
+    n = node(initial=0, meta={"k": 1})
+    with pytest.raises(TypeError):
+        n.meta["new"] = n.meta["k"]  # type: ignore[index]

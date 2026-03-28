@@ -132,12 +132,21 @@ Both ports treat “`fn` returned a callable” as a **cleanup** (TS: `typeof ou
 | **Python** | Keep per-emission handling + `ExceptionGroup` (or first-error policy as chosen); document the partial-state contract explicitly. |
 | **TypeScript** | JSDoc on `batch` / `drainPending` documents partial delivery + first error rethrown. |
 
+### 11. `describe_node` / `describeNode` and read-only `meta`
+
+| | |
+|--|--|
+| **Python** | `describe_node(n)` reads `NodeImpl` internals; `node.meta` is `MappingProxyType` (read-only mapping of companion nodes). |
+| **TypeScript** | `describeNode(n)` reads a `WeakMap` registry populated inside `node()` (`node-describe-registry.ts`); `node.meta` is `Object.freeze({...})`. |
+| **Shared** | `meta_snapshot` / `metaSnapshot` omit keys when a companion `get()` throws; same best-effort `type` inference for GRAPHREFLY-SPEC Appendix B describe entries (full `graph.describe()` remains Phase 1). |
+
 ---
 
 ## Summary
 
 | Topic | Python | TypeScript |
 |-------|--------|------------|
+| Core sugar `subscribe(dep, fn)` / `operator` | Follow spec when added | Not exported: use `node([dep], fn)`, `effect([dep], fn)`, and `derived` for all deps+fn nodes |
 | Message tags | `StrEnum` | `Symbol` |
 | Subgraph write locks | Union-find + `RLock`; `defer_set` / `defer_down`; per-node `_cache_lock` for `get()`/`_cached`; bounded retry (`_MAX_LOCK_RETRIES=100`) | N/A (single-threaded) |
 | Batch emit API | `emit_with_batch` (+ `dispatch_messages` alias); optional `subgraph_lock` for node emissions | `emitWithBatch` |
@@ -154,6 +163,7 @@ Both ports treat “`fn` returned a callable” as a **cleanup** (TS: `typeof ou
 | Drain cycle detection | TBD | `MAX_DRAIN_ITERATIONS = 1000` cap |
 | TEARDOWN → `"disconnected"` status | TBD | `statusAfterMessage` maps TEARDOWN |
 | DIRTY→COMPLETE settlement | TBD | `runFn()` when no dirty deps remain but node is dirty |
+| Describe slice + frozen meta | `describe_node`, `MappingProxyType` | `describeNode`, `Object.freeze(meta)` |
 
 ---
 

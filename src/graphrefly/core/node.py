@@ -7,6 +7,7 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from functools import partial
+from types import MappingProxyType
 from typing import Any, cast
 
 from graphrefly.core.protocol import Messages, MessageType, emit_with_batch
@@ -580,8 +581,8 @@ class NodeImpl[T]:
         return self._status
 
     @property
-    def meta(self) -> dict[str, NodeImpl[Any]]:
-        return self._meta
+    def meta(self) -> Mapping[str, NodeImpl[Any]]:
+        return MappingProxyType(self._meta)
 
     def get(self) -> T | None:
         with self._cache_lock:

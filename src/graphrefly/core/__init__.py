@@ -1,6 +1,6 @@
 """Core node primitives and protocol types for graphrefly."""
 
-from graphrefly.core.meta import meta_snapshot
+from graphrefly.core.meta import describe_node, meta_snapshot
 from graphrefly.core.node import (
     Node,
     NodeActions,
@@ -49,6 +49,7 @@ __all__ = [
     "batch",
     "defer_down",
     "defer_set",
+    "describe_node",
     "dispatch_messages",
     "emit_with_batch",
     "ensure_registered",
