@@ -69,6 +69,8 @@ def _status_after_message(status: NodeStatus, msg: Message) -> NodeStatus:
         return "errored"
     if t == MessageType.INVALIDATE:
         return "dirty"
+    if t == MessageType.TEARDOWN:
+        return "disconnected"
     return status
 
 
@@ -159,11 +161,8 @@ class NodeImpl[T]:
         "_dep_dirty_mask",
         "_dep_settled_mask",
         "_deps",
-        "_down",
-        "_emit_auto_value",
         "_equals",
         "_fn",
-        "_handle_dep_messages",
         "_has_deps",
         "_last_dep_values",
         "_manual_emit_used",
@@ -173,7 +172,6 @@ class NodeImpl[T]:
         "_producer_started",
         "_resubscribable",
         "_reset_on_teardown",
-        "_run_fn",
         "_sink_count",
         "_single_dep_sink_count",
         "_single_dep_sinks",
@@ -237,172 +235,129 @@ class NodeImpl[T]:
         for meta_node in self._meta.values():
             union_nodes(self, meta_node)
 
-        # --- wire methods ---------------------------------------------------
-
-        def emit_to_sinks(msgs: Messages) -> None:
-            if self._sinks is None:
-                return
-            if isinstance(self._sinks, set):
-                for s in self._sinks:
-                    s(msgs)
-            else:
-                self._sinks(msgs)
-
-        def handle_local_lifecycle(messages: Messages) -> None:
-            for m in messages:
-                t = m[0]
-                if t == MessageType.DATA:
-                    with self._cache_lock:
-                        self._cached = m[1]  # type: ignore[misc]
-                self._status = _status_after_message(self._status, m)
-                if t in (MessageType.COMPLETE, MessageType.ERROR):
-                    self._terminal = True
-                if t == MessageType.TEARDOWN:
-                    if self._reset_on_teardown:
-                        with self._cache_lock:
-                            self._cached = None
-                    try:
-                        for meta_node in self._meta.values():
-                            with suppress(Exception):
-                                meta_node.down([(MessageType.TEARDOWN,)])
-                    finally:
-                        self._disconnect_upstream()
-                        self._stop_producer()
-
-        def can_skip_dirty() -> bool:
-            return self._sink_count == 1 and self._single_dep_sink_count == 1
-
-        def down(messages: Messages) -> None:
-            if not messages:
-                return
-            with acquire_subgraph_write_lock_with_defer(self):
-                lifecycle_messages = messages
-                sink_messages = messages
-                if self._terminal and not self._resubscribable:
-                    teardown_only = [m for m in messages if m[0] == MessageType.TEARDOWN]
-                    if not teardown_only:
-                        return
-                    lifecycle_messages = teardown_only
-                    sink_messages = teardown_only
-                handle_local_lifecycle(lifecycle_messages)
-                if can_skip_dirty() and any(
-                    m[0] in (MessageType.DATA, MessageType.RESOLVED) for m in sink_messages
-                ):
-                    filtered = [m for m in sink_messages if m[0] != MessageType.DIRTY]
-                    if filtered:
-                        emit_with_batch(
-                            emit_to_sinks,
-                            filtered,
-                            strategy="partition",
-                            defer_when="depth",
-                            subgraph_lock=self,
-                        )
-                else:
-                    emit_with_batch(
-                        emit_to_sinks,
-                        sink_messages,
-                        strategy="partition",
-                        defer_when="depth",
-                        subgraph_lock=self,
-                    )
-
-        def emit_auto_value(value: Any) -> None:
-            was_dirty = self._status == "dirty"
-            with self._cache_lock:
-                cached_snapshot = self._cached
-            unchanged = self._equals(cached_snapshot, value)
-            if unchanged:
-                if was_dirty:
-                    down([(MessageType.RESOLVED,)])
-                else:
-                    down([(MessageType.DIRTY,), (MessageType.RESOLVED,)])
-                return
-            with self._cache_lock:
-                self._cached = cast("T", value)
-            if was_dirty:
-                down([(MessageType.DATA, value)])
-            else:
-                down([(MessageType.DIRTY,), (MessageType.DATA, value)])
-
-        def up_actions(messages: Messages) -> None:
-            if not self._has_deps:
-                return
-            for dep in self._deps:
-                u = getattr(dep, "up", None)
-                if u is not None:
-                    u(messages)
-
-        self._down = down
-        self._emit_auto_value = emit_auto_value
-
         self._actions = NodeActions(
             down=lambda msgs: self._manual_down(msgs),
             emit=lambda v: self._manual_emit(v),
-            up=up_actions,
+            up=self.up,
         )
 
-        self._run_fn = self._make_run_fn()
-        self._handle_dep_messages = self._make_handle_dep_messages()
+    # --- Private methods (promoted from closures) ---
 
     def _manual_down(self, messages: Messages) -> None:
         self._manual_emit_used = True
-        self._down(messages)
+        self.down(messages)
 
     def _manual_emit(self, value: Any) -> None:
         self._manual_emit_used = True
         self._emit_auto_value(value)
 
-    def _make_run_fn(self) -> Callable[[], None]:
-        def run_fn() -> None:
-            if self._fn is None:
-                return
-            # Suppress re-entrant recompute while wiring upstream deps (TS connect order).
-            if self._connecting:
+    def _emit_to_sinks(self, msgs: Messages) -> None:
+        if self._sinks is None:
+            return
+        if isinstance(self._sinks, set):
+            # Snapshot: a sink callback may unsubscribe itself or others mid-iteration.
+            # Iterating the live set would raise RuntimeError on mutation.
+            snapshot = list(self._sinks)
+            for s in snapshot:
+                s(msgs)
+        else:
+            self._sinks(msgs)
+
+    def _handle_local_lifecycle(self, messages: Messages) -> None:
+        for m in messages:
+            t = m[0]
+            if t == MessageType.DATA:
+                with self._cache_lock:
+                    self._cached = m[1]  # type: ignore[misc]
+            self._status = _status_after_message(self._status, m)
+            if t in (MessageType.COMPLETE, MessageType.ERROR):
+                self._terminal = True
+            if t == MessageType.TEARDOWN:
+                if self._reset_on_teardown:
+                    with self._cache_lock:
+                        self._cached = None
+                try:
+                    for meta_node in self._meta.values():
+                        with suppress(Exception):
+                            meta_node.down([(MessageType.TEARDOWN,)])
+                finally:
+                    self._disconnect_upstream()
+                    self._stop_producer()
+
+    def _can_skip_dirty(self) -> bool:
+        return self._sink_count == 1 and self._single_dep_sink_count == 1
+
+    def _emit_auto_value(self, value: Any) -> None:
+        # Note: the read-compare-write on _cached looks like a TOCTOU race, but
+        # callers always hold the subgraph RLock (via _run_fn or down), which
+        # serializes all writes. _cache_lock only guards get() reads from outside.
+        was_dirty = self._status == "dirty"
+        with self._cache_lock:
+            cached_snapshot = self._cached
+        unchanged = self._equals(cached_snapshot, value)
+        if unchanged:
+            if was_dirty:
+                self.down([(MessageType.RESOLVED,)])
+            else:
+                self.down([(MessageType.DIRTY,), (MessageType.RESOLVED,)])
+            return
+        with self._cache_lock:
+            self._cached = cast("T", value)
+        if was_dirty:
+            self.down([(MessageType.DATA, value)])
+        else:
+            self.down([(MessageType.DIRTY,), (MessageType.DATA, value)])
+
+    def _run_fn(self) -> None:
+        if self._fn is None:
+            return
+        # Suppress re-entrant recompute while wiring upstream deps (TS connect order).
+        if self._connecting:
+            return
+
+        with acquire_subgraph_write_lock_with_defer(self):
+            if self._terminal and not self._resubscribable:
                 return
 
-            with acquire_subgraph_write_lock_with_defer(self):
-                if self._terminal and not self._resubscribable:
+            try:
+                dep_values = [d.get() for d in self._deps]
+                # Identity check BEFORE cleanup: if all dep values are unchanged,
+                # skip cleanup+fn entirely so effect nodes don't teardown/restart on no-op.
+                if (
+                    len(dep_values) > 0
+                    and self._last_dep_values is not None
+                    and len(self._last_dep_values) == len(dep_values)
+                    and all(
+                        dep_values[i] is self._last_dep_values[i]
+                        for i in range(len(dep_values))
+                    )
+                ):
+                    if self._status == "dirty":
+                        self.down([(MessageType.RESOLVED,)])
                     return
                 if self._cleanup is not None:
                     self._cleanup()
                     self._cleanup = None
                 self._manual_emit_used = False
-
-                try:
-                    dep_values = [d.get() for d in self._deps]
-                    if (
-                        len(dep_values) > 0
-                        and self._last_dep_values is not None
-                        and len(self._last_dep_values) == len(dep_values)
-                        and all(
-                            dep_values[i] is self._last_dep_values[i]
-                            for i in range(len(dep_values))
-                        )
-                    ):
-                        if self._status == "dirty":
-                            self._down([(MessageType.RESOLVED,)])
-                        return
-                    self._last_dep_values = list(dep_values)
-                    out = self._fn(dep_values, self._actions)
-                    if _is_cleanup_fn(out):
-                        self._cleanup = out
-                        return
-                    if self._manual_emit_used:
-                        return
-                    if out is None:
-                        return
-                    self._emit_auto_value(out)
-                except Exception as err:
-                    self._down([(MessageType.ERROR, err)])
-
-        return run_fn
+                self._last_dep_values = list(dep_values)
+                out = self._fn(dep_values, self._actions)
+                if _is_cleanup_fn(out):
+                    self._cleanup = out
+                    return
+                if self._manual_emit_used:
+                    return
+                if out is None:
+                    return
+                self._emit_auto_value(out)
+            except Exception as err:
+                self.down([(MessageType.ERROR, err)])
 
     def _on_dep_dirty(self, index: int) -> None:
         was_dirty = self._dep_dirty_mask.has(index)
         self._dep_dirty_mask.set(index)
         self._dep_settled_mask.clear(index)
         if not was_dirty:
-            self._down([(MessageType.DIRTY,)])
+            self.down([(MessageType.DIRTY,)])
 
     def _on_dep_settled(self, index: int) -> None:
         if not self._dep_dirty_mask.has(index):
@@ -419,54 +374,55 @@ class NodeImpl[T]:
             and len(self._deps) > 0
             and self._dep_complete_mask.covers(self._all_deps_complete_mask)
         ):
-            self._down([(MessageType.COMPLETE,)])
+            self.down([(MessageType.COMPLETE,)])
 
-    def _make_handle_dep_messages(self) -> Callable[[int, Messages], None]:
-        def forward_unknown(msg: Message) -> None:
-            self._down([msg])
-
-        def handle_dep_messages(index: int, messages: Messages) -> None:
-            for msg in messages:
-                t = msg[0]
-                if self._fn is None:
-                    if t == MessageType.COMPLETE and len(self._deps) > 1:
-                        self._dep_complete_mask.set(index)
-                        self._maybe_complete_from_deps()
-                        continue
-                    self._down([msg])
-                    continue
-                if t == MessageType.DIRTY:
-                    self._on_dep_dirty(index)
-                    continue
-                if t in (MessageType.DATA, MessageType.RESOLVED):
-                    self._on_dep_settled(index)
-                    continue
-                if t == MessageType.COMPLETE:
+    def _handle_dep_messages(self, index: int, messages: Messages) -> None:
+        for msg in messages:
+            t = msg[0]
+            if self._fn is None:
+                if t == MessageType.COMPLETE and len(self._deps) > 1:
                     self._dep_complete_mask.set(index)
-                    self._dep_dirty_mask.clear(index)
-                    self._dep_settled_mask.clear(index)
-                    if self._dep_dirty_mask.any() and self._dep_settled_mask.covers(
-                        self._dep_dirty_mask
-                    ):
-                        self._dep_dirty_mask.reset()
-                        self._dep_settled_mask.reset()
-                        self._run_fn()
                     self._maybe_complete_from_deps()
                     continue
-                if t == MessageType.ERROR:
-                    self._down([msg])
-                    continue
-                if t in (
-                    MessageType.INVALIDATE,
-                    MessageType.TEARDOWN,
-                    MessageType.PAUSE,
-                    MessageType.RESUME,
+                self.down([msg])
+                continue
+            if t == MessageType.DIRTY:
+                self._on_dep_dirty(index)
+                continue
+            if t in (MessageType.DATA, MessageType.RESOLVED):
+                self._on_dep_settled(index)
+                continue
+            if t == MessageType.COMPLETE:
+                self._dep_complete_mask.set(index)
+                self._dep_dirty_mask.clear(index)
+                self._dep_settled_mask.clear(index)
+                if self._dep_dirty_mask.any() and self._dep_settled_mask.covers(
+                    self._dep_dirty_mask
                 ):
-                    self._down([msg])
-                    continue
-                forward_unknown(msg)
-
-        return handle_dep_messages
+                    self._dep_dirty_mask.reset()
+                    self._dep_settled_mask.reset()
+                    self._run_fn()
+                elif not self._dep_dirty_mask.any() and self._status == "dirty":
+                    # D2: dep went DIRTY→COMPLETE without DATA — node was marked
+                    # dirty but no settlement came.  Recompute so downstream
+                    # gets RESOLVED (value unchanged) or DATA (value changed).
+                    self._dep_settled_mask.reset()
+                    self._run_fn()
+                self._maybe_complete_from_deps()
+                continue
+            if t == MessageType.ERROR:
+                self.down([msg])
+                continue
+            if t in (
+                MessageType.INVALIDATE,
+                MessageType.TEARDOWN,
+                MessageType.PAUSE,
+                MessageType.RESUME,
+            ):
+                self.down([msg])
+                continue
+            # Forward unknown message types
+            self.down([msg])
 
     def _connect_upstream(self) -> None:
         if not self._has_deps or self._connected:
@@ -513,6 +469,8 @@ class NodeImpl[T]:
         self._dep_settled_mask.reset()
         self._dep_complete_mask.reset()
         self._status = "disconnected"
+
+    # --- Public interface ---
 
     def subscribe(
         self,
@@ -589,7 +547,38 @@ class NodeImpl[T]:
             return self._cached
 
     def down(self, messages: Messages) -> None:
-        self._down(messages)
+        if not messages:
+            return
+        with acquire_subgraph_write_lock_with_defer(self):
+            lifecycle_messages = messages
+            sink_messages = messages
+            if self._terminal and not self._resubscribable:
+                teardown_only = [m for m in messages if m[0] == MessageType.TEARDOWN]
+                if not teardown_only:
+                    return
+                lifecycle_messages = teardown_only
+                sink_messages = teardown_only
+            self._handle_local_lifecycle(lifecycle_messages)
+            if self._can_skip_dirty() and any(
+                m[0] in (MessageType.DATA, MessageType.RESOLVED) for m in sink_messages
+            ):
+                filtered = [m for m in sink_messages if m[0] != MessageType.DIRTY]
+                if filtered:
+                    emit_with_batch(
+                        self._emit_to_sinks,
+                        filtered,
+                        strategy="partition",
+                        defer_when="depth",
+                        subgraph_lock=self,
+                    )
+            else:
+                emit_with_batch(
+                    self._emit_to_sinks,
+                    sink_messages,
+                    strategy="partition",
+                    defer_when="depth",
+                    subgraph_lock=self,
+                )
 
     def up(self, messages: Messages) -> None:
         """Send messages upstream (no-op on source nodes; matches TS optional ``up``)."""
@@ -606,6 +595,13 @@ class NodeImpl[T]:
             return
         with acquire_subgraph_write_lock_with_defer(self):
             self._disconnect_upstream()
+
+    def __or__(self, other: object) -> Any:
+        """Pipe: ``left | op`` with unary ``(Node) -> Node`` (GRAPHREFLY-SPEC §4.1)."""
+        if not callable(other):
+            return NotImplemented
+        cast_other = cast("Callable[[NodeImpl[Any]], NodeImpl[Any]]", other)
+        return cast_other(self)
 
 
 def node(

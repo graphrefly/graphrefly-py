@@ -55,13 +55,13 @@
 
 ### 0.6 — Sugar constructors
 
-- [ ] `state(initial, opts?)` — no deps, no fn
-- [ ] `producer(fn, opts?)` — no deps, with fn
-- [ ] `derived(deps, fn, opts?)` — deps, fn returns value
-- [ ] `operator(deps, fn, opts?)` — deps, fn uses down()
-- [ ] `effect(deps, fn)` — deps, fn returns nothing
-- [ ] `subscribe(dep, callback)` — single dep shorthand, context manager support
-- [ ] `pipe(source, op1, op2)` + `|` operator overload
+- [x] `state(initial, opts?)` — no deps, no fn
+- [x] `producer(fn, opts?)` — no deps, with fn
+- [x] `derived(deps, fn, opts?)` — deps + fn (alias over `node`; spec “operator” pattern is the same primitive)
+- [x] `effect(deps, fn)` — deps, fn returns nothing
+- [x] `pipe(source, op1, op2)` — linear composition; `|` on `Node` per GRAPHREFLY-SPEC §6.1 (Python)
+- [ ] `subscribe(dep, callback)` — omitted (match graphrefly-ts): use `node([dep], fn)` or `effect([dep], fn)`; instance `Node.subscribe` covers sink attachment
+- [ ] `operator(deps, fn, opts?)` — omitted (match graphrefly-ts); use `derived`
 
 ### 0.7 — Tests & validation
 
@@ -73,7 +73,7 @@
 - [x] Concurrency stress tests — `tests/test_concurrency.py` (get under write, independent subgraphs, merged serialization, defer, batch + lock)
 - [ ] Benchmarks vs callbag-recharge-py — regression guard / perf baseline; not started
 
-**Deferred with 0.6 sugar:** named `state` / `derived` / `effect` / `pipe` constructor tests (current coverage uses `node()` directly).
+**Sugar tests:** `tests/test_sugar.py` (constructors, `pipe`, `|`, single-dep wire via `node([dep], fn)`).
 
 ---
 

@@ -507,9 +507,9 @@ def test_parent_teardown_propagates_to_every_meta_child() -> None:
     saw: list[str] = []
     unsubs = [
         n.meta[k].subscribe(
-            lambda msgs, key=k: saw.append(key)
-            if any(m[0] == MessageType.TEARDOWN for m in msgs)
-            else None
+            lambda msgs, key=k: (
+                saw.append(key) if any(m[0] == MessageType.TEARDOWN for m in msgs) else None
+            )
         )
         for k in ("a", "b", "c")
     ]

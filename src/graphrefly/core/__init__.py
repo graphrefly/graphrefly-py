@@ -31,6 +31,14 @@ from graphrefly.core.subgraph_locks import (
     ensure_registered,
     union_nodes,
 )
+from graphrefly.core.sugar import (
+    PipeOperator,
+    derived,
+    effect,
+    pipe,
+    producer,
+    state,
+)
 
 __all__ = [
     "DeferWhen",
@@ -39,6 +47,7 @@ __all__ = [
     "MessageType",
     "Messages",
     "Node",
+    "PipeOperator",
     "NodeActions",
     "NodeFn",
     "NodeImpl",
@@ -59,4 +68,9 @@ __all__ = [
     "node",
     "partition_for_batch",
     "union_nodes",
+    "derived",
+    "effect",
+    "pipe",
+    "producer",
+    "state",
 ]
