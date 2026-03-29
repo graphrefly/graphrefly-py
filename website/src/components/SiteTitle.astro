@@ -1,0 +1,43 @@
+---
+const { siteTitleHref } = Astro.locals.starlightRoute;
+---
+
+<a href={siteTitleHref} class="site-title gr-nav-brand sl-flex" translate="no">
+	<span class="gr-nav-brand-inner">
+		Graph<span class="gr-nav-brand-re">Re</span>Fly<span class="gr-nav-brand-dot">.</span>
+	</span>
+</a>
+
+<style>
+	@layer starlight.core {
+		.gr-nav-brand {
+			align-items: center;
+			gap: var(--sl-nav-gap);
+			font-size: var(--sl-text-h4);
+			font-weight: 700;
+			letter-spacing: -0.02em;
+			color: var(--gr-parchment);
+			text-decoration: none;
+			white-space: nowrap;
+			min-width: 0;
+			font-family: "Noto Serif SC", serif;
+		}
+		.gr-nav-brand:hover,
+		.gr-nav-brand:focus-visible {
+			color: var(--gr-parchment);
+			opacity: 0.92;
+		}
+		.gr-nav-brand-inner {
+			overflow: hidden;
+		}
+		.gr-nav-brand-re {
+			background: linear-gradient(135deg, var(--gr-aqua), #38bdf8);
+			-webkit-background-clip: text;
+			-webkit-text-fill-color: transparent;
+			background-clip: text;
+		}
+		.gr-nav-brand-dot {
+			color: var(--gr-warm);
+		}
+	}
+</style>

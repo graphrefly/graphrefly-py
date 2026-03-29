@@ -161,6 +161,7 @@ Port proven operators from callbag-recharge-py + new ones from TS.
 - [x] `debounce`, `throttle`, `sample`, `audit`
 - [x] `delay`, `timeout`
 - [x] `buffer`, `buffer_count`, `buffer_time`
+- [x] `window`, `window_count`, `window_time`
 - [x] `interval`, `repeat`
 - [x] `pausable`, `rescue`
 
@@ -187,11 +188,11 @@ Port proven operators from callbag-recharge-py + new ones from TS.
 
 ### 3.2 — Data structures
 
-- [ ] `reactive_map` (KV with TTL, eviction)
-- [ ] `reactive_log` (append-only, reactive tail/slice)
-- [ ] `reactive_index` (dual-key sorted index)
-- [ ] `reactive_list` (positional operations)
-- [ ] `pubsub` (lazy topic stores)
+- [x] `reactive_map` (KV with TTL, eviction) — `graphrefly.extra.reactive_map` / `ReactiveMapBundle`
+- [x] `reactive_log` (append-only, reactive tail/slice) — `reactive_log`, `ReactiveLogBundle.tail`, `log_slice`
+- [x] `reactive_index` (dual-key sorted index) — `reactive_index` / `ReactiveIndexBundle`
+- [x] `reactive_list` (positional operations) — `reactive_list` / `ReactiveListBundle`
+- [x] `pubsub` (lazy topic stores) — `pubsub` / `PubSubHub`
 
 ---
 

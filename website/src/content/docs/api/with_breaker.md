@@ -22,3 +22,5 @@ Guard a source with a :class:`CircuitBreaker`.
 On each upstream ``DATA``, if the breaker refuses work, either emit ``RESOLVED`` (*skip*)
 or ``ERROR`` (:exc:`CircuitOpenError`) (*error*). ``COMPLETE`` records success; ``ERROR``
 records failure and is forwarded.
+
+Companion ``breaker_state`` is wired into ``node.meta`` so it appears in ``describe()``.

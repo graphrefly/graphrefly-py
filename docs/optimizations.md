@@ -279,6 +279,7 @@ Cross-language: `graphrefly-ts/docs/optimizations.md` §15. **Python (shipped):*
 | `to_array` / `toArray` | Reactive `Node[list]` | Reactive `Node<T[]>` |
 | `to_list` (blocking) | Py-only sync bridge | N/A |
 | Extra Phase 3.1 (resilience) | `graphrefly.extra.{backoff,resilience,checkpoint}`; see §6 below | `src/extra/{backoff,resilience,checkpoint}.ts`; see §6 below |
+| Extra Phase 3.2 (data structures) | `graphrefly.extra.data_structures` (`reactive_map`, …); see §17 | `reactiveMap` + `reactive-base` (`Versioned` snapshots); see §17 |
 
 ### 6. Resilience & checkpoint (roadmap 3.1) — parity (2026-03-29)
 
@@ -287,8 +288,8 @@ Cross-language: `graphrefly-ts/docs/optimizations.md` §15. **Python (shipped):*
 | Topic | Both |
 |-------|------|
 | `retry` | Resubscribe-on-ERROR with optional backoff; `count` caps attempts; `backoff` accepts strategy or preset name; successful DATA resets attempt counter; max-retries sentinel: `2_147_483_647` (`0x7fffffff`) |
-| `backoff` strategies | `constant`, `linear`, `exponential`, `fibonacci`; jitter modes: `none`, `full`, `equal`; `resolve_backoff_preset` / `resolveBackoffPreset` maps preset names |
-| `CircuitBreaker` | `closed` → `open` → `half-open` states; `can_execute` / `canExecute`, `record_success` / `recordSuccess`, `record_failure` / `recordFailure` |
+| `backoff` strategies | `constant`, `linear`, `exponential`, `fibonacci`, `decorrelated_jitter` / `decorrelatedJitter`; jitter modes: `none`, `full`, `equal`; `resolve_backoff_preset` / `resolveBackoffPreset` maps preset names (including `"decorrelated_jitter"`); `with_max_attempts` / `withMaxAttempts` caps any strategy at N attempts (returns `None`/`null` after cap) |
+| `CircuitBreaker` | `closed` → `open` → `half-open` states; `can_execute` / `canExecute`, `record_success` / `recordSuccess`, `record_failure` / `recordFailure`, `reset()`, `failure_count` / `failureCount`; optional `cooldown_strategy` / `cooldownStrategy` (BackoffStrategy) for escalating cooldowns across open cycles |
 | `with_breaker` / `withBreaker` | Returns `WithBreakerBundle` (`node` + `breaker_state`/`breakerState`); `on_open: "skip"` → RESOLVED, `"error"` → CircuitOpenError |
 | `rate_limiter` / `rateLimiter` | Sliding-window FIFO queue; raises/throws on `max_events <= 0` or `window_seconds <= 0`; COMPLETE/ERROR clear timers + pending + window times |
 | `TokenBucket` | Capacity + refill-per-second; `try_consume` / `tryConsume`; `token_tracker` / `tokenTracker` factory alias |
@@ -304,11 +305,24 @@ Cross-language: `graphrefly-ts/docs/optimizations.md` §15. **Python (shipped):*
 | Thread safety | `CircuitBreaker` + `TokenBucket` use `threading.Lock`; retry uses `threading.Timer` | Single-threaded (`setTimeout`) | Spec §6.1 |
 | `CircuitBreaker` params | `cooldown` (seconds, implicit) | `cooldownSeconds` (seconds, explicit) | Naming convention |
 | `CircuitOpenError` base | `RuntimeError` | `Error` | Language convention |
+| API pattern | `@runtime_checkable Protocol` + private `_Impl` class + `circuit_breaker()` / `token_bucket()` factory | `interface` + private class + `circuitBreaker()` / `tokenBucket()` factory | Both expose factory functions as primary API; types for structural checks |
 | Retry delay validation | `_coerce_delay()` raises `ValueError` for non-finite | `coerceDelaySeconds()` throws `TypeError` for non-finite | Both validate; error type differs |
 | IndexedDB checkpoint | N/A (backend-only) | `saveGraphCheckpointIndexedDb` / `restoreGraphCheckpointIndexedDb` (browser) | TS browser runtime only |
 | `SqliteCheckpointAdapter` | `sqlite3` stdlib | `node:sqlite` (`DatabaseSync`, Node 22.5+) | Both stdlib, zero deps |
 
 **Meta integration (spec §2.3, Option A):** `with_breaker` and `with_status` wire companion nodes into `node.meta` at construction via the `meta` option. Bundles still provide ergonomic typed access; `node.meta["breaker_state"]` / `node.meta["status"]` are the same node instances returned in the bundle. Companions appear in `graph.describe()` under `::__meta__::` paths.
+
+### 17. Phase 3.2 data structures (versioned snapshots)
+
+**TypeScript:** `reactiveMap` (`src/extra/reactive-map.ts`); shared `Versioned<T>` + `snapshotEqualsVersion` in `src/extra/reactive-base.ts` (not re-exported from the package barrel — use concrete factories).
+
+**Python:** `reactive_map`, `reactive_log`, `reactive_index`, `reactive_list`, `pubsub`, `log_slice` in `graphrefly.extra.data_structures` (re-exported from `graphrefly.extra`). **Parity aligned (2026-03-29):** All mutations emit via two-phase `batch()` (DIRTY then DATA); all snapshot nodes use `Versioned` (named tuple with monotonic `version` + `value`) with `_versioned_equals` for efficient dedup; `data.get().value` returns `MappingProxyType` (immutable) for maps and `tuple` for logs/lists; all factories accept an optional `name` param; `describe_kind` set on all internal nodes.
+
+**Semantics (aligned):** Both ports use `Versioned` snapshots with a monotonic version counter for `equals`. TTL: both use monotonic clocks — TS `performance.now()` (ms), Python `time.monotonic()` (seconds). Lazy expiry + explicit `prune()` / `pruneExpired()` on both; no background timer in the first iteration. LRU: both cap by size and evict oldest by policy; TS refreshes LRU order on `get`/`has`; Python currently refreshes order on `set` only (reads use `data.get()` as a dict snapshot — no per-key LRU touch on read). `pubsub` topic publish uses two-phase protocol on both.
+
+**Doc / API surface:** TS `defaultTtlMs` / Python `default_ttl` (seconds) — convert mentally when comparing.
+
+**Derived log views (`tail` / `log_slice` / `logSlice`):** Both ports attach a noop subscription to each derived view so `get()` stays wired without a user sink (Python: `_keepalive_derived`). Each call allocates a new derived node plus that subscription; creating very many throwaway views can retain subscriptions until those nodes are unreachable. See JSDoc on `reactiveLog` / `logSlice` in graphrefly-ts and docstrings on `ReactiveLogBundle.tail` / `log_slice` in `graphrefly.extra.data_structures`.
 
 ### Open design items (low priority)
 

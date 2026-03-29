@@ -1,58 +1,57 @@
-/* GraphReFly — ported from callbag-recharge VitePress theme (Starlight tokens) */
+/* GraphReFly PY — A-water-ink theme (Starlight tokens) */
 
-@import url("https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Noto+Serif+SC:wght@400;600;700;900&family=Source+Sans+3:wght@300;400;500;600;700&display=swap");
 
 :root {
+	--gr-ink: #0a0a0f;
+	--gr-ink-raised: #0e0e14;
 	--gr-aqua: #4de8c2;
 	--gr-aqua-dim: #2bb89a;
-	--gr-aqua-glow: #4de8c244;
-	--gr-deep: #0a1628;
-	--gr-surface: #0f1f35;
-	--gr-surface-raised: #142640;
-	--gr-text: #e2eaf4;
-	--gr-text-muted: #8899b0;
-	--gr-accent-warm: #f0a858;
-	--gr-border: #1e3450;
-	--gr-border-subtle: #162a42;
+	--gr-warm: #c4a882;
+	--gr-stone: #6b7280;
+	--gr-parchment: #f5f0e8;
+	--gr-purple: #a78bfa;
+	--gr-border: #1a1a24;
+	--gr-border-subtle: #141418;
 }
 
-/* Starlight dark shell — align with callbag palette */
+/* Starlight dark shell — ink palette */
 :root[data-theme="dark"] {
-	--sl-color-white: #f4f8fc;
-	--sl-color-gray-1: var(--gr-text);
-	--sl-color-gray-2: var(--gr-text-muted);
-	--sl-color-gray-3: #6b7f99;
-	--sl-color-gray-4: #4a5f7a;
+	--sl-color-white: var(--gr-parchment);
+	--sl-color-gray-1: #e8e2d8;
+	--sl-color-gray-2: var(--gr-stone);
+	--sl-color-gray-3: #555b66;
+	--sl-color-gray-4: #3d424d;
 	--sl-color-gray-5: var(--gr-border);
-	--sl-color-gray-6: var(--gr-surface-raised);
-	--sl-color-black: var(--gr-deep);
+	--sl-color-gray-6: var(--gr-ink-raised);
+	--sl-color-black: var(--gr-ink);
 
 	--sl-color-accent-low: #0d3d35;
 	--sl-color-accent: var(--gr-aqua);
 	--sl-color-accent-high: #7df0d5;
 
-	--sl-color-bg: var(--gr-deep);
-	--sl-color-bg-nav: rgba(10, 22, 40, 0.88);
-	--sl-color-bg-sidebar: var(--gr-deep);
+	--sl-color-bg: var(--gr-ink);
+	--sl-color-bg-nav: rgba(10, 10, 15, 0.88);
+	--sl-color-bg-sidebar: var(--gr-ink);
 	--sl-color-hairline: var(--gr-border-subtle);
 	--sl-color-hairline-shade: var(--gr-border-subtle);
 
-	--sl-font: "Outfit", system-ui, sans-serif;
+	--sl-font: "Source Sans 3", system-ui, sans-serif;
 	--sl-font-mono: "JetBrains Mono", ui-monospace, monospace;
 }
 
 /* Nav blur (desktop) */
 header.sl-header {
-	backdrop-filter: blur(20px) saturate(1.35);
-	-webkit-backdrop-filter: blur(20px) saturate(1.35);
-	border-bottom: 1px solid var(--gr-border-subtle);
+	backdrop-filter: blur(16px) saturate(1.2);
+	-webkit-backdrop-filter: blur(16px) saturate(1.2);
+	border-bottom: 1px solid rgba(77, 232, 194, 0.06);
 }
 
 @media (max-width: 50rem) {
 	header.sl-header {
 		backdrop-filter: none;
 		-webkit-backdrop-filter: none;
-		background: rgba(10, 22, 40, 0.95);
+		background: rgba(10, 10, 15, 0.95);
 	}
 }
 
@@ -62,15 +61,15 @@ nav.sidebar .large {
 	text-transform: uppercase;
 	font-size: 0.7rem;
 	letter-spacing: 0.12em;
-	color: var(--gr-text-muted);
+	color: var(--gr-stone);
 }
 
-/* Prose — callbag-style rhythm */
+/* Prose — ink-style rhythm */
 .sl-markdown-content h1,
 .sl-markdown-content h2,
 .sl-markdown-content h3 {
-	font-family: "Instrument Sans", Outfit, system-ui, sans-serif;
-	letter-spacing: -0.02em;
+	font-family: "Noto Serif SC", serif;
+	letter-spacing: -0.01em;
 }
 
 .sl-markdown-content h1 {
@@ -78,7 +77,8 @@ nav.sidebar .large {
 	font-weight: 700;
 }
 
-.sl-markdown-content h2 {
+/* Hairlines between doc sections only — not the splash page (GraphreflyHero h2s) */
+.sl-markdown-content:not(:has(.gr-home)) h2 {
 	border-top: 1px solid var(--gr-border-subtle);
 	padding-top: 1.75rem;
 	margin-top: 2.5rem;
@@ -99,7 +99,7 @@ nav.sidebar .large {
 }
 
 .sl-markdown-content :not(pre) > code {
-	background: var(--gr-surface-raised);
+	background: var(--gr-ink-raised);
 	border: 1px solid var(--gr-border-subtle);
 	color: var(--gr-aqua);
 	border-radius: 4px;
@@ -108,14 +108,14 @@ nav.sidebar .large {
 }
 
 .sl-markdown-content pre {
-	border: 1px solid var(--gr-border-subtle);
-	border-radius: 12px;
+	border: 1px solid rgba(196, 168, 130, 0.12);
+	border-radius: 10px;
 	box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25);
 }
 
 /* Pyodide lab */
 .gr-pyodide-lead {
-	color: var(--gr-text-muted);
+	color: var(--gr-stone);
 	font-size: 0.95rem;
 	margin-bottom: 1rem;
 	line-height: 1.6;
@@ -125,13 +125,13 @@ nav.sidebar .large {
 	display: inline-flex;
 	align-items: center;
 	padding: 0.55rem 1.1rem;
-	border-radius: 999px;
+	border-radius: 6px;
 	font-weight: 600;
 	font-size: 0.9rem;
 	cursor: pointer;
 	border: 1px solid var(--gr-border-subtle);
-	background: linear-gradient(135deg, var(--gr-aqua), var(--gr-aqua-dim));
-	color: #041018;
+	background: var(--gr-aqua);
+	color: var(--gr-ink);
 	margin-bottom: 1rem;
 }
 
@@ -140,17 +140,75 @@ nav.sidebar .large {
 	cursor: wait;
 }
 
+/* Splash: main column starts at the top; fixed header overlays the hero */
+html:not([data-has-sidebar]) .main-frame {
+	padding-top: 0 !important;
+}
+
+main:has(.gr-home) {
+	margin: 0 !important;
+	padding: 0 !important;
+}
+
+html:not([data-has-sidebar]) .main-pane {
+	margin: 0 !important;
+}
+
+html:not([data-has-sidebar]) .main-frame > div:first-child {
+	margin-top: 0 !important;
+}
+
+/* Starlight splash: `.sl-container > * + *` adds margin-top to Markdown after the hidden hero */
+.content-panel:has(.gr-home) .sl-container > .sl-markdown-content {
+	margin-top: 0 !important;
+}
+
+html:has(.gr-home) {
+	scroll-behavior: smooth;
+}
+
+.sl-markdown-content:has(.gr-home) > *:first-child {
+	margin-top: 0 !important;
+}
+
+html:not([data-has-sidebar]) .page > header.header {
+	background: rgba(10, 10, 15, 0.42) !important;
+	border-bottom: 1px solid rgba(77, 232, 194, 0.06);
+}
+
+.content-panel:has(.gr-home) > .sl-container > .hero {
+	display: none;
+}
+
 .gr-pyodide-out {
 	margin: 0;
 	padding: 1rem 1.1rem;
 	border-radius: 10px;
-	border: 1px solid var(--gr-border-subtle);
-	background: #091322;
+	border: 1px solid rgba(196, 168, 130, 0.12);
+	background: rgba(10, 10, 15, 0.8);
 	font-family: var(--sl-font-mono);
 	font-size: 0.85rem;
 	line-height: 1.5;
 	overflow-x: auto;
 	white-space: pre-wrap;
+}
+
+/* Splash/home page — full-width */
+.gr-home ~ footer,
+.gr-home ~ footer * {
+	border: none;
+}
+
+/* Noise overlay */
+body::after {
+	content: '';
+	position: fixed;
+	inset: 0;
+	pointer-events: none;
+	z-index: 9999;
+	opacity: 0.03;
+	background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+	background-size: 128px 128px;
 }
 
 /* Selection */

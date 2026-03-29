@@ -118,8 +118,7 @@ class SqliteCheckpointAdapter:
         self._conn = sqlite3.connect(str(path))
         self._key = key
         self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS graphrefly_checkpoint"
-            " (k TEXT PRIMARY KEY, v TEXT NOT NULL)"
+            "CREATE TABLE IF NOT EXISTS graphrefly_checkpoint (k TEXT PRIMARY KEY, v TEXT NOT NULL)"
         )
         self._conn.commit()
 

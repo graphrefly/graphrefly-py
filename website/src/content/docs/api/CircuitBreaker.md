@@ -1,16 +1,16 @@
 ---
 title: 'CircuitBreaker'
-description: 'Small thread-safe circuit breaker (closed / open / half-open).'
+description: 'Protocol for circuit breaker instances (use :func:`circuit_breaker` to create).'
 ---
 
-Small thread-safe circuit breaker (closed / open / half-open).
+Protocol for circuit breaker instances (use :func:`circuit_breaker` to create).
 
 ## Signature
 
 ```python
-class CircuitBreaker
+class CircuitBreaker(Protocol)
 ```
 
 ## Documentation
 
-Small thread-safe circuit breaker (closed / open / half-open).
+Protocol for circuit breaker instances (use :func:`circuit_breaker` to create).

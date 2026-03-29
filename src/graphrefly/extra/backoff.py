@@ -7,7 +7,9 @@ from collections.abc import Callable
 from typing import Literal
 
 type JitterMode = Literal["none", "full", "equal"]
-type BackoffPreset = Literal["constant", "linear", "exponential", "fibonacci"]
+type BackoffPreset = Literal[
+    "constant", "linear", "exponential", "fibonacci", "decorrelated_jitter"
+]
 type BackoffStrategy = Callable[[int, BaseException | None, float | None], float | None]
 
 __all__ = [
@@ -15,10 +17,12 @@ __all__ = [
     "BackoffStrategy",
     "JitterMode",
     "constant",
+    "decorrelated_jitter",
     "exponential",
     "fibonacci",
     "linear",
     "resolve_backoff_preset",
+    "with_max_attempts",
 ]
 
 
@@ -125,6 +129,54 @@ def fibonacci(base: float = 0.1, *, max_delay: float = 30.0) -> BackoffStrategy:
     return _strategy
 
 
+def decorrelated_jitter(
+    base: float = 0.1,
+    max_delay: float = 30.0,
+) -> BackoffStrategy:
+    """Decorrelated jitter (AWS-recommended): ``random(base, min(max, prev * 3))``.
+
+    Stateless — uses ``prev_delay`` (passed by the consumer) instead of closure state.
+    Safe to share across concurrent retry sequences.
+
+    Args:
+        base: Floor of the random range (seconds, default ``0.1``).
+        max_delay: Ceiling cap (seconds, default ``30.0``).
+    """
+    safe_base = _clamp_non_negative(base)
+    safe_max = _clamp_non_negative(max_delay)
+
+    def _strategy(
+        _attempt: int,
+        _error: BaseException | None = None,
+        prev_delay: float | None = None,
+    ) -> float:
+        last = prev_delay if prev_delay is not None else safe_base
+        ceiling = min(safe_max, last * 3)
+        return random.uniform(safe_base, ceiling)
+
+    return _strategy
+
+
+def with_max_attempts(strategy: BackoffStrategy, max_attempts: int) -> BackoffStrategy:
+    """Cap any strategy at *max_attempts*; returns ``None`` after the cap.
+
+    Args:
+        strategy: Inner strategy to wrap.
+        max_attempts: Maximum number of attempts (inclusive).
+    """
+
+    def _strategy(
+        attempt: int,
+        error: BaseException | None = None,
+        prev_delay: float | None = None,
+    ) -> float | None:
+        if attempt >= max_attempts:
+            return None
+        return strategy(attempt, error, prev_delay)
+
+    return _strategy
+
+
 def resolve_backoff_preset(name: BackoffPreset) -> BackoffStrategy:
     """Resolve a preset name to a strategy with default parameters."""
     if name == "constant":
@@ -135,5 +187,7 @@ def resolve_backoff_preset(name: BackoffPreset) -> BackoffStrategy:
         return exponential()
     if name == "fibonacci":
         return fibonacci()
+    if name == "decorrelated_jitter":
+        return decorrelated_jitter()
     msg = f"Unknown backoff preset: {name!r}"
     raise ValueError(msg)

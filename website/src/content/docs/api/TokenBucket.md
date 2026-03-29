@@ -1,16 +1,16 @@
 ---
 title: 'TokenBucket'
-description: 'Thread-safe token bucket (for pairing with custom gates or metrics).'
+description: 'Protocol for token bucket instances (use :func:`token_bucket` to create).'
 ---
 
-Thread-safe token bucket (for pairing with custom gates or metrics).
+Protocol for token bucket instances (use :func:`token_bucket` to create).
 
 ## Signature
 
 ```python
-class TokenBucket
+class TokenBucket(Protocol)
 ```
 
 ## Documentation
 
-Thread-safe token bucket (for pairing with custom gates or metrics).
+Protocol for token bucket instances (use :func:`token_bucket` to create).

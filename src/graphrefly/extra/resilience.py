@@ -7,7 +7,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from graphrefly.core.node import Node, NodeActions, node
 from graphrefly.core.protocol import Messages, MessageType, batch
@@ -28,8 +28,10 @@ __all__ = [
     "TokenBucket",
     "WithBreakerBundle",
     "WithStatusBundle",
+    "circuit_breaker",
     "rate_limiter",
     "retry",
+    "token_bucket",
     "token_tracker",
     "with_breaker",
     "with_status",
@@ -181,14 +183,31 @@ class CircuitOpenError(RuntimeError):
         super().__init__("Circuit breaker is open")
 
 
-class CircuitBreaker:
-    """Small thread-safe circuit breaker (closed / open / half-open)."""
+@runtime_checkable
+class CircuitBreaker(Protocol):
+    """Protocol for circuit breaker instances (use :func:`circuit_breaker` to create)."""
+
+    @property
+    def state(self) -> CircuitState: ...
+    @property
+    def failure_count(self) -> int: ...
+    def can_execute(self) -> bool: ...
+    def record_success(self) -> None: ...
+    def record_failure(self, _error: BaseException | None = None) -> None: ...
+    def reset(self) -> None: ...
+
+
+class _CircuitBreakerImpl:
+    """Thread-safe circuit breaker (closed / open / half-open) with optional cooldown escalation."""
 
     __slots__ = (
-        "_cooldown",
+        "_cooldown_base",
+        "_cooldown_strategy",
         "_failures",
         "_half_open_max",
+        "_last_cooldown",
         "_lock",
+        "_open_cycle",
         "_opened_at",
         "_state",
         "_threshold",
@@ -200,28 +219,49 @@ class CircuitBreaker:
         *,
         failure_threshold: int = 5,
         cooldown: float = 30.0,
+        cooldown_strategy: BackoffStrategy | None = None,
         half_open_max: int = 1,
     ) -> None:
         self._threshold = max(1, failure_threshold)
-        self._cooldown = max(0.0, cooldown)
+        self._cooldown_base = max(0.0, cooldown)
+        self._cooldown_strategy = cooldown_strategy
         self._half_open_max = max(1, half_open_max)
         self._state: CircuitState = "closed"
         self._failures = 0
         self._opened_at = 0.0
         self._trials = 0
+        self._open_cycle = 0
+        self._last_cooldown = self._cooldown_base
         self._lock = threading.Lock()
+
+    def _get_cooldown(self) -> float:
+        if self._cooldown_strategy is None:
+            return self._cooldown_base
+        raw = self._cooldown_strategy(self._open_cycle, None, None)
+        return float(raw) if raw is not None else self._cooldown_base
+
+    def _transition_to_open(self) -> None:
+        self._state = "open"
+        self._last_cooldown = self._get_cooldown()
+        self._opened_at = time.monotonic()
+        self._trials = 0
 
     @property
     def state(self) -> CircuitState:
         with self._lock:
             return self._state
 
+    @property
+    def failure_count(self) -> int:
+        with self._lock:
+            return self._failures
+
     def can_execute(self) -> bool:
         with self._lock:
             if self._state == "closed":
                 return True
             if self._state == "open":
-                if (time.monotonic() - self._opened_at) >= self._cooldown:
+                if (time.monotonic() - self._opened_at) >= self._last_cooldown:
                     self._state = "half-open"
                     self._trials = 1
                     return True
@@ -233,22 +273,54 @@ class CircuitBreaker:
 
     def record_success(self) -> None:
         with self._lock:
-            self._state = "closed"
-            self._failures = 0
-            self._trials = 0
+            if self._state == "half-open":
+                self._state = "closed"
+                self._failures = 0
+                self._open_cycle = 0
+            elif self._state == "closed":
+                self._failures = 0
 
     def record_failure(self, _error: BaseException | None = None) -> None:
         with self._lock:
             if self._state == "half-open":
-                self._state = "open"
-                self._opened_at = time.monotonic()
-                self._trials = 0
+                self._open_cycle += 1
+                self._transition_to_open()
                 return
             self._failures += 1
             if self._failures >= self._threshold:
-                self._state = "open"
-                self._opened_at = time.monotonic()
-                self._trials = 0
+                self._transition_to_open()
+
+    def reset(self) -> None:
+        with self._lock:
+            self._state = "closed"
+            self._failures = 0
+            self._open_cycle = 0
+            self._trials = 0
+
+
+def circuit_breaker(
+    *,
+    failure_threshold: int = 5,
+    cooldown: float = 30.0,
+    cooldown_strategy: BackoffStrategy | None = None,
+    half_open_max: int = 1,
+) -> CircuitBreaker:
+    """Thread-safe circuit breaker (closed / open / half-open).
+
+    Supports escalating cooldown via an optional backoff strategy.
+
+    Args:
+        failure_threshold: Failures before opening (default ``5``).
+        cooldown: Base cooldown seconds (default ``30.0``).
+        cooldown_strategy: Backoff for cooldown escalation.
+        half_open_max: Trials in half-open (default ``1``).
+    """
+    return _CircuitBreakerImpl(
+        failure_threshold=failure_threshold,
+        cooldown=cooldown,
+        cooldown_strategy=cooldown_strategy,
+        half_open_max=half_open_max,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,7 +398,15 @@ def with_breaker(
     return _op
 
 
-class TokenBucket:
+@runtime_checkable
+class TokenBucket(Protocol):
+    """Protocol for token bucket instances (use :func:`token_bucket` to create)."""
+
+    def available(self) -> float: ...
+    def try_consume(self, cost: float = 1.0) -> bool: ...
+
+
+class _TokenBucketImpl:
     """Thread-safe token bucket (for pairing with custom gates or metrics)."""
 
     __slots__ = ("_capacity", "_lock", "_refill_per_sec", "_tokens", "_updated_at")
@@ -367,9 +447,19 @@ class TokenBucket:
             return False
 
 
+def token_bucket(capacity: float, refill_per_second: float) -> TokenBucket:
+    """Factory for a thread-safe :class:`TokenBucket`.
+
+    Args:
+        capacity: Maximum tokens.
+        refill_per_second: Tokens restored per second (``0`` = no refill).
+    """
+    return _TokenBucketImpl(capacity, refill_per_second)
+
+
 def token_tracker(capacity: float, refill_per_second: float) -> TokenBucket:
-    """Build a :class:`TokenBucket` (companion to :func:`rate_limiter`)."""
-    return TokenBucket(capacity, refill_per_second)
+    """Alias for :func:`token_bucket` (backward compat)."""
+    return token_bucket(capacity, refill_per_second)
 
 
 def rate_limiter(max_events: int, window_seconds: float) -> PipeOperator:

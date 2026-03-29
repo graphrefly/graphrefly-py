@@ -2,7 +2,7 @@
 """Generate Starlight API pages from docstrings in graphrefly.extra modules.
 
 Scanned modules are listed in ``EXTRA_MODULES`` (tier1, tier2, sources, backoff,
-checkpoint, resilience, …).
+checkpoint, resilience, data_structures, …).
 
 Emits one page per ``__all__`` name that maps to a top-level function, async
 function, class, or :pep:`695` type alias (``type X = ...``).
@@ -21,13 +21,18 @@ import ast
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent.parent
+# Core must use defining modules — ``__init__.py`` only re-exports (no top-level defs for the scanner).
 EXTRA_MODULES: list[tuple[str, Path]] = [
+    ("core_node", REPO / "src/graphrefly/core/node.py"),
+    ("core_sugar", REPO / "src/graphrefly/core/sugar.py"),
+    ("core_protocol", REPO / "src/graphrefly/core/protocol.py"),
     ("tier1", REPO / "src/graphrefly/extra/tier1.py"),
     ("tier2", REPO / "src/graphrefly/extra/tier2.py"),
     ("sources", REPO / "src/graphrefly/extra/sources.py"),
     ("backoff", REPO / "src/graphrefly/extra/backoff.py"),
     ("checkpoint", REPO / "src/graphrefly/extra/checkpoint.py"),
     ("resilience", REPO / "src/graphrefly/extra/resilience.py"),
+    ("data_structures", REPO / "src/graphrefly/extra/data_structures.py"),
 ]
 WEBSITE = Path(__file__).resolve().parent.parent
 OUT = WEBSITE / "src/content/docs/api"
@@ -176,16 +181,16 @@ def _page_md(name: str, sig: str, doc: str | None, *, kind: str) -> str:
 def _index_md(names: list[str]) -> str:
     lines = [
         "---",
-        'title: "API (extra)"',
+        'title: "API reference"',
         (
-            'description: "Operators, sources, resilience, backoff, and checkpoint '
-            'APIs (``graphrefly.extra``) — generated from source docstrings."'
+            'description: "Core primitives (``graphrefly.core``) and extra operators '
+            '(``graphrefly.extra``) — generated from source docstrings."'
         ),
         "---",
         "",
         (
             "Reference pages for modules listed in "
-            "`website/scripts/gen_api_docs.py` (`EXTRA_MODULES`); "
+            "`website/scripts/gen_api_docs.py` (`EXTRA_MODULES`, including core); "
             "see `docs/docs-guidance.md`."
         ),
         "",
@@ -212,7 +217,7 @@ def main() -> None:
     kinds: dict[str, str] = {}
     sources: dict[str, str] = {}
 
-    for _label, mod_path in EXTRA_MODULES:
+    for label, mod_path in EXTRA_MODULES:
         source = mod_path.read_text(encoding="utf-8")
         tree = ast.parse(source)
         order = _load_all_order(tree)
@@ -220,8 +225,11 @@ def main() -> None:
         for name in order:
             if name not in exports:
                 continue
+            # Case-insensitive FS: Node.md vs node.md collide; keep `node()` as primary API page.
+            if name == "Node":
+                continue
             if name in nodes:
-                msg = f"duplicate export {name!r} in extra modules"
+                msg = f"duplicate export {name!r} across scanned modules"
                 raise ValueError(msg)
             node = exports[name]
             doc_names.append(name)

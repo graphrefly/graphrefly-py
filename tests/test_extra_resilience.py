@@ -14,10 +14,12 @@ from graphrefly import Graph, Messages, MessageType, node, pipe, state
 from graphrefly.extra.backoff import (
     BackoffPreset,
     constant,
+    decorrelated_jitter,
     exponential,
     fibonacci,
     linear,
     resolve_backoff_preset,
+    with_max_attempts,
 )
 from graphrefly.extra.checkpoint import (
     DictCheckpointAdapter,
@@ -32,8 +34,10 @@ from graphrefly.extra.resilience import (
     CircuitBreaker,
     CircuitOpenError,
     TokenBucket,
+    circuit_breaker,
     rate_limiter,
     retry,
+    token_bucket,
     token_tracker,
     with_breaker,
     with_status,
@@ -153,7 +157,7 @@ def test_rate_limiter_queues_then_drains() -> None:
 
 
 def test_circuit_breaker_opens() -> None:
-    b = CircuitBreaker(failure_threshold=2)
+    b = circuit_breaker(failure_threshold=2)
     assert b.can_execute()
     b.record_failure(ValueError("a"))
     assert b.state == "closed"
@@ -163,7 +167,7 @@ def test_circuit_breaker_opens() -> None:
 
 
 def test_with_breaker_errors_when_open() -> None:
-    b = CircuitBreaker(failure_threshold=1, cooldown=60.0)
+    b = circuit_breaker(failure_threshold=1, cooldown=60.0)
     b.record_failure(ValueError("trip"))
     src = state(1)
     bundle = with_breaker(b, on_open="error")(src)
@@ -178,7 +182,7 @@ def test_with_breaker_errors_when_open() -> None:
 
 
 def test_with_breaker_skip_resolved_when_open() -> None:
-    b = CircuitBreaker(failure_threshold=1, cooldown=60.0)
+    b = circuit_breaker(failure_threshold=1, cooldown=60.0)
     b.record_failure(ValueError("trip"))
     src = state(1)
     bundle = with_breaker(b, on_open="skip")(src)
@@ -268,7 +272,7 @@ def test_sqlite_checkpoint_adapter_round_trip() -> None:
 
 
 def test_with_breaker_meta_integration() -> None:
-    b = CircuitBreaker(failure_threshold=2)
+    b = circuit_breaker(failure_threshold=2)
     src = state(1)
     bundle = with_breaker(b)(src)
     assert bundle.node.meta["breaker_state"] is bundle.breaker_state
@@ -284,7 +288,7 @@ def test_with_status_meta_integration() -> None:
 
 
 def test_with_breaker_appears_in_graph_describe() -> None:
-    b = CircuitBreaker(failure_threshold=2)
+    b = circuit_breaker(failure_threshold=2)
     s = state(1)
     bundle = with_breaker(b)(s)
     g = Graph("test")
@@ -313,3 +317,79 @@ def test_restore_empty_returns_false() -> None:
     g = Graph("empty")
     g.add("a", state(0))
     assert restore_graph_checkpoint(g, MemoryCheckpointAdapter()) is False
+
+
+# --- New parity tests (decorrelatedJitter, withMaxAttempts, factory, reset) ---
+
+
+def test_decorrelated_jitter_basic() -> None:
+    strat = decorrelated_jitter(base=0.1, max_delay=30.0)
+    d = strat(0, None, None)
+    assert isinstance(d, float)
+    assert d >= 0.1
+
+
+def test_decorrelated_jitter_uses_prev_delay() -> None:
+    strat = decorrelated_jitter(base=0.1, max_delay=30.0)
+    d = strat(1, None, 5.0)
+    assert d >= 0.1
+    assert d <= 15.0  # min(30, 5*3) = 15
+
+
+def test_with_max_attempts() -> None:
+    inner = constant(1.0)
+    capped = with_max_attempts(inner, 3)
+    assert capped(0, None, None) == 1.0
+    assert capped(2, None, None) == 1.0
+    assert capped(3, None, None) is None  # past cap
+
+
+def test_circuit_breaker_factory() -> None:
+    b = circuit_breaker(failure_threshold=2)
+    assert isinstance(b, CircuitBreaker)
+    assert b.state == "closed"
+    assert b.failure_count == 0
+
+
+def test_circuit_breaker_reset() -> None:
+    b = circuit_breaker(failure_threshold=1)
+    b.record_failure(ValueError("x"))
+    assert b.state == "open"
+    b.reset()
+    assert b.state == "closed"
+    assert b.failure_count == 0
+
+
+def test_circuit_breaker_cooldown_escalation() -> None:
+    delays: list[float] = []
+
+    def strategy(attempt: int, *_args: Any, **_kw: Any) -> float:
+        d = 0.01 * (attempt + 1)
+        delays.append(d)
+        return d
+
+    b = circuit_breaker(failure_threshold=1, cooldown_strategy=strategy)
+    # Trip open
+    b.record_failure(ValueError("a"))
+    assert b.state == "open"
+    time.sleep(0.02)
+    # Transition to half-open
+    assert b.can_execute()
+    # Fail again → open with escalated cooldown
+    b.record_failure(ValueError("b"))
+    assert b.state == "open"
+    assert len(delays) >= 2  # strategy was called at least twice
+
+
+def test_token_bucket_factory() -> None:
+    tb = token_bucket(5.0, 0.0)
+    assert isinstance(tb, TokenBucket)
+    assert tb.try_consume(5.0)
+    assert not tb.try_consume(0.1)
+
+
+def test_resolve_decorrelated_jitter_preset() -> None:
+    s = resolve_backoff_preset("decorrelated_jitter")
+    d = s(0, None, None)
+    assert isinstance(d, float)
+    assert d >= 0.0

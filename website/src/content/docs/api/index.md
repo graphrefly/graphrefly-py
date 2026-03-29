@@ -1,12 +1,31 @@
 ---
-title: "API (extra)"
-description: "Operators, sources, resilience, backoff, and checkpoint APIs (``graphrefly.extra``) — generated from source docstrings."
+title: "API reference"
+description: "Core primitives (``graphrefly.core``) and extra operators (``graphrefly.extra``) — generated from source docstrings."
 ---
 
-Reference pages for modules listed in `website/scripts/gen_api_docs.py` (`EXTRA_MODULES`); see `docs/docs-guidance.md`.
+Reference pages for modules listed in `website/scripts/gen_api_docs.py` (`EXTRA_MODULES`, including core); see `docs/docs-guidance.md`.
 
 ## API index
 
+- [NodeActions](./NodeActions/)
+- [NodeImpl](./NodeImpl/)
+- [SubscribeHints](./SubscribeHints/)
+- [node](./node/)
+- [PipeOperator](./PipeOperator/)
+- [derived](./derived/)
+- [effect](./effect/)
+- [pipe](./pipe/)
+- [producer](./producer/)
+- [state](./state/)
+- [Message](./Message/)
+- [MessageType](./MessageType/)
+- [Messages](./Messages/)
+- [batch](./batch/)
+- [dispatch_messages](./dispatch_messages/)
+- [emit_with_batch](./emit_with_batch/)
+- [is_batching](./is_batching/)
+- [is_phase2_message](./is_phase2_message/)
+- [partition_for_batch](./partition_for_batch/)
 - [combine](./combine/)
 - [concat](./concat/)
 - [distinct_until_changed](./distinct_until_changed/)
@@ -73,14 +92,17 @@ Reference pages for modules listed in `website/scripts/gen_api_docs.py` (`EXTRA_
 - [BackoffStrategy](./BackoffStrategy/)
 - [JitterMode](./JitterMode/)
 - [constant](./constant/)
+- [decorrelated_jitter](./decorrelated_jitter/)
 - [exponential](./exponential/)
 - [fibonacci](./fibonacci/)
 - [linear](./linear/)
 - [resolve_backoff_preset](./resolve_backoff_preset/)
+- [with_max_attempts](./with_max_attempts/)
 - [CheckpointAdapter](./CheckpointAdapter/)
 - [DictCheckpointAdapter](./DictCheckpointAdapter/)
 - [FileCheckpointAdapter](./FileCheckpointAdapter/)
 - [MemoryCheckpointAdapter](./MemoryCheckpointAdapter/)
+- [SqliteCheckpointAdapter](./SqliteCheckpointAdapter/)
 - [checkpoint_node_value](./checkpoint_node_value/)
 - [restore_graph_checkpoint](./restore_graph_checkpoint/)
 - [save_graph_checkpoint](./save_graph_checkpoint/)
@@ -89,8 +111,22 @@ Reference pages for modules listed in `website/scripts/gen_api_docs.py` (`EXTRA_
 - [TokenBucket](./TokenBucket/)
 - [WithBreakerBundle](./WithBreakerBundle/)
 - [WithStatusBundle](./WithStatusBundle/)
+- [circuit_breaker](./circuit_breaker/)
 - [rate_limiter](./rate_limiter/)
 - [retry](./retry/)
+- [token_bucket](./token_bucket/)
 - [token_tracker](./token_tracker/)
 - [with_breaker](./with_breaker/)
 - [with_status](./with_status/)
+- [PubSubHub](./PubSubHub/)
+- [ReactiveIndexBundle](./ReactiveIndexBundle/)
+- [ReactiveListBundle](./ReactiveListBundle/)
+- [ReactiveLogBundle](./ReactiveLogBundle/)
+- [ReactiveMapBundle](./ReactiveMapBundle/)
+- [Versioned](./Versioned/)
+- [log_slice](./log_slice/)
+- [pubsub](./pubsub/)
+- [reactive_index](./reactive_index/)
+- [reactive_list](./reactive_list/)
+- [reactive_log](./reactive_log/)
+- [reactive_map](./reactive_map/)
