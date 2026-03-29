@@ -18,6 +18,7 @@ REPO = Path(__file__).resolve().parent.parent.parent
 EXTRA_MODULES: list[tuple[str, Path]] = [
     ("tier1", REPO / "src/graphrefly/extra/tier1.py"),
     ("tier2", REPO / "src/graphrefly/extra/tier2.py"),
+    ("sources", REPO / "src/graphrefly/extra/sources.py"),
 ]
 WEBSITE = Path(__file__).resolve().parent.parent
 OUT = WEBSITE / "src/content/docs/api"
@@ -104,17 +105,17 @@ def _index_md(names: list[str]) -> str:
         "---",
         'title: "API (extra)"',
         (
-            'description: "Tier-1 and tier-2 operators from graphrefly.extra — '
-            'generated from source docstrings."'
+            'description: "Tier-1 and tier-2 operators plus sources/sinks '
+            '(``graphrefly.extra``) — generated from source docstrings."'
         ),
         "---",
         "",
         (
-            "Reference pages for public functions in `graphrefly.extra.tier1` and "
-            "`graphrefly.extra.tier2` (see `docs/docs-guidance.md`)."
+            "Reference pages for `graphrefly.extra.tier1`, `graphrefly.extra.tier2`, "
+            "and `graphrefly.extra.sources` (roadmap §2.3); see `docs/docs-guidance.md`."
         ),
         "",
-        "## Operators",
+        "## API index",
         "",
     ]
     for n in names:

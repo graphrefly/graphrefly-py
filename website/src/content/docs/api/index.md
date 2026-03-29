@@ -1,11 +1,11 @@
 ---
 title: "API (extra)"
-description: "Tier-1 and tier-2 operators from graphrefly.extra — generated from source docstrings."
+description: "Tier-1 and tier-2 operators plus sources/sinks (``graphrefly.extra``) — generated from source docstrings."
 ---
 
-Reference pages for public functions in `graphrefly.extra.tier1` and `graphrefly.extra.tier2` (see `docs/docs-guidance.md`).
+Reference pages for `graphrefly.extra.tier1`, `graphrefly.extra.tier2`, and `graphrefly.extra.sources` (roadmap §2.3); see `docs/docs-guidance.md`.
 
-## Operators
+## API index
 
 - [combine](./combine/)
 - [concat](./concat/)
@@ -38,6 +38,7 @@ Reference pages for public functions in `graphrefly.extra.tier1` and `graphrefly
 - [delay](./delay/)
 - [exhaust_map](./exhaust_map/)
 - [flat_map](./flat_map/)
+- [gate](./gate/)
 - [interval](./interval/)
 - [pausable](./pausable/)
 - [repeat](./repeat/)
@@ -46,3 +47,23 @@ Reference pages for public functions in `graphrefly.extra.tier1` and `graphrefly
 - [switch_map](./switch_map/)
 - [throttle](./throttle/)
 - [timeout](./timeout/)
+- [window](./window/)
+- [window_count](./window_count/)
+- [window_time](./window_time/)
+- [cached](./cached/)
+- [empty](./empty/)
+- [first_value_from](./first_value_from/)
+- [first_value_from_future](./first_value_from_future/)
+- [for_each](./for_each/)
+- [from_any](./from_any/)
+- [from_async_iter](./from_async_iter/)
+- [from_awaitable](./from_awaitable/)
+- [from_cron](./from_cron/)
+- [from_iter](./from_iter/)
+- [from_timer](./from_timer/)
+- [never](./never/)
+- [of](./of/)
+- [replay](./replay/)
+- [share](./share/)
+- [throw_error](./throw_error/)
+- [to_list](./to_list/)

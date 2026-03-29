@@ -19,7 +19,7 @@ Single-source-of-truth strategy: **protocol spec lives in `~/src/graphrefly`**; 
 | Tier | What | Where it lives | Flows to |
 |------|------|----------------|----------|
 | **0 — Protocol spec** | `GRAPHREFLY-SPEC.md` | `~/src/graphrefly/` (canonical) | Both sites via `sync-docs.mjs` |
-| **1 — Docstrings** | Structured doc blocks on exports | `src/graphrefly/*.py` | Generated API pages via `website/scripts/gen_api_docs.py` (`extra/tier1.py` + `extra/tier2.py`) → `website/src/content/docs/api/` |
+| **1 — Docstrings** | Structured doc blocks on exports | `src/graphrefly/*.py` | Generated API pages via `website/scripts/gen_api_docs.py` (`extra/tier1.py`, `extra/tier2.py`, `extra/sources.py`) → `website/src/content/docs/api/` |
 | **2 — Runnable examples** | Self-contained scripts using public imports | `examples/*.py` | Imported by recipes + demos |
 | **3 — Recipes / guides** | Long-form Starlight pages with context | `website/src/content/docs/recipes/` | Pull code from `examples/` |
 | **4 — Interactive demos** | Pyodide labs | `website/src/content/docs/lab/` | Interactive Python playground |

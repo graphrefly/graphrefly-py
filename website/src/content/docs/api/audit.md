@@ -1,9 +1,9 @@
 ---
 title: 'audit'
-description: 'Leading emit, then silence window; when it ends, emit the latest source ``DATA``.'
+description: 'Trailing-only window: after each ``DATA``, wait ``seconds``, then emit the latest value.'
 ---
 
-Leading emit, then silence window; when it ends, emit the latest source ``DATA``.
+Trailing-only window: after each ``DATA``, wait ``seconds``, then emit the latest value.
 
 ## Signature
 
@@ -13,4 +13,7 @@ def audit(seconds: float) -> PipeOperator
 
 ## Documentation
 
-Leading emit, then silence window; when it ends, emit the latest source ``DATA``.
+Trailing-only window: after each ``DATA``, wait ``seconds``, then emit the latest value.
+
+Each ``DATA`` stores the latest value and restarts the timer. When the timer fires,
+the stored value is emitted. No leading-edge emission (Rx ``auditTime`` semantics).

@@ -1,23 +1,23 @@
 ---
 title: 'throttle'
-description: 'Leading-edge rate limit: first ``DATA`` in each window emits immediately; others drop.'
+description: 'Rate-limit: at most one emit per ``seconds`` window.'
 ---
 
-Leading-edge rate limit: first ``DATA`` in each window emits immediately; others drop.
+Rate-limit: at most one emit per ``seconds`` window.
 
 ## Signature
 
 ```python
-def throttle(seconds: float, *, trailing: bool = False) -> PipeOperator
+def throttle(
+    seconds: float, *, leading: bool = True, trailing: bool = False
+) -> PipeOperator
 ```
 
 ## Documentation
 
-Leading-edge rate limit: first ``DATA`` in each window emits immediately; others drop.
-
-When ``trailing=True``, one additional emit is scheduled when the window ends if the
-source emitted newer values that were suppressed during the window.
+Rate-limit: at most one emit per ``seconds`` window.
 
 Args:
     seconds: Window length in seconds.
+    leading: Whether to emit the first value at the start of each window (default ``True``).
     trailing: Whether to emit the latest suppressed value when the window closes.

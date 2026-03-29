@@ -1,16 +1,19 @@
 ---
 title: 'pausable'
-description: 'Forward ``DATA`` only when ``control`` is truthy; otherwise emit ``RESOLVED``.'
+description: 'Buffer ``DIRTY``/``DATA``/``RESOLVED`` while ``PAUSE`` is in effect; flush on ``RESUME``.'
 ---
 
-Forward ``DATA`` only when ``control`` is truthy; otherwise emit ``RESOLVED``.
+Buffer ``DIRTY``/``DATA``/``RESOLVED`` while ``PAUSE`` is in effect; flush on ``RESUME``.
 
 ## Signature
 
 ```python
-def pausable(control: Node[Any]) -> PipeOperator
+def pausable() -> PipeOperator
 ```
 
 ## Documentation
 
-Forward ``DATA`` only when ``control`` is truthy; otherwise emit ``RESOLVED``.
+Buffer ``DIRTY``/``DATA``/``RESOLVED`` while ``PAUSE`` is in effect; flush on ``RESUME``.
+
+Protocol-level pause/resume using ``PAUSE``/``RESUME`` message types. Matches
+TypeScript ``pausable`` semantics.

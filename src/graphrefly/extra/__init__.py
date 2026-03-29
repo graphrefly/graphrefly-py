@@ -1,5 +1,26 @@
 """Extra operators and sources (roadmap Phase 2+)."""
 
+from graphrefly.extra.sources import (
+    cached,
+    empty,
+    first_value_from,
+    first_value_from_future,
+    for_each,
+    from_any,
+    from_async_iter,
+    from_awaitable,
+    from_cron,
+    from_event_emitter,
+    from_iter,
+    from_timer,
+    never,
+    of,
+    replay,
+    share,
+    throw_error,
+    to_array,
+    to_list,
+)
 from graphrefly.extra.tier1 import (
     combine,
     concat,
@@ -49,6 +70,25 @@ from graphrefly.extra.tier2 import (
 )
 
 __all__ = [
+    "cached",
+    "empty",
+    "first_value_from",
+    "first_value_from_future",
+    "for_each",
+    "from_any",
+    "from_async_iter",
+    "from_awaitable",
+    "from_cron",
+    "from_event_emitter",
+    "from_iter",
+    "from_timer",
+    "never",
+    "of",
+    "replay",
+    "share",
+    "throw_error",
+    "to_array",
+    "to_list",
     "audit",
     "buffer",
     "buffer_count",
