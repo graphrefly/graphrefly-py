@@ -279,6 +279,29 @@ Cross-language: `graphrefly-ts/docs/optimizations.md` §15. **Python (shipped):*
 
 2. **Describe `type` before first run (operator vs derived).** Both ports: `describe_kind` / `describeKind` on node options and sugar (`effect`, `producer`, `derived`); operators that only use `down()`/`emit()` still infer via `_manual_emit_used` after a run unless `describe_kind="operator"` is set.
 
+3. **Tier 1 extra operators (roadmap 2.1).** Python ships `graphrefly.extra.tier1`; TypeScript ships `src/extra/operators.ts`. **Parity aligned (2026-03-28):**
+
+   | Operator | Aligned behavior |
+   |----------|-----------------|
+   | `skip` | Both count wire `DATA` only (via `on_message`); initial dep settlement does not consume a skip slot |
+   | `reduce` | Both: COMPLETE-gated fold — accumulate silently, emit once on COMPLETE (not alias for `scan`) |
+   | `race` | Both: winner-lock — first source to emit DATA wins, continues forwarding only that source |
+   | `merge` | Both: dirty bitmask tracking; single DIRTY downstream per wave; `COMPLETE` after all sources complete |
+   | `zip` | Both: only DATA enqueues (RESOLVED does not, per spec §1.3.3); COMPLETE when a source completes with empty buffer or all complete |
+   | `concat` | Both: buffer DATA from second source during phase 0; replay on handoff |
+   | `take_until` | Both: default trigger on DATA only from notifier; optional `predicate` for custom trigger |
+   | `with_latest_from` | Both: full `on_message` — suppress secondary-only emissions; emit only on primary settle |
+   | `filter` | Both: pure predicate gate — no implicit dedup (use `distinct_until_changed` for that) |
+   | `scan` | Both: delegate equality to `node(equals=eq)`, no manual RESOLVED in compute |
+   | `distinct_until_changed` | Both: delegate to `node(equals=eq)` |
+   | `pairwise` | Both: explicit RESOLVED for first value (no pair yet) |
+   | `take_while` | Both: predicate exceptions handled by node-level error catching (spec §2.4) |
+   | `start_with` | Both: inline `actions.emit(value)` then `actions.emit(deps[0])` in compute |
+   | `combine/merge/zip/race` | Both: accept empty sources (degenerate case: empty tuple or COMPLETE producer) |
+   | `last` | Both: sentinel for no-default — empty completion without default emits only COMPLETE |
+
+   **Deferred QA items:** see §Deferred follow-ups.
+
 ---
 
 ## Open design decisions (needs product/spec call)
@@ -304,3 +327,29 @@ These are tracked primarily in `graphrefly-ts/docs/optimizations.md`; listed her
 **Why:** Dependencies are fixed when the node is created. True single-edge removal would require core APIs (partial upstream unsubscribe, bitmask width and diamond invariants, thread-safety on the Python side, etc.).
 
 **Decision needed:** Is registry-only `disconnect` the long-term contract (documentation + `describe()` as source of truth), or should a later phase add **dynamic topology** so `disconnect` (or a new API) actually detaches one dep? Align with `GRAPHREFLY-SPEC.md` §3.3 when the spec is tightened.
+
+---
+
+## Deferred follow-ups (QA)
+
+Non-blocking items tracked for later; not optimizations per se. Keep this section **identical** in `graphrefly-ts/docs/optimizations.md` and here (aside from language-specific labels in the first table).
+
+| Item | Notes |
+|------|-------|
+| **`lastDepValues` + `Object.is` / referential equality** | Skips `fn` when dep snapshots are referentially equal. Fine for immutable values; misleading if deps are mutated in place. |
+| **`sideEffects: false` in `package.json`** | TypeScript package only. Safe while the library has no import-time side effects. Revisit if global registration or polyfills are added at module load. |
+| **JSDoc / docstrings on `node()` and public APIs** | `docs/docs-guidance.md`: JSDoc on new TS exports; docstrings on new Python public APIs. |
+| **Roadmap §0.3 checkboxes** | Mark Phase 0.3 items when the team agrees the milestone is complete. |
+
+### Tier 1 extra operators (roadmap 2.1) — deferred semantics (QA)
+
+Applies to `graphrefly-ts` `src/extra/operators.ts` and `graphrefly.extra.tier1`. **Keep the table below identical in both repos’ `docs/optimizations.md`.**
+
+| Item | Notes |
+|------|-------|
+| **`takeUntil` / `take_until` + notifier `DIRTY`** | Decide whether the first notifier signal that ends the primary should be any protocol tuple (e.g. a lone `DIRTY`) or only phase-2 / `DATA` (Rx-style “next”). Implementations may differ until aligned. |
+| **`zip` + partial queues** | When one inner source completes, buffered values that never formed a full tuple are dropped; downstream then completes. Document if stricter Rx parity is required. |
+| **`concat` + `ERROR` on the second source before the first completes** | Phase gating ignores the second source until the first completes; an `ERROR` on the second during phase 0 may be swallowed until phase 1. Decide whether tail-source errors should short-circuit early. |
+| **`race` + pre-winner `DIRTY`** | Before the first winning `DATA`, `DIRTY` (and other tuples) may be forwarded from more than one inner source (TypeScript: `take(merge(...), 1)`; Python: multi-dep `on_message`). JSDoc on TS `race` notes this; a stricter “winner-only” behavior would need a different implementation in either port. |
+
+---

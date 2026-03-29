@@ -148,12 +148,12 @@ Port proven operators from callbag-recharge-py + new ones from TS.
 
 ### 2.1 — Tier 1 operators (sync, static deps)
 
-- [ ] `map`, `filter`, `scan`, `reduce`
-- [ ] `take`, `skip`, `take_while`, `take_until`
-- [ ] `first`, `last`, `find`, `element_at`
-- [ ] `start_with`, `tap`, `distinct_until_changed`, `pairwise`
-- [ ] `combine`, `merge`, `with_latest_from`, `zip`
-- [ ] `concat`, `race`
+- [x] `map`, `filter`, `scan`, `reduce`
+- [x] `take`, `skip`, `take_while`, `take_until`
+- [x] `first`, `last`, `find`, `element_at`
+- [x] `start_with`, `tap`, `distinct_until_changed`, `pairwise`
+- [x] `combine`, `merge`, `with_latest_from`, `zip`
+- [x] `concat`, `race`
 
 ### 2.2 — Tier 2 operators (async, dynamic)
 

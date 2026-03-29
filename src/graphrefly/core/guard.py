@@ -130,7 +130,10 @@ def policy(
         allowed = False
         for kind, acts, where in rules:
             matched = _policy_rule_result(
-                actions=acts, where=where, actor=a, guard_action=guard_action,
+                actions=acts,
+                where=where,
+                actor=a,
+                guard_action=guard_action,
             )
             if not matched:
                 continue
