@@ -692,6 +692,7 @@ def merge(*sources: Node[Any]) -> Node[Any]:
     """
     srcs = list(sources)
     if not srcs:
+
         def _empty_fn(_d: list[Any], a: NodeActions) -> None:
             a.down([(MessageType.COMPLETE,)])
 
@@ -927,6 +928,7 @@ def race(*sources: Node[Any]) -> Node[Any]:
     """
     srcs = list(sources)
     if not srcs:
+
         def _empty_race(_d: list[Any], a: NodeActions) -> None:
             a.down([(MessageType.COMPLETE,)])
 

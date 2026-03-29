@@ -1,9 +1,9 @@
 ---
 title: "API (extra)"
-description: "Tier-1 pipe operators from graphrefly.extra — generated from source docstrings."
+description: "Tier-1 and tier-2 operators from graphrefly.extra — generated from source docstrings."
 ---
 
-Reference pages for each public function in `graphrefly.extra.tier1` (see `docs/docs-guidance.md`).
+Reference pages for public functions in `graphrefly.extra.tier1` and `graphrefly.extra.tier2` (see `docs/docs-guidance.md`).
 
 ## Operators
 
@@ -29,3 +29,20 @@ Reference pages for each public function in `graphrefly.extra.tier1` (see `docs/
 - [tap](./tap/)
 - [with_latest_from](./with_latest_from/)
 - [zip](./zip/)
+- [audit](./audit/)
+- [buffer](./buffer/)
+- [buffer_count](./buffer_count/)
+- [buffer_time](./buffer_time/)
+- [concat_map](./concat_map/)
+- [debounce](./debounce/)
+- [delay](./delay/)
+- [exhaust_map](./exhaust_map/)
+- [flat_map](./flat_map/)
+- [interval](./interval/)
+- [pausable](./pausable/)
+- [repeat](./repeat/)
+- [rescue](./rescue/)
+- [sample](./sample/)
+- [switch_map](./switch_map/)
+- [throttle](./throttle/)
+- [timeout](./timeout/)

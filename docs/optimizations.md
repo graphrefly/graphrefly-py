@@ -302,6 +302,33 @@ Cross-language: `graphrefly-ts/docs/optimizations.md` §15. **Python (shipped):*
 
    **Deferred QA items:** see §Deferred follow-ups.
 
+4. **Tier 2 extra operators (roadmap 2.2).** Python ships `graphrefly.extra.tier2` (`threading.Timer`); TypeScript ships `src/extra/operators.ts` (`setTimeout`/`setInterval`). **Parity aligned (2026-03-28):**
+
+   | Operator | Aligned behavior |
+   |----------|-----------------|
+   | `debounce` | Both: flush pending value on COMPLETE before forwarding COMPLETE |
+   | `delay` | Both: only delay DATA; RESOLVED forwarded immediately |
+   | `throttle` | Both: `leading` (default `True`/`true`) + `trailing` (default `False`/`false`) params |
+   | `audit` | Both: trailing-only (Rx `auditTime`); timer starts on DATA, emits latest when timer fires; no leading edge |
+   | `sample` | Both: trigger on notifier `DATA` only (RESOLVED ignored) |
+   | `buffer` | Both: flush trigger on notifier `DATA` only |
+   | `buffer_count` | Both: throw/raise on `count <= 0` |
+   | `repeat` | Both: throw/raise on `count <= 0` |
+   | `scan` | Both: `reset_on_teardown=True` / `resetOnTeardown: true` |
+   | `concat_map` | Both: optional `max_buffer` / `maxBuffer` queue depth limit |
+   | `switch_map` / `exhaust_map` / `concat_map` / `merge_map` | Both: inner ERROR unsubscribes inner; outer ERROR tears down all active inners |
+   | `pausable` | Both: protocol-level PAUSE/RESUME buffer; buffers DIRTY/DATA/RESOLVED while paused, flushes on RESUME |
+   | `window` | Both: true sub-node windows (emits `Node[T]` per window, not lists); notifier-based |
+   | `window_count` | Both: true sub-node windows of `count` items each |
+   | `window_time` | Both: true sub-node windows of `seconds` / `ms` duration |
+   | `merge` / `zip` | Python: unlimited-precision `int` bitmask; TS: BigInt bitmask (no >31-source overflow) |
+
+   **Python-only:** `gate(control)` — value-level boolean gate (formerly `pausable(control)`); renamed to avoid collision with protocol-level `pausable()`.
+
+   Timer callbacks emit via `NodeActions` → `Node.down(..., internal=True)`, which takes the subgraph write lock when `thread_safe` is true (default), so background threads serialize with synchronous graph work.
+
+   **Deferred QA items:** see **Deferred follow-ups** → *Tier 2 extra operators (roadmap 2.2) — deferred semantics (QA)*.
+
 ---
 
 ## Open design decisions (needs product/spec call)
@@ -328,6 +355,14 @@ These are tracked primarily in `graphrefly-ts/docs/optimizations.md`; listed her
 
 **Decision needed:** Is registry-only `disconnect` the long-term contract (documentation + `describe()` as source of truth), or should a later phase add **dynamic topology** so `disconnect` (or a new API) actually detaches one dep? Align with `GRAPHREFLY-SPEC.md` §3.3 when the spec is tightened.
 
+### D. Tier-2 time operators — `asyncio` vs wall-clock timers
+
+**Current Python design (intentional):** `graphrefly.extra.tier2` uses wall-clock **`threading.Timer`**. Callbacks emit via **`Node.down(..., internal=True)`**, which takes the **subgraph write lock** when **`thread_safe`** is true (default), so timer threads stay consistent with synchronous graph work **without** requiring a running **`asyncio`** loop.
+
+**Open decision:** Whether to add optional **`asyncio`**-based scheduling later (e.g. **`loop.call_soon_threadsafe`** and loop-backed delays) so time-based operators integrate cleanly with apps that already own a **running event loop**, while keeping **`threading.Timer`** as the default portable baseline.
+
+**TypeScript (parity note):** The same product split applies on the JS side: tighter integration with the host’s **event loop / task queue** vs timer primitives that do not assume a specific runtime; align cross-language when either port adds loop-integrated scheduling.
+
 ---
 
 ## Deferred follow-ups (QA)
@@ -351,5 +386,14 @@ Applies to `graphrefly-ts` `src/extra/operators.ts` and `graphrefly.extra.tier1`
 | **`zip` + partial queues** | When one inner source completes, buffered values that never formed a full tuple are dropped; downstream then completes. Document if stricter Rx parity is required. |
 | **`concat` + `ERROR` on the second source before the first completes** | Phase gating ignores the second source until the first completes; an `ERROR` on the second during phase 0 may be swallowed until phase 1. Decide whether tail-source errors should short-circuit early. |
 | **`race` + pre-winner `DIRTY`** | Before the first winning `DATA`, `DIRTY` (and other tuples) may be forwarded from more than one inner source (TypeScript: `take(merge(...), 1)`; Python: multi-dep `on_message`). JSDoc on TS `race` notes this; a stricter “winner-only” behavior would need a different implementation in either port. |
+
+### Tier 2 extra operators (roadmap 2.2) — deferred semantics (QA)
+
+Applies to `src/extra/operators.ts` and `graphrefly.extra.tier2`. **Keep the table below identical in both repos’ `docs/optimizations.md`.**
+
+| Item | Notes |
+|------|-------|
+| **`sample` + `undefined` as `T`** | Sampling uses the primary dep’s cached value (`get()`). If `T` allows `undefined`, a cache of `undefined` is indistinguishable from “no snapshot yet”; TypeScript currently emits `RESOLVED` instead of `DATA` in that case (JSDoc `@remarks`). Decide whether both ports should adopt an explicit optional/sentinel, or document the limitation only. |
+| **`mergeMap` / `merge_map` + `ERROR`** | When the outer stream or one inner emits `ERROR`, other inner subscriptions may keep running until they complete or unsubscribe. Rx-style “first error cancels all sibling inners” is **not** specified or implemented; align if product wants fail-fast teardown across active inners. |
 
 ---

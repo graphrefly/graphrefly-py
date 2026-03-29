@@ -19,7 +19,7 @@ Single-source-of-truth strategy: **protocol spec lives in `~/src/graphrefly`**; 
 | Tier | What | Where it lives | Flows to |
 |------|------|----------------|----------|
 | **0 — Protocol spec** | `GRAPHREFLY-SPEC.md` | `~/src/graphrefly/` (canonical) | Both sites via `sync-docs.mjs` |
-| **1 — Docstrings** | Structured doc blocks on exports | `src/graphrefly/*.py` | Generated API pages via `website/scripts/gen_api_docs.py` → `website/src/content/docs/api/` |
+| **1 — Docstrings** | Structured doc blocks on exports | `src/graphrefly/*.py` | Generated API pages via `website/scripts/gen_api_docs.py` (`extra/tier1.py` + `extra/tier2.py`) → `website/src/content/docs/api/` |
 | **2 — Runnable examples** | Self-contained scripts using public imports | `examples/*.py` | Imported by recipes + demos |
 | **3 — Recipes / guides** | Long-form Starlight pages with context | `website/src/content/docs/recipes/` | Pull code from `examples/` |
 | **4 — Interactive demos** | Pyodide labs | `website/src/content/docs/lab/` | Interactive Python playground |
@@ -65,16 +65,16 @@ Every public function/class should have a structured docstring. Use Google-style
 
 ## How API docs are generated
 
-Tier-1 operator reference pages (`website/src/content/docs/api/*.md`) are **generated** from docstrings in `src/graphrefly/extra/tier1.py` via `website/scripts/gen_api_docs.py`.
+API reference pages under `website/src/content/docs/api/` are **generated** from docstrings in `src/graphrefly/extra/tier1.py` and `src/graphrefly/extra/tier2.py` via `website/scripts/gen_api_docs.py` (public order follows each module’s `__all__`: tier 1 first, then tier 2).
 
 ```bash
 cd website && pnpm docs:gen              # regenerate all
 cd website && pnpm docs:gen:check        # CI dry-run — exit 1 if stale
 ```
 
-**Do not edit generated `website/src/content/docs/api/*.md` by hand** — edit docstrings in `tier1.py`, then run `docs:gen`.
+**Do not edit generated `website/src/content/docs/api/*.md` by hand** — edit docstrings in `tier1.py` / `tier2.py`, then run `docs:gen`.
 
-To document a new public operator, add it to `tier1.py` and to `__all__` in that module; re-run `docs:gen`. The Starlight sidebar picks up the `api/` directory via `autogenerate` in `website/astro.config.mjs`.
+To document a new public operator, add it to the appropriate module and its `__all__`; re-run `docs:gen`. The Starlight sidebar picks up the `api/` directory via `autogenerate` in `website/astro.config.mjs`.
 
 `docs:gen` runs on `pnpm dev` and `pnpm build` in `website/` (with `sync-docs`).
 
@@ -91,7 +91,7 @@ To document a new public operator, add it to `tier1.py` and to `__all__` in that
 
 | Change | Update |
 |--------|--------|
-| New public API | Docstring + export from `__init__.py` (or `extra/__all__` for tier1) + `pnpm docs:gen` when under `extra/tier1.py` |
+| New public API | Docstring + export from `extra/__init__.py` + `pnpm docs:gen` when under `extra/tier1.py` or `extra/tier2.py` |
 | Protocol or Graph behavior | `~/src/graphrefly/GRAPHREFLY-SPEC.md` (canonical) + docstring |
 | New runnable example | `examples/<name>.py` + optional recipe page |
 | Phase completed | `docs/roadmap.md` checkboxes |
@@ -103,7 +103,7 @@ To document a new public operator, add it to `tier1.py` and to `__all__` in that
 
 1. **Implementation** in `src/graphrefly/` + tests (`docs/test-guidance.md`)
 2. **Structured docstring** on the exported function/class (Tier 1)
-3. **`cd website && pnpm docs:gen`** for symbols in `extra/tier1.py` (regenerates API pages)
+3. **`cd website && pnpm docs:gen`** for symbols in `extra/tier1.py` / `extra/tier2.py` (regenerates API pages)
 4. **Runnable example** in `examples/` (Tier 2) — if the feature warrants a standalone demo
 5. **Recipe** on the site that imports from `examples/` (Tier 3) — for complex patterns
 6. **Pyodide lab** if warranted (Tier 4)

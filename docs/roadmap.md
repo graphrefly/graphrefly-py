@@ -157,12 +157,12 @@ Port proven operators from callbag-recharge-py + new ones from TS.
 
 ### 2.2 — Tier 2 operators (async, dynamic)
 
-- [ ] `switch_map`, `concat_map`, `exhaust_map`, `flat_map`
-- [ ] `debounce`, `throttle`, `sample`, `audit`
-- [ ] `delay`, `timeout`
-- [ ] `buffer`, `buffer_count`, `buffer_time`
-- [ ] `interval`, `repeat`
-- [ ] `pausable`, `rescue`
+- [x] `switch_map`, `concat_map`, `exhaust_map`, `flat_map`
+- [x] `debounce`, `throttle`, `sample`, `audit`
+- [x] `delay`, `timeout`
+- [x] `buffer`, `buffer_count`, `buffer_time`
+- [x] `interval`, `repeat`
+- [x] `pausable`, `rescue`
 
 ### 2.3 — Sources & sinks
 

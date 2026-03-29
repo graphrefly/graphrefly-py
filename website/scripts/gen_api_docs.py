@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate Starlight API pages from docstrings in graphrefly.extra.tier1.
+"""Generate Starlight API pages from docstrings in graphrefly.extra tier1 + tier2.
 
 Usage (from repo root):
   uv run python website/scripts/gen_api_docs.py
@@ -15,7 +15,10 @@ import ast
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent.parent
-TIER1 = REPO / "src/graphrefly/extra/tier1.py"
+EXTRA_MODULES: list[tuple[str, Path]] = [
+    ("tier1", REPO / "src/graphrefly/extra/tier1.py"),
+    ("tier2", REPO / "src/graphrefly/extra/tier2.py"),
+]
 WEBSITE = Path(__file__).resolve().parent.parent
 OUT = WEBSITE / "src/content/docs/api"
 
@@ -101,14 +104,14 @@ def _index_md(names: list[str]) -> str:
         "---",
         'title: "API (extra)"',
         (
-            'description: "Tier-1 pipe operators from graphrefly.extra — '
+            'description: "Tier-1 and tier-2 operators from graphrefly.extra — '
             'generated from source docstrings."'
         ),
         "---",
         "",
         (
-            "Reference pages for each public function in `graphrefly.extra.tier1` "
-            "(see `docs/docs-guidance.md`)."
+            "Reference pages for public functions in `graphrefly.extra.tier1` and "
+            "`graphrefly.extra.tier2` (see `docs/docs-guidance.md`)."
         ),
         "",
         "## Operators",
@@ -129,20 +132,31 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    source = TIER1.read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    order = _load_all_order(tree)
-    funcs = _top_level_functions(tree)
+    doc_names: list[str] = []
+    funcs: dict[str, ast.FunctionDef] = {}
+    sources: dict[str, str] = {}
+
+    for _label, mod_path in EXTRA_MODULES:
+        source = mod_path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        order = _load_all_order(tree)
+        mod_funcs = _top_level_functions(tree)
+        for name in order:
+            if name not in mod_funcs:
+                continue
+            if name in funcs:
+                msg = f"duplicate export {name!r} in extra modules"
+                raise ValueError(msg)
+            doc_names.append(name)
+            funcs[name] = mod_funcs[name]
+            sources[name] = source
+
     OUT.mkdir(parents=True, exist_ok=True)
 
     stale = 0
-    doc_names: list[str] = []
-    for name in order:
-        if name not in funcs:
-            continue
-        doc_names.append(name)
+    for name in doc_names:
         fn = funcs[name]
-        sig = _function_signature(source, fn)
+        sig = _function_signature(sources[name], fn)
         md = _page_md(name, sig, ast.get_docstring(fn))
         path = OUT / f"{name}.md"
         if args.check:
