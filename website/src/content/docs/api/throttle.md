@@ -8,9 +8,7 @@ Rate-limit: at most one emit per ``seconds`` window.
 ## Signature
 
 ```python
-def throttle(
-    seconds: float, *, leading: bool = True, trailing: bool = False
-) -> PipeOperator
+def throttle(seconds: float, *, leading: bool = True, trailing: bool = False) -> PipeOperator
 ```
 
 ## Documentation

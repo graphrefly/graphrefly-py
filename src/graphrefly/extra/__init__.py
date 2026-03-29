@@ -1,5 +1,37 @@
 """Extra operators and sources (roadmap Phase 2+)."""
 
+from graphrefly.extra.backoff import (
+    BackoffPreset,
+    BackoffStrategy,
+    JitterMode,
+    constant,
+    exponential,
+    fibonacci,
+    linear,
+    resolve_backoff_preset,
+)
+from graphrefly.extra.checkpoint import (
+    CheckpointAdapter,
+    DictCheckpointAdapter,
+    FileCheckpointAdapter,
+    MemoryCheckpointAdapter,
+    SqliteCheckpointAdapter,
+    checkpoint_node_value,
+    restore_graph_checkpoint,
+    save_graph_checkpoint,
+)
+from graphrefly.extra.resilience import (
+    CircuitBreaker,
+    CircuitOpenError,
+    TokenBucket,
+    WithBreakerBundle,
+    WithStatusBundle,
+    rate_limiter,
+    retry,
+    token_tracker,
+    with_breaker,
+    with_status,
+)
 from graphrefly.extra.sources import (
     cached,
     empty,
@@ -70,7 +102,25 @@ from graphrefly.extra.tier2 import (
 )
 
 __all__ = [
+    "BackoffPreset",
+    "BackoffStrategy",
+    "CheckpointAdapter",
+    "CircuitBreaker",
+    "CircuitOpenError",
+    "DictCheckpointAdapter",
+    "FileCheckpointAdapter",
+    "JitterMode",
+    "MemoryCheckpointAdapter",
+    "SqliteCheckpointAdapter",
+    "TokenBucket",
+    "WithBreakerBundle",
+    "WithStatusBundle",
     "cached",
+    "checkpoint_node_value",
+    "constant",
+    "exponential",
+    "fibonacci",
+    "linear",
     "empty",
     "first_value_from",
     "first_value_from_future",
@@ -113,9 +163,15 @@ __all__ = [
     "pairwise",
     "pausable",
     "race",
+    "rate_limiter",
     "reduce",
     "repeat",
     "rescue",
+    "resolve_backoff_preset",
+    "restore_graph_checkpoint",
+    "retry",
+    "save_graph_checkpoint",
+    "token_tracker",
     "sample",
     "scan",
     "skip",
@@ -130,6 +186,8 @@ __all__ = [
     "window",
     "window_count",
     "window_time",
+    "with_breaker",
     "with_latest_from",
+    "with_status",
     "zip",
 ]

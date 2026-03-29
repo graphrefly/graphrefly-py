@@ -1,9 +1,9 @@
 ---
 title: "API (extra)"
-description: "Tier-1 and tier-2 operators plus sources/sinks (``graphrefly.extra``) — generated from source docstrings."
+description: "Operators, sources, resilience, backoff, and checkpoint APIs (``graphrefly.extra``) — generated from source docstrings."
 ---
 
-Reference pages for `graphrefly.extra.tier1`, `graphrefly.extra.tier2`, and `graphrefly.extra.sources` (roadmap §2.3); see `docs/docs-guidance.md`.
+Reference pages for modules listed in `website/scripts/gen_api_docs.py` (`EXTRA_MODULES`); see `docs/docs-guidance.md`.
 
 ## API index
 
@@ -59,6 +59,7 @@ Reference pages for `graphrefly.extra.tier1`, `graphrefly.extra.tier2`, and `gra
 - [from_async_iter](./from_async_iter/)
 - [from_awaitable](./from_awaitable/)
 - [from_cron](./from_cron/)
+- [from_event_emitter](./from_event_emitter/)
 - [from_iter](./from_iter/)
 - [from_timer](./from_timer/)
 - [never](./never/)
@@ -66,4 +67,30 @@ Reference pages for `graphrefly.extra.tier1`, `graphrefly.extra.tier2`, and `gra
 - [replay](./replay/)
 - [share](./share/)
 - [throw_error](./throw_error/)
+- [to_array](./to_array/)
 - [to_list](./to_list/)
+- [BackoffPreset](./BackoffPreset/)
+- [BackoffStrategy](./BackoffStrategy/)
+- [JitterMode](./JitterMode/)
+- [constant](./constant/)
+- [exponential](./exponential/)
+- [fibonacci](./fibonacci/)
+- [linear](./linear/)
+- [resolve_backoff_preset](./resolve_backoff_preset/)
+- [CheckpointAdapter](./CheckpointAdapter/)
+- [DictCheckpointAdapter](./DictCheckpointAdapter/)
+- [FileCheckpointAdapter](./FileCheckpointAdapter/)
+- [MemoryCheckpointAdapter](./MemoryCheckpointAdapter/)
+- [checkpoint_node_value](./checkpoint_node_value/)
+- [restore_graph_checkpoint](./restore_graph_checkpoint/)
+- [save_graph_checkpoint](./save_graph_checkpoint/)
+- [CircuitBreaker](./CircuitBreaker/)
+- [CircuitOpenError](./CircuitOpenError/)
+- [TokenBucket](./TokenBucket/)
+- [WithBreakerBundle](./WithBreakerBundle/)
+- [WithStatusBundle](./WithStatusBundle/)
+- [rate_limiter](./rate_limiter/)
+- [retry](./retry/)
+- [token_tracker](./token_tracker/)
+- [with_breaker](./with_breaker/)
+- [with_status](./with_status/)

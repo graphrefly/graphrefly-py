@@ -1,19 +1,16 @@
 ---
 title: 'replay'
-description: 'Multicast via :func:`share`; optional *buffer_size* reserved for future buffered replay.'
+description: 'Multicast with late-subscriber replay of last *buffer_size* DATA payloads.'
 ---
 
-Multicast via :func:`share`; optional *buffer_size* reserved for future buffered replay.
+Multicast with late-subscriber replay of last *buffer_size* DATA payloads.
 
 ## Signature
 
 ```python
-def replay[T](source: Node[T], buffer_size: int | None = None) -> Node[T]
+def replay[T](source: Node[T], buffer_size: int = 1) -> Node[T]
 ```
 
 ## Documentation
 
-Multicast via :func:`share`; optional *buffer_size* reserved for future buffered replay.
-
-Emits the same live stream as :func:`share`. Per-subscriber replay of historical ``DATA`` is
-not implemented yet; *buffer_size* is accepted for API stability and ignored.
+Multicast with late-subscriber replay of last *buffer_size* DATA payloads.

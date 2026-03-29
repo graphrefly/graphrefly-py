@@ -285,15 +285,13 @@ def test_pausable_protocol() -> None:
     src.down([(MessageType.DIRTY,), (MessageType.DATA, 42)])
     # While paused, no DATA 42 should reach sink yet
     data_during_pause = [
-        m for batch in sink for m in batch
-        if m[0] is MessageType.DATA and len(m) > 1 and m[1] == 42
+        m for batch in sink for m in batch if m[0] is MessageType.DATA and len(m) > 1 and m[1] == 42
     ]
     assert data_during_pause == [], "DATA should be buffered during PAUSE"
     # Resume
     src.down([(MessageType.RESUME,)])
     data_after_resume = [
-        m for batch in sink for m in batch
-        if m[0] is MessageType.DATA and len(m) > 1 and m[1] == 42
+        m for batch in sink for m in batch if m[0] is MessageType.DATA and len(m) > 1 and m[1] == 42
     ]
     assert len(data_after_resume) > 0, "DATA should flush on RESUME"
 

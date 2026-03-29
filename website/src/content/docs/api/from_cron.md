@@ -1,18 +1,19 @@
 ---
 title: 'from_cron'
-description: 'Fire on a cron schedule; each tick emits the tick index ``0, 1, 2, …``.'
+description: 'Fire on each wall-clock minute matching a 5-field cron expression.'
 ---
 
-Fire on a cron schedule; each tick emits the tick index ``0, 1, 2, …``.
+Fire on each wall-clock minute matching a 5-field cron expression.
 
 ## Signature
 
 ```python
-def from_cron(expr: str) -> Node[Any]
+def from_cron(expr: str, *, tick_s: float = 60.0) -> Node[Any]
 ```
 
 ## Documentation
 
-Fire on a cron schedule; each tick emits the tick index ``0, 1, 2, …``.
+Fire on each wall-clock minute matching a 5-field cron expression.
 
-Requires the third-party ``croniter`` package (``uv add croniter`` or ``pip install croniter``).
+Emits ``time.time_ns()`` (nanosecond timestamp) on each match.
+Uses a built-in cron parser (no external dependencies).

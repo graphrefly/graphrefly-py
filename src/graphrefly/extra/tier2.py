@@ -538,9 +538,7 @@ def debounce(seconds: float) -> PipeOperator:
     return _op
 
 
-def throttle(
-    seconds: float, *, leading: bool = True, trailing: bool = False
-) -> PipeOperator:
+def throttle(seconds: float, *, leading: bool = True, trailing: bool = False) -> PipeOperator:
     """Rate-limit: at most one emit per ``seconds`` window.
 
     Args:
@@ -573,6 +571,7 @@ def throttle(
                             actions.emit(v)
                         else:
                             had_trailing_candidate[0] = True
+
                         def close_window() -> None:
                             window[0] = None
                             if trailing and had_trailing_candidate[0]:

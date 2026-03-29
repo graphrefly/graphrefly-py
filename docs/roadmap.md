@@ -179,11 +179,11 @@ Port proven operators from callbag-recharge-py + new ones from TS.
 
 ### 3.1 — Utils (resilience)
 
-- [ ] `retry`, `backoff` (exponential, linear, fibonacci)
-- [ ] `with_breaker` (circuit breaker)
-- [ ] `rate_limiter`, `token_tracker`
-- [ ] `with_status` (sugar for meta companion stores)
-- [ ] `checkpoint` + adapters
+- [x] `retry`, `backoff` (exponential, linear, fibonacci) — `graphrefly.extra.{backoff,resilience}`
+- [x] `with_breaker` (circuit breaker) — `CircuitBreaker`, `WithBreakerBundle`
+- [x] `rate_limiter`, `token_tracker` — sliding window + `TokenBucket`
+- [x] `with_status` — `WithStatusBundle` (companion state nodes)
+- [x] `checkpoint` + adapters — `save_graph_checkpoint` / `restore_graph_checkpoint`, memory / dict / file / SQLite adapters
 
 ### 3.2 — Data structures
 

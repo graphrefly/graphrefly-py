@@ -19,7 +19,7 @@ Single-source-of-truth strategy: **protocol spec lives in `~/src/graphrefly`**; 
 | Tier | What | Where it lives | Flows to |
 |------|------|----------------|----------|
 | **0 — Protocol spec** | `GRAPHREFLY-SPEC.md` | `~/src/graphrefly/` (canonical) | Both sites via `sync-docs.mjs` |
-| **1 — Docstrings** | Structured doc blocks on exports | `src/graphrefly/*.py` | Generated API pages via `website/scripts/gen_api_docs.py` (`extra/tier1.py`, `extra/tier2.py`, `extra/sources.py`) → `website/src/content/docs/api/` |
+| **1 — Docstrings** | Structured doc blocks on exports | `src/graphrefly/*.py` | Generated API pages via `website/scripts/gen_api_docs.py` (`extra/tier1.py`, `extra/tier2.py`, `extra/sources.py`, `extra/backoff.py`, `extra/checkpoint.py`, `extra/resilience.py`, …) → `website/src/content/docs/api/` |
 | **2 — Runnable examples** | Self-contained scripts using public imports | `examples/*.py` | Imported by recipes + demos |
 | **3 — Recipes / guides** | Long-form Starlight pages with context | `website/src/content/docs/recipes/` | Pull code from `examples/` |
 | **4 — Interactive demos** | Pyodide labs | `website/src/content/docs/lab/` | Interactive Python playground |
@@ -65,16 +65,16 @@ Every public function/class should have a structured docstring. Use Google-style
 
 ## How API docs are generated
 
-API reference pages under `website/src/content/docs/api/` are **generated** from docstrings in `src/graphrefly/extra/tier1.py` and `src/graphrefly/extra/tier2.py` via `website/scripts/gen_api_docs.py` (public order follows each module’s `__all__`: tier 1 first, then tier 2).
+API reference pages under `website/src/content/docs/api/` are **generated** from top-level function exports listed in each module’s `__all__`, in `website/scripts/gen_api_docs.py` `EXTRA_MODULES` (currently `extra/tier1.py`, `tier2.py`, `sources.py`, `backoff.py`, `checkpoint.py`, `resilience.py`, …).
 
 ```bash
 cd website && pnpm docs:gen              # regenerate all
 cd website && pnpm docs:gen:check        # CI dry-run — exit 1 if stale
 ```
 
-**Do not edit generated `website/src/content/docs/api/*.md` by hand** — edit docstrings in `tier1.py` / `tier2.py`, then run `docs:gen`.
+**Do not edit generated `website/src/content/docs/api/*.md` by hand** — edit docstrings in the source module, add the module path to `EXTRA_MODULES` if needed, then run `docs:gen`.
 
-To document a new public operator, add it to the appropriate module and its `__all__`; re-run `docs:gen`. The Starlight sidebar picks up the `api/` directory via `autogenerate` in `website/astro.config.mjs`.
+To document a new public **function**, **class**, or PEP 695 **type** alias, add it to the appropriate module and its `__all__` (use a plain `__all__ = [...]` or annotated `__all__: list[str] = [...]`); re-run `docs:gen`. The Starlight sidebar picks up the `api/` directory via `autogenerate` in `website/astro.config.mjs`.
 
 `docs:gen` runs on `pnpm dev` and `pnpm build` in `website/` (with `sync-docs`).
 
