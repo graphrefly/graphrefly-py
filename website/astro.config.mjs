@@ -54,6 +54,10 @@ export default defineConfig({
 					],
 				},
 				{
+					label: "API",
+					autogenerate: { directory: "api" },
+				},
+				{
 					label: "Labs",
 					items: [{ label: "Python (Pyodide)", link: "/lab/python" }],
 				},

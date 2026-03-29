@@ -12,6 +12,7 @@ install dependencies.
 - Lint fix: `uv run ruff check --fix src/ tests/`
 - Format: `uv run ruff format src/ tests/`
 - Type check: `uv run mypy src/`
+- Docs site (from `website/`): `pnpm docs:gen` / `pnpm docs:gen:check` — regenerates `src/content/docs/api/` from `src/graphrefly/extra/tier1.py` docstrings (see `docs/docs-guidance.md`)
 
 ## Package naming
 

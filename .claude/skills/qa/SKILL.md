@@ -88,14 +88,17 @@ If a failure implies a design question, **HALT** and ask the user before paperin
 
 **Skip if `--skip-docs` was passed.**
 
+**Authoritative checklist:** follow **`docs/docs-guidance.md`** end-to-end (authority order, Tier 0–5, docstring shape aligned with TS JSDoc, runnable examples in `examples/`, `sync-docs`, and **API generation** — `cd website && pnpm docs:gen` / `docs:gen:check` when the generator is wired).
+
 Update documentation as appropriate:
 
+- **`docs/docs-guidance.md`** — if documentation *conventions* or generator commands change, update this file so `/qa` stays aligned
 - **`docs/GRAPHREFLY-SPEC.md`** — only if the user-owned spec change is part of this task (usually avoid; spec is shared with graphrefly-ts)
 - **`docs/optimizations.md`** — when this review records **open architectural decisions** or cross-language parity notes; mirror substantive entries to **`graphrefly-ts/docs/optimizations.md`** if that repo is in the workspace
 - **`docs/roadmap.md`** — mark items done, add items if scope changed
 - **`docs/test-guidance.md`** — if new test patterns or file conventions were established
-- **`docs/docs-guidance.md`** — if documentation conventions changed
 - **`archive/docs/`** — session or design notes only when explicitly part of the task
-- **Docstrings** on exported public APIs
+- **Structured docstrings** (Google-style: summary, Args, Returns, Examples) on exported public APIs — Tier 1 per **`docs/docs-guidance.md`**; keep semantics aligned with graphrefly-ts JSDoc where APIs match
+- **Generated API pages** — after docstring or registry changes, run **`pnpm docs:gen`** from `website/` (see **`docs/docs-guidance.md`**); do not hand-edit generated `website/src/content/docs/api/*.md` unless the guidance says otherwise
 - **`CLAUDE.md`** — only if commands or repo workflow changed
 - **`~/src/callbag-recharge-py`** — do not edit; reference only

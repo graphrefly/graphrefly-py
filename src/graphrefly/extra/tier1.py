@@ -1,4 +1,12 @@
-"""Tier 1 sync operators — built from :func:`~graphrefly.core.node.node` (roadmap 2.1)."""
+"""Tier 1 sync operators built from :func:`~graphrefly.core.node.node` (roadmap §2.1).
+
+Most callables return a :class:`~graphrefly.core.sugar.PipeOperator` for use with
+:func:`~graphrefly.core.sugar.pipe`. ``combine``, ``merge``, ``zip``, and ``race`` return a
+:class:`~graphrefly.core.node.Node` directly.
+
+Use Google-style docstrings here (``docs/docs-guidance.md``); they feed the site via
+``website/scripts/gen_api_docs.py``.
+"""
 
 from __future__ import annotations
 
@@ -21,7 +29,20 @@ def map(
     *,
     equals: Callable[[Any, Any], bool] | None = None,
 ) -> PipeOperator:
-    """Map each upstream value through ``fn``."""
+    """Map each upstream settled value through ``fn``.
+
+    Args:
+        fn: Transform applied to each dependency value.
+        equals: Optional equality for ``RESOLVED`` detection on the inner node.
+
+    Returns:
+        A :class:`~graphrefly.core.sugar.PipeOperator` wrapping the upstream node.
+
+    Examples:
+        >>> from graphrefly import pipe, state
+        >>> from graphrefly.extra import map as grf_map
+        >>> n = pipe(state(1), grf_map(lambda x: x * 2))
+    """
 
     def _op(src: Node[Any]) -> Node[Any]:
         opts: dict[str, Any] = {"describe_kind": "map"}
@@ -35,9 +56,20 @@ def map(
 def filter(
     predicate: Callable[[Any], bool],
 ) -> PipeOperator:
-    """Forward values where ``predicate`` is true; otherwise emit ``RESOLVED``.
+    """Forward values where ``predicate`` is true; otherwise emit ``RESOLVED`` (no ``DATA``).
 
     Pure predicate gate — no implicit dedup (use ``distinct_until_changed`` for that).
+
+    Args:
+        predicate: Inclusion test for each value.
+
+    Returns:
+        A :class:`~graphrefly.core.sugar.PipeOperator`.
+
+    Examples:
+        >>> from graphrefly import pipe, state
+        >>> from graphrefly.extra import filter as grf_filter
+        >>> n = pipe(state(1), grf_filter(lambda x: x > 0))
     """
 
     def _op(src: Node[Any]) -> Node[Any]:
@@ -59,7 +91,21 @@ def scan(
     *,
     equals: Callable[[Any, Any], bool] | None = None,
 ) -> PipeOperator:
-    """Fold upstream values with ``reducer(acc, value) -> acc``; emit after each step."""
+    """Fold upstream values with ``reducer(acc, value) -> acc``; emit accumulator after each step.
+
+    Args:
+        reducer: Accumulator update.
+        seed: Initial accumulator (also used for ``initial`` on the inner node).
+        equals: Optional equality for consecutive emissions (default ``operator.is_``).
+
+    Returns:
+        A :class:`~graphrefly.core.sugar.PipeOperator`.
+
+    Examples:
+        >>> from graphrefly import pipe, state
+        >>> from graphrefly.extra import scan as grf_scan
+        >>> n = pipe(state(1), grf_scan(lambda a, x: a + x, 0))
+    """
 
     def _op(src: Node[Any]) -> Node[Any]:
         acc = [seed]
@@ -86,9 +132,21 @@ def reduce(  # noqa: A001 — roadmap API name
     reducer: Callable[[Any, Any], Any],
     seed: Any,
 ) -> PipeOperator:
-    """Reduce to a single value emitted when ``source`` completes.
+    """Reduce to one value emitted when the source completes.
 
     On an empty completion (no prior ``DATA``), emits ``seed``.
+
+    Args:
+        reducer: Accumulator update (return value is not used until completion).
+        seed: Value used when the source completes with no prior ``DATA``.
+
+    Returns:
+        A :class:`~graphrefly.core.sugar.PipeOperator`.
+
+    Examples:
+        >>> from graphrefly import pipe, state
+        >>> from graphrefly.extra import reduce as grf_reduce
+        >>> n = pipe(state(1), grf_reduce(lambda a, x: a + x, 0))
     """
 
     def _op(src: Node[Any]) -> Node[Any]:
@@ -121,7 +179,19 @@ def reduce(  # noqa: A001 — roadmap API name
 
 
 def take(n: int) -> PipeOperator:
-    """Emit at most ``n`` wire ``DATA`` values, then ``COMPLETE`` (not connect pull)."""
+    """Emit at most ``n`` wire ``DATA`` values, then ``COMPLETE`` (``RESOLVED`` does not count).
+
+    Args:
+        n: Maximum ``DATA`` emissions; ``n <= 0`` completes immediately.
+
+    Returns:
+        A :class:`~graphrefly.core.sugar.PipeOperator`.
+
+    Examples:
+        >>> from graphrefly import pipe, state
+        >>> from graphrefly.extra import take as grf_take
+        >>> n = pipe(state(0), grf_take(3))
+    """
 
     def _op(src: Node[Any]) -> Node[Any]:
         count = [0]
@@ -172,7 +242,19 @@ def take(n: int) -> PipeOperator:
 
 
 def skip(n: int) -> PipeOperator:
-    """Drop the first ``n`` wire ``DATA`` payloads (not connect-time pull)."""
+    """Drop the first ``n`` wire ``DATA`` payloads (``RESOLVED`` does not advance the counter).
+
+    Args:
+        n: Number of ``DATA`` values to suppress before forwarding.
+
+    Returns:
+        A :class:`~graphrefly.core.sugar.PipeOperator`.
+
+    Examples:
+        >>> from graphrefly import pipe, state
+        >>> from graphrefly.extra import skip as grf_skip
+        >>> n = pipe(state(0), grf_skip(2))
+    """
 
     def _op(src: Node[Any]) -> Node[Any]:
         count = [0]
@@ -213,6 +295,17 @@ def take_while(predicate: Callable[[Any], bool]) -> PipeOperator:
     """Emit while ``predicate`` holds; on first false, ``COMPLETE``.
 
     Predicate exceptions propagate via node-level error handling (spec §2.4).
+
+    Args:
+        predicate: Continuation test for each value.
+
+    Returns:
+        A :class:`~graphrefly.core.sugar.PipeOperator`.
+
+    Examples:
+        >>> from graphrefly import pipe, state
+        >>> from graphrefly.extra import take_while as grf_tw
+        >>> n = pipe(state(1), grf_tw(lambda x: x < 10))
     """
 
     def _op(src: Node[Any]) -> Node[Any]:
@@ -243,10 +336,22 @@ def take_until(
     *,
     predicate: Callable[[Any], bool] | None = None,
 ) -> PipeOperator:
-    """Forward ``src`` until ``notifier`` delivers a matching message, then ``COMPLETE``.
+    """Forward the main source until ``notifier`` matches ``predicate``, then ``COMPLETE``.
 
-    By default triggers on ``DATA`` from the notifier. Pass ``predicate`` for custom
-    trigger logic (receives the full message tuple).
+    Default ``predicate`` fires on ``DATA`` from the notifier (full message tuple is passed in).
+
+    Args:
+        notifier: Second input observed for the stop condition.
+        predicate: Optional ``(msg) -> bool``; default tests ``msg[0] is MessageType.DATA``.
+
+    Returns:
+        A :class:`~graphrefly.core.sugar.PipeOperator`.
+
+    Examples:
+        >>> from graphrefly import pipe, producer, state
+        >>> from graphrefly.extra import take_until as grf_tu
+        >>> stop = producer(lambda _d, a: a.emit(0))
+        >>> n = pipe(state(1), grf_tu(stop))
     """
     pred = predicate if predicate is not None else (lambda msg: msg[0] is MessageType.DATA)
 
@@ -279,17 +384,50 @@ def take_until(
 
 
 def first() -> PipeOperator:
-    """Emit the first ``DATA`` then ``COMPLETE``."""
+    """Emit the first ``DATA`` then ``COMPLETE`` (same as ``take(1)``).
+
+    Returns:
+        A :class:`~graphrefly.core.sugar.PipeOperator`.
+
+    Examples:
+        >>> from graphrefly import pipe, state
+        >>> from graphrefly.extra import first as grf_first
+        >>> n = pipe(state(42), grf_first())
+    """
     return take(1)
 
 
 def find(predicate: Callable[[Any], bool]) -> PipeOperator:
-    """First value satisfying ``predicate``, then ``COMPLETE``."""
+    """Emit the first value satisfying ``predicate``, then ``COMPLETE``.
+
+    Args:
+        predicate: Match test.
+
+    Returns:
+        A unary callable ``(Node) -> Node`` composed from ``filter`` and ``take(1)``.
+
+    Examples:
+        >>> from graphrefly import pipe, state
+        >>> from graphrefly.extra import find as grf_find
+        >>> n = pipe(state(1), grf_find(lambda x: x > 0))
+    """
     return lambda src: pipe(src, filter(predicate), take(1))
 
 
 def element_at(index: int) -> PipeOperator:
-    """Emit the value at zero-based emission index ``index`` then ``COMPLETE``."""
+    """Emit the value at zero-based ``DATA`` index ``index``, then ``COMPLETE``.
+
+    Args:
+        index: Number of prior ``DATA`` emissions to skip.
+
+    Returns:
+        A unary callable ``(Node) -> Node`` composed from ``skip`` and ``take(1)``.
+
+    Examples:
+        >>> from graphrefly import pipe, state
+        >>> from graphrefly.extra import element_at as grf_at
+        >>> n = pipe(state(0), grf_at(2))
+    """
     return lambda src: pipe(src, skip(index), take(1))
 
 
@@ -300,7 +438,18 @@ def last(*, default: Any = _LAST_NO_DEFAULT) -> PipeOperator:
     """Buffer ``DATA``; on ``COMPLETE``, emit the final value (or ``default``).
 
     If no ``default`` is given and the source completes without emitting, only ``COMPLETE``
-    is forwarded (no DATA).
+    is forwarded (no ``DATA``).
+
+    Args:
+        default: Optional value emitted when the source completes empty.
+
+    Returns:
+        A :class:`~graphrefly.core.sugar.PipeOperator`.
+
+    Examples:
+        >>> from graphrefly import pipe, state
+        >>> from graphrefly.extra import last as grf_last
+        >>> n = pipe(state(1), grf_last(default=0))
     """
     use_default = default is not _LAST_NO_DEFAULT
 
@@ -340,7 +489,19 @@ def last(*, default: Any = _LAST_NO_DEFAULT) -> PipeOperator:
 
 
 def start_with(value: Any) -> PipeOperator:
-    """Emit ``value`` first, then every value from ``src``."""
+    """Emit ``value`` as ``DATA`` first, then forward every value from the source.
+
+    Args:
+        value: Prepended emission before upstream values.
+
+    Returns:
+        A :class:`~graphrefly.core.sugar.PipeOperator`.
+
+    Examples:
+        >>> from graphrefly import pipe, state
+        >>> from graphrefly.extra import start_with as grf_sw
+        >>> n = pipe(state(2), grf_sw(0))
+    """
 
     def _op(src: Node[Any]) -> Node[Any]:
         prepended = [False]
@@ -358,7 +519,19 @@ def start_with(value: Any) -> PipeOperator:
 
 
 def tap(side_effect: Callable[[Any], None]) -> PipeOperator:
-    """Invoke ``side_effect(value)`` for each emission; value unchanged."""
+    """Invoke ``side_effect(value)`` for each emission; value passes through unchanged.
+
+    Args:
+        side_effect: Called for side effects only.
+
+    Returns:
+        A :class:`~graphrefly.core.sugar.PipeOperator`.
+
+    Examples:
+        >>> from graphrefly import pipe, state
+        >>> from graphrefly.extra import tap as grf_tap
+        >>> n = pipe(state(1), grf_tap(lambda x: None))
+    """
 
     def _op(src: Node[Any]) -> Node[Any]:
         def compute(deps: list[Any], _actions: NodeActions) -> Any:
@@ -374,7 +547,19 @@ def tap(side_effect: Callable[[Any], None]) -> PipeOperator:
 def distinct_until_changed(
     equals: Callable[[Any, Any], bool] | None = None,
 ) -> PipeOperator:
-    """Suppress consecutive duplicates (default: ``is``)."""
+    """Suppress consecutive duplicates using ``equals`` (default: ``operator.is_``).
+
+    Args:
+        equals: Optional binary equality for adjacent values.
+
+    Returns:
+        A :class:`~graphrefly.core.sugar.PipeOperator`.
+
+    Examples:
+        >>> from graphrefly import pipe, state
+        >>> from graphrefly.extra import distinct_until_changed as grf_duc
+        >>> n = pipe(state(1), grf_duc())
+    """
     eq = equals if equals is not None else op.is_
 
     def _op(src: Node[Any]) -> Node[Any]:
@@ -384,7 +569,16 @@ def distinct_until_changed(
 
 
 def pairwise() -> PipeOperator:
-    """Emit ``(previous, current)`` pairs; first emission waits for two values."""
+    """Emit ``(previous, current)`` pairs; the first upstream value yields ``RESOLVED`` only.
+
+    Returns:
+        A :class:`~graphrefly.core.sugar.PipeOperator`.
+
+    Examples:
+        >>> from graphrefly import pipe, state
+        >>> from graphrefly.extra import pairwise as grf_pw
+        >>> n = pipe(state(0), grf_pw())
+    """
 
     def _op(src: Node[Any]) -> Node[Any]:
         prev: list[Any] = [object()]
@@ -409,7 +603,19 @@ def pairwise() -> PipeOperator:
 
 
 def combine(*sources: Node[Any]) -> Node[Any]:
-    """Tuple of all dependency values (``derived``)."""
+    """Combine latest values from all sources into a tuple whenever any settles.
+
+    Args:
+        *sources: Upstream nodes (empty → empty tuple node).
+
+    Returns:
+        A :class:`~graphrefly.core.node.Node` emitting ``tuple`` of dependency values.
+
+    Examples:
+        >>> from graphrefly.extra import combine
+        >>> from graphrefly import state
+        >>> n = combine(state(1), state("a"))
+    """
     srcs = list(sources)
     if not srcs:
         return node([], lambda _d, _a: (), describe_kind="combine")
@@ -417,9 +623,20 @@ def combine(*sources: Node[Any]) -> Node[Any]:
 
 
 def with_latest_from(other: Node[Any]) -> PipeOperator:
-    """When primary settles, emit ``(primary, latest_secondary)``.
+    """When the primary source settles, emit ``(primary, latest_secondary)``.
 
     Updates from ``other`` alone refresh the cached secondary value but do not emit.
+
+    Args:
+        other: Secondary node whose latest value is paired on primary emissions.
+
+    Returns:
+        A :class:`~graphrefly.core.sugar.PipeOperator`.
+
+    Examples:
+        >>> from graphrefly import pipe, state
+        >>> from graphrefly.extra import with_latest_from as grf_wlf
+        >>> n = pipe(state(1), grf_wlf(state("x")))
     """
 
     def _op(main: Node[Any]) -> Node[Any]:
@@ -460,7 +677,19 @@ def with_latest_from(other: Node[Any]) -> PipeOperator:
 
 
 def merge(*sources: Node[Any]) -> Node[Any]:
-    """Last ``DATA`` from any dependency wins; ``COMPLETE`` when all complete."""
+    """Merge ``DATA`` from any dependency; ``COMPLETE`` only after every source completes.
+
+    Args:
+        *sources: Upstreams to merge (empty → immediate ``COMPLETE`` node).
+
+    Returns:
+        A :class:`~graphrefly.core.node.Node`.
+
+    Examples:
+        >>> from graphrefly.extra import merge
+        >>> from graphrefly import state
+        >>> n = merge(state(1), state(2))
+    """
     srcs = list(sources)
     if not srcs:
         def _empty_fn(_d: list[Any], a: NodeActions) -> None:
@@ -525,7 +754,20 @@ def zip(  # noqa: A001
     *sources: Node[Any],
     max_buffer: int = 0,
 ) -> Node[Any]:
-    """Zip emissions by index; optional ``max_buffer`` drops oldest when > 0."""
+    """Zip one ``DATA`` from each source per cycle into a tuple.
+
+    Args:
+        *sources: Upstreams to zip.
+        max_buffer: When ``> 0``, drop oldest queued values per source beyond this depth.
+
+    Returns:
+        A :class:`~graphrefly.core.node.Node` emitting tuples.
+
+    Examples:
+        >>> from graphrefly.extra import zip as grf_zip
+        >>> from graphrefly import state
+        >>> n = grf_zip(state(1), state(2))
+    """
     srcs = list(sources)
     if not srcs:
         return node([], lambda _d, _a: (), describe_kind="zip")
@@ -594,10 +836,20 @@ def zip(  # noqa: A001
 
 
 def concat(second: Node[Any]) -> PipeOperator:
-    """After ``first`` completes, continue with ``second``.
+    """Play ``first`` to completion, then continue with ``second``.
 
-    While ``first`` is active, ``DATA`` from ``second`` is buffered and replayed
-    after the handoff so ``pipe(one_shot, concat(live_src))`` does not drop values.
+    While ``first`` is active, ``DATA`` from ``second`` is buffered and replayed at handoff.
+
+    Args:
+        second: Segment played after the primary completes.
+
+    Returns:
+        A :class:`~graphrefly.core.sugar.PipeOperator`.
+
+    Examples:
+        >>> from graphrefly import pipe, state
+        >>> from graphrefly.extra import concat as grf_cat
+        >>> n = pipe(state(1), grf_cat(state(2)))
     """
 
     def op(first: Node[Any]) -> Node[Any]:
@@ -660,7 +912,19 @@ def concat(second: Node[Any]) -> PipeOperator:
 
 
 def race(*sources: Node[Any]) -> Node[Any]:
-    """First dependency to emit ``DATA`` wins; later only that source is forwarded."""
+    """First source to emit ``DATA`` wins; subsequent traffic follows only that source.
+
+    Args:
+        *sources: Contestants (empty → immediate ``COMPLETE``; one node is returned as-is).
+
+    Returns:
+        A :class:`~graphrefly.core.node.Node`.
+
+    Examples:
+        >>> from graphrefly.extra import race
+        >>> from graphrefly import state
+        >>> n = race(state(1), state(2))
+    """
     srcs = list(sources)
     if not srcs:
         def _empty_race(_d: list[Any], a: NodeActions) -> None:
