@@ -9,7 +9,9 @@ from graphrefly.graph.graph import (
     GraphDiffResult,
     GraphObserveSource,
     ObserveResult,
+    SpyHandle,
     TraceEntry,
+    reachable,
 )
 
 __all__ = [
@@ -21,5 +23,7 @@ __all__ = [
     "META_PATH_SEG",
     "ObserveResult",
     "PATH_SEP",
+    "SpyHandle",
     "TraceEntry",
+    "reachable",
 ]

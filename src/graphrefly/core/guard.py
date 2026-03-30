@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from collections.abc import Callable, Mapping
 from typing import Any, Literal, TypedDict
 
@@ -175,7 +174,9 @@ def access_hint_for_guard(guard: GuardFn) -> str:
 
 def record_mutation(actor: Mapping[str, Any]) -> dict[str, Any]:
     """Snapshot for :attr:`~graphrefly.core.node.NodeImpl.last_mutation`."""
-    return {"actor": dict(normalize_actor(actor)), "timestamp_ns": time.time_ns()}
+    from graphrefly.core.clock import wall_clock_ns
+
+    return {"actor": dict(normalize_actor(actor)), "timestamp_ns": wall_clock_ns()}
 
 
 __all__ = [

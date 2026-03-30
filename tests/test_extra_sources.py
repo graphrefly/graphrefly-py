@@ -28,6 +28,7 @@ from graphrefly.extra.sources import (
     of,
     replay,
     share,
+    share_replay,
     throw_error,
     to_array,
     to_list,
@@ -201,6 +202,10 @@ def test_cached_and_replay_are_nodes() -> None:
     s = of(1)
     assert isinstance(cached(s), NodeImpl)
     assert isinstance(replay(s, buffer_size=3), NodeImpl)
+
+
+def test_share_replay_alias_identity() -> None:
+    assert share_replay is replay
 
 
 def test_replay_buffer_size_negative() -> None:

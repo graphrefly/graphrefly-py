@@ -35,6 +35,7 @@ from graphrefly.core import (
     is_batching,
     is_phase2_message,
     meta_snapshot,
+    monotonic_ns,
     node,
     normalize_actor,
     partition_for_batch,
@@ -45,6 +46,7 @@ from graphrefly.core import (
     state,
     system_actor,
     union_nodes,
+    wall_clock_ns,
 )
 from graphrefly.graph import (
     GRAPH_META_SEGMENT,
@@ -56,6 +58,7 @@ from graphrefly.graph import (
     GraphObserveSource,
     ObserveResult,
     TraceEntry,
+    reachable,
 )
 
 __version__ = "0.1.0"
@@ -70,6 +73,7 @@ __all__ = [
     "ObserveResult",
     "PATH_SEP",
     "TraceEntry",
+    "reachable",
     "Actor",
     "DeferWhen",
     "DynamicNodeImpl",
@@ -88,6 +92,8 @@ __all__ = [
     "NodeStatus",
     "SubscribeHints",
     "__version__",
+    "monotonic_ns",
+    "wall_clock_ns",
     "access_hint_for_guard",
     "acquire_subgraph_write_lock",
     "acquire_subgraph_write_lock_with_defer",

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import threading
-import time
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from graphrefly.core.clock import monotonic_ns
 from graphrefly.core.guard import GuardDenied, normalize_actor
 from graphrefly.core.meta import describe_node
 from graphrefly.core.node import NodeImpl
@@ -25,7 +26,7 @@ if TYPE_CHECKING:
 class TraceEntry:
     """Single entry in the :meth:`Graph.trace_log` ring buffer."""
 
-    timestamp: float
+    timestamp_ns: int
     path: str
     reason: str
 
@@ -53,6 +54,19 @@ class ObserveResult:
             self._dispose_fn = None
 
 
+@dataclass(slots=True)
+class SpyHandle:
+    """Handle returned by :meth:`Graph.spy` (TS parity).
+
+    Exposes the structured accumulator as ``result`` and a top-level ``dispose()``.
+    """
+
+    result: ObserveResult
+
+    def dispose(self) -> None:
+        self.result.dispose()
+
+
 @dataclass(frozen=True, slots=True)
 class GraphDiffResult:
     """Result of :meth:`Graph.diff` comparing two describe outputs."""
@@ -78,6 +92,8 @@ META_PATH_SEG = GRAPH_META_SEGMENT
 #: Snapshot envelope version for :meth:`Graph.snapshot` / :meth:`Graph.restore` /
 #: :meth:`Graph.from_snapshot` (GRAPHREFLY-SPEC §3.8).
 GRAPH_SNAPSHOT_VERSION = 1
+
+_GRAPH_DIAGRAM_DIRECTIONS = frozenset({"TD", "LR", "BT", "RL"})
 
 #: Sentinel: :meth:`Graph.describe` without ``actor`` returns the full graph (backward compat).
 _DESCRIBE_UNSCOPED = object()
@@ -114,6 +130,94 @@ def _parse_snapshot_envelope(data: dict[str, Any]) -> dict[str, Any]:
 
 def _path_has_meta_segment(path: str) -> bool:
     return GRAPH_META_SEGMENT in path.split(PATH_SEP)
+
+
+def _normalize_diagram_direction(direction: str | None) -> str:
+    if direction is None:
+        return "LR"
+    if direction not in _GRAPH_DIAGRAM_DIRECTIONS:
+        valid = ", ".join(sorted(_GRAPH_DIAGRAM_DIRECTIONS))
+        raise ValueError(f"invalid diagram direction {direction!r}; expected one of: {valid}")
+    return direction
+
+
+def _d2_direction_from_graph_direction(direction: str) -> str:
+    if direction == "TD":
+        return "down"
+    if direction == "BT":
+        return "up"
+    if direction == "RL":
+        return "left"
+    return "right"
+
+
+def _escape_mermaid_label(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _escape_d2_label(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+_SPY_ANSI_THEME: dict[str, str] = {
+    "data": "\u001b[32m",
+    "dirty": "\u001b[33m",
+    "resolved": "\u001b[36m",
+    "complete": "\u001b[34m",
+    "error": "\u001b[31m",
+    "derived": "\u001b[35m",
+    "path": "\u001b[90m",
+    "reset": "\u001b[0m",
+}
+_SPY_NO_COLOR_THEME: dict[str, str] = {
+    "data": "",
+    "dirty": "",
+    "resolved": "",
+    "complete": "",
+    "error": "",
+    "derived": "",
+    "path": "",
+    "reset": "",
+}
+
+
+def _resolve_spy_theme(theme: str | dict[str, str] | None) -> dict[str, str]:
+    if theme in (None, "ansi"):
+        return dict(_SPY_ANSI_THEME)
+    if theme == "none":
+        return dict(_SPY_NO_COLOR_THEME)
+    if isinstance(theme, dict):
+        out = dict(_SPY_NO_COLOR_THEME)
+        for key, value in theme.items():
+            if key in out and isinstance(value, str):
+                out[key] = value
+        return out
+    return dict(_SPY_NO_COLOR_THEME)
+
+
+def _message_type_label(msg_type: Any) -> str | None:
+    if msg_type is MessageType.DATA:
+        return "data"
+    if msg_type is MessageType.DIRTY:
+        return "dirty"
+    if msg_type is MessageType.RESOLVED:
+        return "resolved"
+    if msg_type is MessageType.COMPLETE:
+        return "complete"
+    if msg_type is MessageType.ERROR:
+        return "error"
+    return None
+
+
+def _describe_data(value: Any) -> str:
+    if isinstance(value, str):
+        return json.dumps(value)
+    if isinstance(value, bool | int | float) or value is None:
+        return str(value)
+    try:
+        return json.dumps(value)
+    except Exception:
+        return "[unserializable]"
 
 
 def _clear_graph_registry(root: Graph) -> None:
@@ -195,7 +299,7 @@ class Graph:
     ``from_snapshot`` limits on derived graphs).
     """
 
-    inspector_enabled: ClassVar[bool] = True
+    inspector_enabled: ClassVar[bool] = os.environ.get("NODE_ENV") != "production"
 
     __slots__ = (
         "_annotations",
@@ -671,7 +775,7 @@ class Graph:
             if data is not None:
                 entry["data"] = data
             if timeline:
-                entry["timestamp_ns"] = time.time_ns()
+                entry["timestamp_ns"] = monotonic_ns()
                 entry["in_batch"] = is_batching()
             return entry
 
@@ -784,6 +888,236 @@ class Graph:
 
         result._dispose_fn = _dispose
         return result
+
+    def spy(
+        self,
+        path: str | None = None,
+        *,
+        actor: Any | None = None,
+        include_types: list[str] | tuple[str, ...] | None = None,
+        exclude_types: list[str] | tuple[str, ...] | None = None,
+        theme: str | dict[str, str] | None = "ansi",
+        format: str = "pretty",
+        logger: Callable[[str, dict[str, Any]], None] | None = None,
+        timeline: bool = True,
+        causal: bool = False,
+        derived: bool = False,
+    ) -> SpyHandle:
+        """Convenience live debugger over :meth:`observe`.
+
+        Logs protocol events as they flow. Supports one-path and graph-wide modes,
+        event filtering, JSON/pretty rendering, and built-in themes (``ansi`` / ``none``).
+        """
+        include = set(include_types) if include_types is not None else None
+        exclude = set(exclude_types or [])
+        colors = _resolve_spy_theme(theme)
+        sink = logger or (lambda line, _event: print(line))
+
+        def should_log(event_type: str) -> bool:
+            if include is not None and event_type not in include:
+                return False
+            return event_type not in exclude
+
+        def render_event(event: dict[str, Any]) -> str:
+            if format == "json":
+                try:
+                    return json.dumps(event)
+                except Exception:
+                    fallback = {
+                        "type": event.get("type"),
+                        "path": event.get("path"),
+                        "data": "[unserializable]",
+                    }
+                    return json.dumps(fallback)
+            event_type = str(event.get("type") or "event")
+            color = colors.get(event_type, "")
+            path_part = ""
+            if "path" in event:
+                path_part = f"{colors['path']}{event['path']}{colors['reset']} "
+            has_data = "data" in event and event["data"] is not None
+            data_part = f" {_describe_data(event['data'])}" if has_data else ""
+            trigger = ""
+            if event.get("trigger_dep_name") is not None:
+                trigger = f" <- {event['trigger_dep_name']}"
+            elif event.get("trigger_dep_index") is not None:
+                trigger = f" <- #{event['trigger_dep_index']}"
+            batch_part = " [batch]" if event.get("in_batch") else ""
+            return (
+                f"{path_part}{color}{event_type.upper()}{colors['reset']}"
+                f"{data_part}{trigger}{batch_part}"
+            )
+
+        # --- Helper: build an event dict from a raw message and accumulate into result ---
+        def _push_event(result: ObserveResult, event_path: str | None, m: tuple[Any, ...]) -> None:
+            event_type = _message_type_label(m[0])
+            if event_type is None:
+                return
+            event: dict[str, Any] = {"type": event_type}
+            if event_path is not None:
+                event["path"] = event_path
+            if timeline:
+                event["timestamp_ns"] = monotonic_ns()
+                event["in_batch"] = is_batching()
+            if event_type in ("data", "error"):
+                event["data"] = m[1] if len(m) > 1 else None
+            if event_type == "data" and event_path is not None:
+                result.values[event_path] = event.get("data")
+            elif event_type == "dirty":
+                result.dirty_count += 1
+            elif event_type == "resolved":
+                result.resolved_count += 1
+            elif event_type == "complete" and not result.errored:
+                result.completed_cleanly = True
+            elif event_type == "error":
+                result.errored = True
+            result.events.append(event)
+            if should_log(event_type):
+                sink(render_event(event), event)
+
+        # --- Inspector-disabled fallback: manual accumulator via raw observe ---
+        if not self.inspector_enabled:
+            result = ObserveResult()
+            unsub: Callable[[], None]
+
+            if path is not None:
+                stream = self.observe(path, actor=actor)
+                if not isinstance(stream, GraphObserveSource):
+                    msg = "spy expected GraphObserveSource in raw mode"
+                    raise TypeError(msg)
+                def _on_path_msgs(msgs: Any) -> None:
+                    for m in msgs:
+                        _push_event(result, path, m)
+
+                unsub = stream.subscribe(_on_path_msgs)
+            else:
+                stream = self.observe(actor=actor)
+                if not isinstance(stream, GraphObserveSource):
+                    msg = "spy expected GraphObserveSource in raw mode"
+                    raise TypeError(msg)
+
+                def _on_qpath_msgs(qpath: str, msgs: Any) -> None:
+                    for m in msgs:
+                        _push_event(result, qpath, m)
+
+                unsub = stream.subscribe(_on_qpath_msgs)
+
+            result._dispose_fn = unsub
+            return SpyHandle(result=result)
+
+        # --- Inspector-enabled path: use structured observe + flush loop ---
+        structured_candidate = self.observe(
+            path,
+            actor=actor,
+            structured=True,
+            timeline=timeline,
+            causal=causal,
+            derived=derived,
+        )
+        result = (
+            structured_candidate
+            if isinstance(structured_candidate, ObserveResult)
+            else ObserveResult()
+        )
+        structured_cleanup = (
+            structured_candidate._dispose_fn
+            if isinstance(structured_candidate, ObserveResult)
+            else None
+        )
+
+        cursor = 0
+
+        def flush_new_events() -> None:
+            nonlocal cursor
+            next_events = result.events[cursor:]
+            cursor = len(result.events)
+            for event in next_events:
+                event_type = str(event.get("type") or "")
+                if not should_log(event_type):
+                    continue
+                sink(render_event(event), event)
+
+        if path is not None:
+
+            def on_messages(msgs: Messages) -> None:
+                for m in msgs:
+                    flush_new_events()
+                    if isinstance(structured_candidate, ObserveResult):
+                        continue
+                    _push_event(result, path, m)
+
+            stream_raw = self.observe(path, actor=actor)
+            if not isinstance(stream_raw, GraphObserveSource):
+                msg = "spy expected GraphObserveSource in raw mode"
+                raise TypeError(msg)
+            unsub = stream_raw.subscribe(on_messages)
+        else:
+
+            def on_graph_messages(qpath: str, msgs: Messages) -> None:
+                for m in msgs:
+                    flush_new_events()
+                    if isinstance(structured_candidate, ObserveResult):
+                        continue
+                    _push_event(result, qpath, m)
+
+            stream_raw = self.observe(actor=actor)
+            if not isinstance(stream_raw, GraphObserveSource):
+                msg = "spy expected GraphObserveSource in raw mode"
+                raise TypeError(msg)
+            unsub = stream_raw.subscribe(on_graph_messages)
+
+        def _dispose() -> None:
+            unsub()
+            flush_new_events()
+            if structured_cleanup is not None:
+                structured_cleanup()
+
+        result._dispose_fn = _dispose
+        return SpyHandle(result=result)
+
+    def dump_graph(
+        self,
+        *,
+        actor: Any | None = None,
+        filter: Any = None,
+        format: str = "pretty",
+        indent: int = 2,
+        include_edges: bool = True,
+        include_subgraphs: bool = True,
+        logger: Callable[[str], None] | None = None,
+    ) -> str:
+        """CLI/debug-friendly graph dump built on :meth:`describe`."""
+        described = self.describe(actor=actor, filter=filter)
+        if format == "json":
+            payload = {
+                "name": described["name"],
+                "nodes": described["nodes"],
+                "edges": described["edges"] if include_edges else [],
+                "subgraphs": described["subgraphs"] if include_subgraphs else [],
+            }
+            text = json.dumps(payload, indent=indent, sort_keys=True)
+            if logger is not None:
+                logger(text)
+            return text
+
+        lines: list[str] = [f"Graph {described['name']}", "Nodes:"]
+        for node_path in sorted(described["nodes"]):
+            entry = described["nodes"][node_path]
+            lines.append(
+                f"- {node_path} ({entry.get('type')}/{entry.get('status')}): "
+                f"{_describe_data(entry.get('value'))}"
+            )
+        if include_edges:
+            lines.append("Edges:")
+            for edge in described["edges"]:
+                lines.append(f"- {edge['from']} -> {edge['to']}")
+        if include_subgraphs:
+            lines.append("Subgraphs:")
+            for subgraph in described["subgraphs"]:
+                lines.append(f"- {subgraph}")
+        text = "\n".join(lines)
+        if logger is not None:
+            logger(text)
+        return text
 
     def node(self, path: str) -> NodeImpl[Any]:
         """Return the node for a local name or a ``::`` qualified path."""
@@ -900,6 +1234,90 @@ class Graph:
         with self._locked():
             return frozenset(self._edges)
 
+    def to_mermaid(self, *, direction: str = "LR") -> str:
+        """Export current topology as Mermaid flowchart text.
+
+        Uses :meth:`describe` to render qualified node paths and registered edges.
+
+        Args:
+            direction: ``"TD"``, ``"LR"``, ``"BT"``, or ``"RL"`` (default ``"LR"``).
+
+        Returns:
+            Mermaid source string.
+        """
+        direction = _normalize_diagram_direction(direction)
+        described = self.describe()
+        paths = sorted(described["nodes"].keys())
+        ids = {path: f"n{i}" for i, path in enumerate(paths)}
+        lines: list[str] = [f"flowchart {direction}"]
+        for path in paths:
+            lines.append(f'  {ids[path]}["{_escape_mermaid_label(path)}"]')
+        drawn: set[tuple[str, str]] = set()
+        for edge in described["edges"]:
+            from_id = ids.get(edge["from"])
+            to_id = ids.get(edge["to"])
+            if from_id is None or to_id is None:
+                continue
+            pair = (edge["from"], edge["to"])
+            if pair not in drawn:
+                drawn.add(pair)
+                lines.append(f"  {from_id} --> {to_id}")
+        for path in paths:
+            node_desc = described["nodes"][path]
+            for dep in node_desc.get("deps", []):
+                pair = (dep, path)
+                if pair in drawn:
+                    continue
+                from_id = ids.get(dep)
+                to_id = ids.get(path)
+                if from_id is None or to_id is None:
+                    continue
+                drawn.add(pair)
+                lines.append(f"  {from_id} --> {to_id}")
+        return "\n".join(lines)
+
+    def to_d2(self, *, direction: str = "LR") -> str:
+        """Export current topology as D2 diagram text.
+
+        Uses :meth:`describe` to render qualified node paths and registered edges.
+
+        Args:
+            direction: ``"TD"``, ``"LR"``, ``"BT"``, or ``"RL"`` (default ``"LR"``).
+
+        Returns:
+            D2 source string.
+        """
+        direction = _normalize_diagram_direction(direction)
+        described = self.describe()
+        paths = sorted(described["nodes"].keys())
+        ids = {path: f"n{i}" for i, path in enumerate(paths)}
+        lines: list[str] = [f"direction: {_d2_direction_from_graph_direction(direction)}"]
+        for path in paths:
+            lines.append(f'{ids[path]}: "{_escape_d2_label(path)}"')
+        drawn: set[tuple[str, str]] = set()
+        for edge in described["edges"]:
+            from_id = ids.get(edge["from"])
+            to_id = ids.get(edge["to"])
+            if from_id is None or to_id is None:
+                continue
+            pair = (edge["from"], edge["to"])
+            if pair not in drawn:
+                drawn.add(pair)
+                lines.append(f"{from_id} -> {to_id}")
+        for path in paths:
+            node_desc = described["nodes"][path]
+            for dep in node_desc.get("deps", []):
+                pair = (dep, path)
+                if pair in drawn:
+                    continue
+                from_id = ids.get(dep)
+                to_id = ids.get(path)
+                if from_id is None or to_id is None:
+                    continue
+                drawn.add(pair)
+                lines.append(f"{from_id} -> {to_id}")
+        return "\n".join(lines)
+
     def annotate(self, path: str, reason: str) -> None:
         """Store an annotation for ``path`` and record it in the trace ring buffer.
 
@@ -912,10 +1330,11 @@ class Graph:
         """
         if not self.inspector_enabled:
             return
+        self.resolve(path)
         with self._locked():
             self._annotations[path] = reason
             self._trace_ring.append(
-                TraceEntry(timestamp=time.monotonic(), path=path, reason=reason)
+                TraceEntry(timestamp_ns=monotonic_ns(), path=path, reason=reason)
             )
 
     def trace_log(self) -> list[TraceEntry]:
@@ -924,6 +1343,8 @@ class Graph:
         Returns:
             A list of :class:`TraceEntry` objects.
         """
+        if not self.inspector_enabled:
+            return []
         with self._locked():
             return list(self._trace_ring)
 
@@ -968,6 +1389,105 @@ class Graph:
             added_subgraphs=added_subgraphs,
             removed_subgraphs=removed_subgraphs,
         )
+
+
+def reachable(
+    described: dict[str, Any],
+    from_path: str,
+    direction: str,
+    *,
+    max_depth: int | None = None,
+) -> list[str]:
+    """Reachability query over a :meth:`Graph.describe` snapshot.
+
+    Traversal combines dependency links (``deps``) and explicit graph edges (``edges``):
+    - ``"upstream"``: follows ``deps`` plus incoming edges.
+    - ``"downstream"``: follows reverse-``deps`` plus outgoing edges.
+
+    Args:
+        described: ``graph.describe()`` output.
+        from_path: Start path (qualified node path).
+        direction: Either ``"upstream"`` or ``"downstream"``.
+        max_depth: Optional hop limit. ``0`` returns ``[]``.
+
+    Returns:
+        Sorted reachable paths, excluding ``from_path``.
+    """
+    if not from_path:
+        return []
+    if direction not in {"upstream", "downstream"}:
+        msg = f"reachable direction must be 'upstream' or 'downstream', got {direction!r}"
+        raise ValueError(msg)
+    if max_depth is not None:
+        if type(max_depth) is not int or max_depth < 0:
+            msg = f"reachable max_depth must be an int >= 0, got {max_depth!r}"
+            raise ValueError(msg)
+        if max_depth == 0:
+            return []
+
+    nodes_raw = described.get("nodes", {})
+    edges_raw = described.get("edges", [])
+    if not isinstance(nodes_raw, dict):
+        return []
+    if not isinstance(edges_raw, list):
+        edges_raw = []
+
+    deps_by_path: dict[str, list[str]] = {}
+    reverse_deps: dict[str, set[str]] = {}
+    incoming_edges: dict[str, set[str]] = {}
+    outgoing_edges: dict[str, set[str]] = {}
+    universe: set[str] = set()
+
+    for path, node_desc in nodes_raw.items():
+        if not isinstance(path, str):
+            continue
+        universe.add(path)
+        deps: list[str] = []
+        if isinstance(node_desc, dict):
+            raw_deps = node_desc.get("deps")
+            if isinstance(raw_deps, list):
+                deps = [d for d in raw_deps if isinstance(d, str) and d]
+        deps_by_path[path] = deps
+        for dep in deps:
+            universe.add(dep)
+            reverse_deps.setdefault(dep, set()).add(path)
+
+    for edge in edges_raw:
+        if not isinstance(edge, dict):
+            continue
+        edge_from = edge.get("from")
+        edge_to = edge.get("to")
+        if not isinstance(edge_from, str) or not edge_from:
+            continue
+        if not isinstance(edge_to, str) or not edge_to:
+            continue
+        universe.add(edge_from)
+        universe.add(edge_to)
+        outgoing_edges.setdefault(edge_from, set()).add(edge_to)
+        incoming_edges.setdefault(edge_to, set()).add(edge_from)
+
+    if from_path not in universe:
+        return []
+
+    def neighbors(path: str) -> list[str]:
+        if direction == "upstream":
+            return deps_by_path.get(path, []) + sorted(incoming_edges.get(path, set()))
+        return sorted(reverse_deps.get(path, set())) + sorted(outgoing_edges.get(path, set()))
+
+    visited: set[str] = {from_path}
+    out: set[str] = set()
+    queue: deque[tuple[str, int]] = deque([(from_path, 0)])
+    while queue:
+        cur, depth = queue.popleft()
+        if max_depth is not None and depth >= max_depth:
+            continue
+        for nb in neighbors(cur):
+            if not nb or nb in visited:
+                continue
+            visited.add(nb)
+            out.add(nb)
+            queue.append((nb, depth + 1))
+    return sorted(out)
 
 
 def _finish_resolve_from_node(base: NodeImpl[Any], tail: list[str], path: str) -> NodeImpl[Any]:
@@ -1180,5 +1700,7 @@ __all__ = [
     "META_PATH_SEG",
     "ObserveResult",
     "PATH_SEP",
+    "SpyHandle",
     "TraceEntry",
+    "reachable",
 ]

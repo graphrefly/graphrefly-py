@@ -98,6 +98,7 @@
 - [x] `graph.describe()` → JSON dict (nodes, edges, subgraphs, meta)
 - [x] `graph.observe(name?)` → live message stream (`GraphObserveSource`)
 - [x] Type inference in describe output (`describe_node` / `_infer_describe_type`; optional `describe_kind` still open in `docs/optimizations.md`)
+- [x] `reachable(described, from_path, direction, *, max_depth=None)` — standalone utility: BFS over `describe()` output, walks `deps` (inverted for downstream) + explicit `edges` transitively. Returns sorted path list. Supports `max_depth` limit.
 
 ### 1.4 — Lifecycle & persistence
 
@@ -224,7 +225,7 @@ Each returns a `Graph` — uniform introspection, lifecycle, persistence.
 - [ ] `task()`, `branch()`, `gate()`, `approval()`
 - [ ] `for_each()`, `join()`, `loop()`, `sub_pipeline()`
 - [ ] `sensor()`, `wait()`, `on_failure()`
-- [ ] Mermaid/D2 diagram export
+- [x] Mermaid/D2 diagram export
 
 ### 4.2 — Messaging
 
@@ -248,7 +249,9 @@ Each returns a `Graph` — uniform introspection, lifecycle, persistence.
 - [ ] `agent_loop()` → Graph
 - [ ] `from_llm()` (adapter)
 - [ ] `tool_registry()` → Graph
-- [ ] `agent_memory()` → Graph
+- [ ] `agent_memory()` → Graph — composes `distill()` (3.2b) + tracker-specific scoring/eviction
+- [ ] `llm_extractor(system_prompt, opts)` → `extract_fn` for `distill()` — handles structured and unstructured LLM output, deduplicates against existing memories
+- [ ] `llm_consolidator(system_prompt, opts)` → `consolidate_fn` for `distill()` — clusters and merges related memories via LLM
 - [ ] `system_prompt_builder()`
 
 ### 4.5 — CQRS
@@ -285,6 +288,8 @@ Composition layer over 3.2 (`reactive_log`), 4.1 (sagas), 4.2 (event bus), 4.3 (
 - [ ] `from_http`, `from_websocket` / `to_websocket`
 - [ ] `from_webhook`, `to_sse`
 - [ ] `from_mcp` (Model Context Protocol)
+- [ ] `from_fs_watch(paths, opts?)` — file system watcher as reactive source; debounced, glob include/exclude, recursive. Uses `watchfiles` (or `watchdog`). Cleanup closes watchers on unsubscribe.
+- [ ] `from_git_hook(repo_path, opts?)` — git change detection as reactive source; emits structured `GitEvent` (commit, files, message, author). Default: polling via `git log --since`; opt-in hook script installation.
 
 ### 5.4 — LLM tool integration
 

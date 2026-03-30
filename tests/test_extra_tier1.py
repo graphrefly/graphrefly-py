@@ -6,6 +6,7 @@ from graphrefly.core import Messages, MessageType, derived, state
 from graphrefly.core.sugar import pipe
 from graphrefly.extra.tier1 import (
     combine,
+    combine_latest,
     concat,
     distinct_until_changed,
     element_at,
@@ -116,6 +117,35 @@ def test_tap_runs_side_effect() -> None:
     t.subscribe(lambda m: None)
     s.down([(MessageType.DATA, 2)])
     assert seen == [1, 2]
+
+
+def test_tap_observer_shape_data_error_complete() -> None:
+    values: list[int] = []
+    errors: list[str] = []
+    completes: list[str] = []
+
+    src = state(1)
+    out = pipe(
+        src,
+        tap(
+            {
+                "data": lambda v: values.append(v),
+                "error": lambda e: errors.append(str(e)),
+                "complete": lambda: completes.append("done"),
+            }
+        ),
+    )
+    out.subscribe(lambda _msgs: None)
+    src.down([(MessageType.DATA, 2)])
+    src.down([(MessageType.ERROR, RuntimeError("boom"))])
+    src.down([(MessageType.COMPLETE,)])
+    assert values == [1, 2]
+    assert errors == ["boom"]
+    assert completes == []
+
+
+def test_combine_latest_alias_identity() -> None:
+    assert combine_latest is combine
 
 
 def test_pairwise_pairs() -> None:

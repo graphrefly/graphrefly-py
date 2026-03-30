@@ -1,5 +1,6 @@
 """Core node primitives and protocol types for graphrefly."""
 
+from graphrefly.core.clock import monotonic_ns, wall_clock_ns
 from graphrefly.core.dynamic_node import DynamicNodeImpl, dynamic_node
 from graphrefly.core.guard import (
     Actor,
@@ -74,6 +75,8 @@ __all__ = [
     "NodeImpl",
     "NodeStatus",
     "SubscribeHints",
+    "monotonic_ns",
+    "wall_clock_ns",
     "access_hint_for_guard",
     "acquire_subgraph_write_lock",
     "acquire_subgraph_write_lock_with_defer",

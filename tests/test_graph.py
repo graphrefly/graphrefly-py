@@ -15,6 +15,7 @@ from graphrefly import (
     batch,
     derived,
     node,
+    reachable,
     state,
 )
 
@@ -472,6 +473,74 @@ def test_describe_filter_supports_deps_includes_meta_has_and_path_predicate() ->
     assert "a" in by_path["nodes"]
 
 
+def test_reachable_upstream_uses_deps_and_incoming_edges() -> None:
+    described = {
+        "name": "g",
+        "nodes": {
+            "a": {"type": "state", "status": "settled", "deps": [], "meta": {}},
+            "b": {"type": "derived", "status": "settled", "deps": ["a"], "meta": {}},
+            "c": {"type": "derived", "status": "settled", "deps": ["b"], "meta": {}},
+            "x": {"type": "state", "status": "settled", "deps": [], "meta": {}},
+        },
+        "edges": [{"from": "x", "to": "b"}],
+        "subgraphs": [],
+    }
+    assert reachable(described, "c", "upstream") == ["a", "b", "x"]
+    assert reachable(described, "c", "upstream", max_depth=1) == ["b"]
+
+
+def test_reachable_downstream_uses_reverse_deps_and_outgoing_edges() -> None:
+    described = {
+        "name": "g",
+        "nodes": {
+            "a": {"type": "state", "status": "settled", "deps": [], "meta": {}},
+            "b": {"type": "derived", "status": "settled", "deps": ["a"], "meta": {}},
+            "c": {"type": "derived", "status": "settled", "deps": ["b"], "meta": {}},
+            "sink": {"type": "state", "status": "settled", "deps": [], "meta": {}},
+        },
+        "edges": [{"from": "a", "to": "sink"}],
+        "subgraphs": [],
+    }
+    assert reachable(described, "a", "downstream") == ["b", "c", "sink"]
+    assert reachable(described, "a", "downstream", max_depth=1) == ["b", "sink"]
+
+
+def test_reachable_validates_direction_and_max_depth_int() -> None:
+    described = {
+        "name": "g",
+        "nodes": {"a": {"type": "state", "status": "settled", "deps": [], "meta": {}}},
+        "edges": [],
+        "subgraphs": [],
+    }
+    with pytest.raises(ValueError, match="direction must be"):
+        reachable(described, "a", "sideways")
+    with pytest.raises(ValueError, match="int >= 0"):
+        reachable(described, "a", "upstream", max_depth=1.5)
+    with pytest.raises(ValueError, match="int >= 0"):
+        reachable(described, "a", "upstream", max_depth=True)
+    with pytest.raises(ValueError, match="int >= 0"):
+        reachable(described, "a", "upstream", max_depth=-1)
+    assert reachable(described, "a", "upstream", max_depth=0) == []
+
+
+def test_reachable_handles_unknown_start_and_malformed_payload_defensively() -> None:
+    malformed = {
+        "name": "g",
+        "nodes": {"a": {"type": "state", "status": "settled", "deps": ["b"], "meta": {}}},
+        "edges": [{"from": "b", "to": "a"}, {"from": 1}, None],
+        "subgraphs": [],
+    }
+    assert reachable(malformed, "missing", "upstream") == []
+    assert (
+        reachable(
+            {"name": "g", "nodes": None, "edges": None, "subgraphs": []},
+            "a",
+            "upstream",
+        )
+        == []
+    )
+
+
 def test_observe_single_vs_all() -> None:
     g = Graph("g")
     a = node(initial=0)
@@ -554,6 +623,134 @@ def test_observe_error_does_not_mark_completed_cleanly() -> None:
     obs.dispose()
     assert obs.errored is True
     assert obs.completed_cleanly is False
+
+
+def test_to_mermaid_exports_qualified_nodes_edges_and_direction() -> None:
+    g = Graph("g")
+    child = Graph("child")
+    a = state(0)
+    b = derived([a], lambda deps, _: deps[0] + 1)
+    child.add("a", a)
+    child.add("b", b)
+    child.connect("a", "b")
+    g.mount("sub", child)
+    text = g.to_mermaid(direction="TD")
+    assert "flowchart TD" in text
+    assert '["sub::a"]' in text
+    assert '["sub::b"]' in text
+    assert "-->" in text
+
+
+def test_to_d2_exports_nodes_edges_and_direction_mapping() -> None:
+    g = Graph("g")
+    a = state(1)
+    b = derived([a], lambda deps, _: deps[0] * 2)
+    g.add("a", a)
+    g.add("b", b)
+    g.connect("a", "b")
+    text = g.to_d2(direction="RL")
+    assert "direction: left" in text
+    assert '"a"' in text
+    assert '"b"' in text
+    assert "->" in text
+
+
+def test_to_mermaid_rejects_invalid_direction() -> None:
+    g = Graph("g")
+    g.add("a", state(0))
+    with pytest.raises(ValueError, match="invalid diagram direction"):
+        g.to_mermaid(direction="SIDEWAYS")
+
+
+def test_to_d2_rejects_invalid_direction() -> None:
+    g = Graph("g")
+    g.add("a", state(0))
+    with pytest.raises(ValueError, match="invalid diagram direction"):
+        g.to_d2(direction="SIDEWAYS")
+
+
+def test_annotate_resolves_existing_path() -> None:
+    g = Graph("g")
+    g.add("a", state(0))
+    g.annotate("a", "human reviewed")
+    entries = g.trace_log()
+    assert entries
+    assert entries[-1].path == "a"
+    assert entries[-1].reason == "human reviewed"
+    with pytest.raises(KeyError):
+        g.annotate("missing", "nope")
+
+
+def test_trace_log_returns_empty_when_inspector_disabled() -> None:
+    g = Graph("g")
+    g.add("a", state(0))
+    g.annotate("a", "first")
+    original = Graph.inspector_enabled
+    try:
+        Graph.inspector_enabled = False
+        assert g.trace_log() == []
+        g.annotate("a", "second")
+    finally:
+        Graph.inspector_enabled = original
+    # Existing entries remain stored and visible once re-enabled.
+    assert any(entry.reason == "first" for entry in g.trace_log())
+    assert not any(entry.reason == "second" for entry in g.trace_log())
+
+
+def test_spy_logs_with_filters_and_dispose() -> None:
+    g = Graph("g")
+    g.add("a", state(0))
+    lines: list[str] = []
+    spy = g.spy(
+        "a",
+        include_types=["data", "dirty", "resolved"],
+        exclude_types=["resolved"],
+        theme="none",
+        logger=lambda line, _event: lines.append(line),
+    )
+    assert hasattr(spy, "result")
+    g.set("a", 1)
+    spy.dispose()
+    assert any("DATA" in line for line in lines)
+    assert not any("RESOLVED" in line for line in lines)
+
+
+def test_spy_json_graph_wide() -> None:
+    g = Graph("g")
+    g.add("a", state(0))
+    g.add("b", state(0))
+    lines: list[str] = []
+    spy = g.spy(
+        format="json",
+        theme="none",
+        logger=lambda line, _event: lines.append(line),
+    )
+    assert hasattr(spy, "result")
+    g.set("a", 2)
+    g.set("b", 3)
+    spy.dispose()
+    parsed = [json.loads(line) for line in lines]
+    assert any(evt.get("type") == "data" and evt.get("path") == "a" for evt in parsed)
+    assert any(evt.get("type") == "data" and evt.get("path") == "b" for evt in parsed)
+
+
+def test_dump_graph_pretty_and_json() -> None:
+    g = Graph("g")
+    a = state(1)
+    b = derived([a], lambda deps, _: deps[0] + 1)
+    g.add("a", a)
+    g.add("b", b)
+    g.connect("a", "b")
+    pretty = g.dump_graph(format="pretty")
+    assert "Graph g" in pretty
+    assert "Nodes:" in pretty
+    assert "Edges:" in pretty
+    json_text = g.dump_graph(format="json", indent=2)
+    assert json_text == g.dump_graph(format="json", indent=2)
+    payload = json.loads(json_text)
+    assert payload["name"] == "g"
+    assert "a" in payload["nodes"]
+    assert payload["edges"] == [{"from": "a", "to": "b"}]
 
 
 def test_destroy_teardowns_and_clears_registry() -> None:

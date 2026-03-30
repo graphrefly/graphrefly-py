@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import math
 import threading
-import time
 from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
+from graphrefly.core.clock import monotonic_ns
 from graphrefly.core.node import Node, NodeActions, node
 from graphrefly.core.protocol import Messages, MessageType, batch
 from graphrefly.extra.backoff import (
@@ -224,7 +224,7 @@ class _CircuitBreakerImpl:
         self._half_open_max = max(1, half_open_max)
         self._state: CircuitState = "closed"
         self._failures = 0
-        self._opened_at = 0.0
+        self._opened_at = 0
         self._trials = 0
         self._open_cycle = 0
         self._last_cooldown = self._cooldown_base
@@ -239,7 +239,7 @@ class _CircuitBreakerImpl:
     def _transition_to_open(self) -> None:
         self._state = "open"
         self._last_cooldown = self._get_cooldown()
-        self._opened_at = time.monotonic()
+        self._opened_at = monotonic_ns()
         self._trials = 0
 
     @property
@@ -257,7 +257,7 @@ class _CircuitBreakerImpl:
             if self._state == "closed":
                 return True
             if self._state == "open":
-                if (time.monotonic() - self._opened_at) >= self._last_cooldown:
+                if (monotonic_ns() - self._opened_at) >= self._last_cooldown * 1_000_000_000:
                     self._state = "half-open"
                     self._trials = 1
                     return True
@@ -417,14 +417,14 @@ class _TokenBucketImpl:
         self._capacity = float(capacity)
         self._refill_per_sec = float(refill_per_second)
         self._tokens = float(capacity)
-        self._updated_at = time.monotonic()
+        self._updated_at = monotonic_ns()
         self._lock = threading.Lock()
 
     def _refill_locked(self) -> None:
-        now = time.monotonic()
+        now = monotonic_ns()
         if self._refill_per_sec > 0:
-            elapsed = now - self._updated_at
-            self._tokens = min(self._capacity, self._tokens + elapsed * self._refill_per_sec)
+            elapsed_sec = (now - self._updated_at) / 1_000_000_000
+            self._tokens = min(self._capacity, self._tokens + elapsed_sec * self._refill_per_sec)
         self._updated_at = now
 
     def available(self) -> float:
@@ -472,7 +472,7 @@ def rate_limiter(source: Node[Any], max_events: int, window_seconds: float) -> N
         raise ValueError(msg)
 
     def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
-        times: deque[float] = deque()
+        times: deque[int] = deque()
         pending: deque[Any] = deque()
         timer: list[threading.Timer | None] = [None]
         timer_gen = [0]
@@ -482,16 +482,18 @@ def rate_limiter(source: Node[Any], max_events: int, window_seconds: float) -> N
                 timer[0].cancel()
                 timer[0] = None
 
-        def prune(now: float) -> None:
-            boundary = now - window_seconds
+        window_ns = window_seconds * 1_000_000_000
+
+        def prune(now: int) -> None:
+            boundary = now - window_ns
             while times and times[0] <= boundary:
                 times.popleft()
 
-        def schedule_emit(when: float) -> None:
+        def schedule_emit(when_ns: int) -> None:
             cancel_timer()
             timer_gen[0] += 1
             gen = timer_gen[0]
-            delay = max(0.0, when - time.monotonic())
+            delay = max(0.0, (when_ns - monotonic_ns()) / 1_000_000_000)
 
             def fire() -> None:
                 if gen != timer_gen[0]:
@@ -506,14 +508,14 @@ def rate_limiter(source: Node[Any], max_events: int, window_seconds: float) -> N
 
         def try_emit() -> None:
             while pending:
-                now = time.monotonic()
+                now = monotonic_ns()
                 prune(now)
                 if len(times) < max_events:
                     times.append(now)
                     actions.emit(pending.popleft())
                 else:
                     oldest = times[0]
-                    schedule_emit(oldest + window_seconds)
+                    schedule_emit(oldest + int(window_ns))
                     return
 
         def sink(msgs: Messages) -> None:

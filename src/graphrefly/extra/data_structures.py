@@ -11,12 +11,12 @@ emit ``RESOLVED`` instead of ``DATA`` when the visible collection is unchanged
 from __future__ import annotations
 
 import threading
-import time
 from bisect import bisect_left
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from graphrefly.core.clock import monotonic_ns
 from graphrefly.core.protocol import MessageType, batch
 from graphrefly.core.sugar import derived, state
 
@@ -55,8 +55,8 @@ def _keepalive_derived(n: Any) -> None:
     n.subscribe(lambda _msgs: None)
 
 
-def _mono_now() -> float:
-    return time.monotonic()
+def _mono_now() -> int:
+    return monotonic_ns()
 
 
 def _push_two_phase(node: Any, snapshot: Any) -> None:
@@ -73,7 +73,7 @@ def _push_two_phase(node: Any, snapshot: Any) -> None:
 class _MapState:
     """Internal snapshot: values with optional monotonic expiry; LRU order (oldest first)."""
 
-    entries: dict[Any, tuple[Any, float | None]]
+    entries: dict[Any, tuple[Any, int | None]]
     lru: tuple[Any, ...]
 
     @staticmethod
@@ -95,7 +95,7 @@ def _purge_stale(ms: _MapState) -> _MapState:
     now = _mono_now()
     if not ms.entries:
         return ms
-    alive: dict[Any, tuple[Any, float | None]] = {}
+    alive: dict[Any, tuple[Any, int | None]] = {}
     for k, (v, exp) in ms.entries.items():
         if exp is not None and exp <= now:
             continue
@@ -110,10 +110,10 @@ def _touch_lru(order: tuple[Any, ...], key: Any) -> tuple[Any, ...]:
 
 
 def _evict_lru(
-    entries: dict[Any, tuple[Any, float | None]],
+    entries: dict[Any, tuple[Any, int | None]],
     lru: tuple[Any, ...],
     max_size: int,
-) -> tuple[dict[Any, tuple[Any, float | None]], tuple[Any, ...]]:
+) -> tuple[dict[Any, tuple[Any, int | None]], tuple[Any, ...]]:
     while len(entries) > max_size and lru:
         victim = lru[0]
         lru = tuple(lru[1:])
@@ -131,8 +131,9 @@ class ReactiveMapBundle:
             Uses versioned snapshots for efficient ``RESOLVED`` deduplication.
 
     Notes:
-        TTL deadlines use :func:`time.monotonic` (seconds). Expired keys remain in the
-        internal store until the next mutation or :meth:`prune`. LRU order is updated on
+        TTL deadlines use :func:`~graphrefly.core.clock.monotonic_ns`
+        (nanoseconds). Expired keys remain in the internal store until the
+        next mutation or :meth:`prune`. LRU order is updated on
         ``set``, not on dict reads from ``data``.
     """
 
@@ -152,12 +153,12 @@ class ReactiveMapBundle:
 
     def set(self, key: Any, value: Any, *, ttl: float | None = None) -> None:
         eff = self._default_ttl if ttl is None else ttl
-        exp: float | None = None
+        exp: int | None = None
         if eff is not None:
             if eff <= 0:
                 msg = "ttl must be > 0"
                 raise ValueError(msg)
-            exp = _mono_now() + eff
+            exp = _mono_now() + int(eff * 1_000_000_000)
 
         raw = self._state.get()
         cur = _purge_stale(raw if raw is not None else _MapState.empty())

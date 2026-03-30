@@ -12,19 +12,23 @@ from graphrefly.extra.tier2 import (
     buffer,
     buffer_count,
     buffer_time,
+    catch_error,
     concat_map,
     debounce,
+    debounce_time,
     delay,
     exhaust_map,
     flat_map,
     gate,
     interval,
+    merge_map,
     pausable,
     repeat,
     rescue,
     sample,
     switch_map,
     throttle,
+    throttle_time,
     timeout,
 )
 
@@ -315,6 +319,13 @@ def test_rescue() -> None:
     out.subscribe(sink.append)
     h[0].down([(MessageType.ERROR, RuntimeError("x"))])
     assert _values(sink) == ["ok"]
+
+
+def test_rxjs_alias_identity_tier2() -> None:
+    assert debounce_time is debounce
+    assert throttle_time is throttle
+    assert catch_error is rescue
+    assert merge_map is flat_map
 
 
 def test_gate() -> None:
