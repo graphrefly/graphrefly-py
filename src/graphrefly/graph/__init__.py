@@ -6,14 +6,20 @@ from graphrefly.graph.graph import (
     META_PATH_SEG,
     PATH_SEP,
     Graph,
+    GraphDiffResult,
     GraphObserveSource,
+    ObserveResult,
+    TraceEntry,
 )
 
 __all__ = [
     "GRAPH_META_SEGMENT",
     "GRAPH_SNAPSHOT_VERSION",
     "Graph",
+    "GraphDiffResult",
     "GraphObserveSource",
     "META_PATH_SEG",
+    "ObserveResult",
     "PATH_SEP",
+    "TraceEntry",
 ]

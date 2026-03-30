@@ -188,7 +188,6 @@ def test_merge_independent_values() -> None:
 # --- P1: Correctness edge cases ---
 
 
-@pytest.mark.xfail(reason="Py switchMap completes immediately on outer COMPLETE — batch-7 gap")
 def test_switchmap_waits_for_inner_on_outer_complete() -> None:
     """switchMap waits for active inner to complete before emitting COMPLETE."""
     outer = state(0)
@@ -204,7 +203,6 @@ def test_switchmap_waits_for_inner_on_outer_complete() -> None:
     assert _has(sink, MessageType.COMPLETE)
 
 
-@pytest.mark.xfail(reason="Py switchMap inner ERROR not forwarded — batch-7 gap")
 def test_switchmap_inner_error_propagates() -> None:
     """Inner error in switchMap propagates to output."""
     outer = state(0)
@@ -217,7 +215,6 @@ def test_switchmap_inner_error_propagates() -> None:
     assert _has(sink, MessageType.ERROR)
 
 
-@pytest.mark.xfail(reason="Py concatMap inner ERROR not forwarded — batch-7 gap")
 def test_concatmap_inner_error_propagates() -> None:
     """Inner error in concatMap propagates to output."""
     outer = state(0)
@@ -230,7 +227,6 @@ def test_concatmap_inner_error_propagates() -> None:
     assert _has(sink, MessageType.ERROR)
 
 
-@pytest.mark.xfail(reason="Py exhaustMap inner ERROR not forwarded — batch-7 gap")
 def test_exhaustmap_inner_error_propagates() -> None:
     """Inner error in exhaustMap propagates to output."""
     outer = state(0)

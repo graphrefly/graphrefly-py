@@ -1,4 +1,34 @@
-"""GraphReFly message types, message shape aliases, and batch semantics."""
+"""GraphReFly message types, message shape aliases, and batch semantics.
+
+Canonical message ordering (within a composite batch)
+=====================================================
+
+When multiple message types appear in a single ``down()`` call, the canonical
+delivery order is determined by **signal tier**:
+
+======  ====================  ===================  ====================================
+Tier    Signals               Role                 Batch behavior
+======  ====================  ===================  ====================================
+0       DIRTY, INVALIDATE     Notification          Immediate (never deferred)
+1       PAUSE, RESUME         Flow control          Immediate (never deferred)
+2       DATA, RESOLVED        Value settlement      Deferred inside ``batch()``
+3       COMPLETE, ERROR       Terminal lifecycle     Deferred to after phase-2
+4       TEARDOWN              Destruction            Immediate (usually sent alone)
+======  ====================  ===================  ====================================
+
+**Rule:** Within ``emit_with_batch(strategy="partition")``, messages are partitioned
+by tier and delivered in tier order. This ensures phase-2 values reach sinks
+before terminal signals mark the node as done.
+
+Unknown message types (forward-compat) are tier 0 (immediate).
+
+Meta node bypass rules (centralized — GRAPHREFLY-SPEC §2.3)
+============================================================
+
+- **INVALIDATE** via ``graph.signal()`` — no-op on meta nodes.
+- **COMPLETE / ERROR** — not propagated from parent to meta.
+- **TEARDOWN** — propagated from parent to meta, releasing meta resources.
+"""
 
 from __future__ import annotations
 
@@ -169,16 +199,59 @@ def is_phase2_message(msg: Message) -> bool:
     return t is MessageType.DATA or t is MessageType.RESOLVED
 
 
-def partition_for_batch(messages: Messages) -> tuple[Messages, Messages]:
-    """Split *messages* into immediate vs phase-2 tuples (graphrefly-ts ``partitionForBatch``)."""
+def is_terminal_message(t: MessageType) -> bool:
+    """True for COMPLETE or ERROR (tier 3 — delivered after phase-2 in the same batch)."""
+    return t is MessageType.COMPLETE or t is MessageType.ERROR
+
+
+def message_tier(t: MessageType) -> int:
+    """Return the signal tier for a message type (see module docstring).
+
+    0: notification (DIRTY, INVALIDATE) — immediate
+    1: flow control (PAUSE, RESUME) — immediate
+    2: value (DATA, RESOLVED) — deferred inside batch()
+    3: terminal (COMPLETE, ERROR) — delivered after phase-2
+    4: destruction (TEARDOWN) — immediate, usually alone
+    0 for unknown types (forward-compat: immediate)
+    """
+    if t is MessageType.DIRTY or t is MessageType.INVALIDATE:
+        return 0
+    if t is MessageType.PAUSE or t is MessageType.RESUME:
+        return 1
+    if t is MessageType.DATA or t is MessageType.RESOLVED:
+        return 2
+    if t is MessageType.COMPLETE or t is MessageType.ERROR:
+        return 3
+    if t is MessageType.TEARDOWN:
+        return 4
+    return 0
+
+
+def propagates_to_meta(t: MessageType) -> bool:
+    """Whether *t* should be propagated from a parent node to its companion meta nodes.
+
+    Only TEARDOWN propagates; COMPLETE/ERROR/INVALIDATE do not.
+    """
+    return t is MessageType.TEARDOWN
+
+
+def partition_for_batch(messages: Messages) -> tuple[Messages, Messages, Messages]:
+    """Split *messages* into three groups by signal tier.
+
+    Returns ``(immediate, deferred, terminal)`` — tier 0-1/4, tier 2, tier 3.
+    Order within each group is preserved.
+    """
     immediate: Messages = []
     deferred: Messages = []
+    terminal: Messages = []
     for m in messages:
         if is_phase2_message(m):
             deferred.append(m)
+        elif is_terminal_message(m[0]):
+            terminal.append(m)
         else:
             immediate.append(m)
-    return immediate, deferred
+    return immediate, deferred, terminal
 
 
 def emit_with_batch(
@@ -237,6 +310,7 @@ def _emit_partition(
     if len(messages) == 1:
         t = messages[0][0]
         if t is MessageType.DATA or t is MessageType.RESOLVED:
+            # Phase-2: defer when batching.
             if _should_defer_phase2(bs, defer_when):
 
                 def _emit_single() -> None:
@@ -245,24 +319,46 @@ def _emit_partition(
                 bs.pending.append(_wrap_deferred_subgraph(_emit_single, subgraph_lock))
             else:
                 sink(messages)
+        elif is_terminal_message(t):
+            # Terminal single message: defer when batching so preceding phase-2 flushes first.
+            if _should_defer_phase2(bs, defer_when):
+
+                def _emit_terminal_single() -> None:
+                    sink(messages)
+
+                bs.pending.append(_wrap_deferred_subgraph(_emit_terminal_single, subgraph_lock))
+            else:
+                sink(messages)
         else:
+            # Immediate: emit synchronously.
             sink(messages)
         return
-    # Multi-message: partition into immediate and deferred to preserve
-    # two-phase ordering (DIRTY propagates before DATA for diamond settlement).
-    immediate, deferred = partition_for_batch(messages)
+    # Multi-message: three-way partition by tier (see module docstring).
+    immediate, deferred, terminal = partition_for_batch(messages)
+
+    # 1. Immediate signals (tier 0-1, 4) — emit synchronously now.
     if immediate:
         sink(immediate)
-    if not deferred:
-        return
+
+    # 2. Phase-2 (tier 2) + 3. Terminal (tier 3) — canonical order preserved.
     if _should_defer_phase2(bs, defer_when):
+        if deferred:
 
-        def _emit() -> None:
-            sink(deferred)
+            def _emit_deferred() -> None:
+                sink(deferred)
 
-        bs.pending.append(_wrap_deferred_subgraph(_emit, subgraph_lock))
+            bs.pending.append(_wrap_deferred_subgraph(_emit_deferred, subgraph_lock))
+        if terminal:
+
+            def _emit_terminal() -> None:
+                sink(terminal)
+
+            bs.pending.append(_wrap_deferred_subgraph(_emit_terminal, subgraph_lock))
     else:
-        sink(deferred)
+        if deferred:
+            sink(deferred)
+        if terminal:
+            sink(terminal)
 
 
 def _emit_sequential(
@@ -274,14 +370,18 @@ def _emit_sequential(
     bs = _batch_state()
     for msg in messages:
         kind = msg[0]
-        if kind in _TERMINAL_TYPES:
-            _drain_pending(bs)
         if kind in _BATCH_DEFER_TYPES and _should_defer_phase2(bs, defer_when):
 
             def _emit(m: Message = msg, s: Callable[[Messages], None] = sink) -> None:
                 s([m])
 
             bs.pending.append(_wrap_deferred_subgraph(_emit, subgraph_lock))
+        elif kind in _TERMINAL_TYPES and _should_defer_phase2(bs, defer_when):
+            # Terminal: defer so preceding phase-2 flushes first.
+            def _emit_term(m: Message = msg, s: Callable[[Messages], None] = sink) -> None:
+                s([m])
+
+            bs.pending.append(_wrap_deferred_subgraph(_emit_term, subgraph_lock))
         else:
             sink([msg])
 
@@ -302,5 +402,8 @@ __all__ = [
     "emit_with_batch",
     "is_batching",
     "is_phase2_message",
+    "is_terminal_message",
+    "message_tier",
     "partition_for_batch",
+    "propagates_to_meta",
 ]

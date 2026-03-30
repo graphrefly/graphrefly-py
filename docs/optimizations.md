@@ -274,7 +274,7 @@ Cross-language: `graphrefly-ts/docs/optimizations.md` §15. **Python (shipped):*
 | `allows_observe()` / `has_guard()` | Public methods on `NodeImpl` | Public methods on `Node` interface |
 | Extra Phase 2.3 (sources/sinks) | `graphrefly.extra.sources` + `graphrefly.extra.cron`; see §5 above | `src/extra/sources.ts` + `src/extra/cron.ts`; see §5 above |
 | `gate(source, control)` | `graphrefly.extra.tier2.gate` | `src/extra/operators.ts` `gate` (aligned 2026-03-28) |
-| `first_value_from` / `firstValueFrom` | `first_value_from(source, timeout=)` (blocking) + `first_value_from_future(source)` | `firstValueFrom(source): Promise<T>` |
+| `first_value_from` / `firstValueFrom` | `first_value_from(source, timeout=)` (blocking) | `firstValueFrom(source): Promise<T>` |
 | `from_event_emitter` / `fromEvent` | Generic emitter (`add_method=`, `remove_method=`) | DOM `addEventListener` API |
 | `to_array` / `toArray` | Reactive `Node[list]` | Reactive `Node<T[]>` |
 | `to_list` (blocking) | Py-only sync bridge | N/A |
@@ -398,7 +398,6 @@ Cross-language: `graphrefly-ts/docs/optimizations.md` §15. **Python (shipped):*
    | `cached` | Both: `replay(source, buffer_size=1)` / `replay(source, 1)`. |
    | `replay` | Both: real circular buffer + late-subscriber replay; reject `buffer_size < 1`. |
    | `first_value_from` | Py: blocks via `threading.Event`, returns value. TS: `firstValueFrom(source): Promise<T>`. |
-   | `first_value_from_future` | Py-only: returns `concurrent.futures.Future`. |
    | `describe_kind` | Both: source factories use `"producer"` (not `"operator"`). |
    | Static source timing | Both: synchronous emission during producer start (no deferred microtask). |
 
@@ -408,7 +407,7 @@ Cross-language: `graphrefly-ts/docs/optimizations.md` §15. **Python (shipped):*
    |-------|--------|------------|-----------|
    | `from_event_emitter` / `fromEvent` | `from_event_emitter(emitter, event, add_method=, remove_method=)` — generic emitter | `fromEvent(target, type, opts?)` — DOM `addEventListener` API | Language ecosystem |
    | `to_list` (blocking) | Py-only: blocks via `threading.Event`, returns `list` | N/A — use `await firstValueFrom(toArray(src))` | Py sync bridge |
-   | `first_value_from` / `first_value_from_future` | Py-only: sync/Future bridges | `firstValueFrom`: `Promise<T>` | Language concurrency model |
+   | `first_value_from` | Py-only: sync bridge | `firstValueFrom`: `Promise<T>` | Language concurrency model |
    | `from_awaitable` / `fromPromise` | `from_awaitable`: worker thread + `asyncio.run` | `fromPromise`: native Promise | Language async model |
    | `from_async_iter` / `fromAsyncIter` | Worker thread + `asyncio.run` | Native async iteration | Language async model |
    | AbortSignal on async sources | Not supported (deferred) | `signal` option on `fromTimer`, `fromPromise`, `fromAsyncIter` | TS has native AbortSignal; Py deferred |

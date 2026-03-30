@@ -5,8 +5,11 @@ from __future__ import annotations
 import contextlib
 import json
 import threading
+import time
+from collections import deque
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from graphrefly.core.guard import GuardDenied, normalize_actor
 from graphrefly.core.meta import describe_node
@@ -14,9 +17,54 @@ from graphrefly.core.protocol import Messages, MessageType
 from graphrefly.core.sugar import state
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from graphrefly.core.node import NodeImpl
+
+
+@dataclass(frozen=True, slots=True)
+class TraceEntry:
+    """Single entry in the :meth:`Graph.trace_log` ring buffer."""
+
+    timestamp: float
+    path: str
+    reason: str
+
+
+@dataclass(slots=True)
+class ObserveResult:
+    """Structured observation result from :meth:`Graph.observe` with ``structured=True``.
+
+    Accumulates events from the observation and provides a ``dispose()`` method
+    to unsubscribe.
+    """
+
+    values: dict[str, Any] = field(default_factory=dict)
+    dirty_count: int = 0
+    resolved_count: int = 0
+    events: list[tuple[str, Any]] = field(default_factory=list)
+    completed_cleanly: bool = False
+    errored: bool = False
+    _dispose_fn: Callable[[], None] | None = field(default=None, repr=False)
+
+    def dispose(self) -> None:
+        """Unsubscribe from the observation."""
+        if self._dispose_fn is not None:
+            self._dispose_fn()
+            self._dispose_fn = None
+
+
+@dataclass(frozen=True, slots=True)
+class GraphDiffResult:
+    """Result of :meth:`Graph.diff` comparing two describe outputs."""
+
+    added_nodes: list[str] = field(default_factory=list)
+    removed_nodes: list[str] = field(default_factory=list)
+    changed_nodes: list[str] = field(default_factory=list)
+    added_edges: list[dict[str, str]] = field(default_factory=list)
+    removed_edges: list[dict[str, str]] = field(default_factory=list)
+    added_subgraphs: list[str] = field(default_factory=list)
+    removed_subgraphs: list[str] = field(default_factory=list)
 
 #: Separator for qualified paths (e.g. ``"parent::child::node"``).
 PATH_SEP = "::"
@@ -148,7 +196,18 @@ class Graph:
     ``from_snapshot`` limits on derived graphs).
     """
 
-    __slots__ = ("_edges", "_lock", "_mounts", "_name", "_nodes", "_thread_safe")
+    inspector_enabled: ClassVar[bool] = True
+
+    __slots__ = (
+        "_annotations",
+        "_edges",
+        "_lock",
+        "_mounts",
+        "_name",
+        "_nodes",
+        "_thread_safe",
+        "_trace_ring",
+    )
 
     def __init__(self, name: str, opts: dict[str, Any] | None = None) -> None:
         """Create a graph. ``opts`` may include ``thread_safe`` (default ``True``)."""
@@ -165,6 +224,8 @@ class Graph:
         self._nodes: dict[str, NodeImpl[Any]] = {}
         self._mounts: dict[str, Graph] = {}
         self._edges: set[tuple[str, str]] = set()
+        self._annotations: dict[str, str] = {}
+        self._trace_ring: deque[TraceEntry] = deque(maxlen=1000)
 
     @property
     def name(self) -> str:
@@ -471,7 +532,12 @@ class Graph:
             owner.add(local, n)
         return root
 
-    def describe(self, *, actor: Any = _DESCRIBE_UNSCOPED) -> dict[str, Any]:
+    def describe(
+        self,
+        *,
+        actor: Any = _DESCRIBE_UNSCOPED,
+        filter: dict[str, Any] | Callable[..., bool] | None = None,
+    ) -> dict[str, Any]:
         """Static structure snapshot (GRAPHREFLY-SPEC §3.6, Appendix B).
 
         ``nodes`` keys are qualified paths (including ``::__meta__::`` for companions).
@@ -482,6 +548,17 @@ class Graph:
         ``from`` or ``to`` is hidden are dropped (roadmap 1.5 D). **Subgraphs** are kept
         only if at least one visible node path lies under that mount prefix.
         Omitting ``actor`` preserves the previous unfiltered behavior.
+
+        With ``filter=...``, further restrict the output:
+
+        - If ``filter`` is a ``dict``, each key is matched against node description fields
+          (e.g. ``{"type": "state"}`` keeps only nodes whose ``type`` is ``"state"``).
+        - If ``filter`` is a callable, it receives ``(path, node_desc)`` and must return
+          ``True`` to include the node.
+
+        Args:
+            actor: Optional actor for guard-based filtering.
+            filter: Optional dict or predicate to filter nodes in the output.
         """
         targets = _collect_observe_targets(self, "")
         paths_by_id = {id(n): p for p, n in targets}
@@ -496,19 +573,50 @@ class Graph:
             "edges": edges_out,
             "subgraphs": subgraphs_out,
         }
-        if actor is _DESCRIBE_UNSCOPED:
-            return raw
-        a = normalize_actor(actor)
-        visible = {p for p, n in targets if _node_allows_observe(n, a)}
-        nodes_f = {k: v for k, v in nodes_map.items() if k in visible}
-        edges_f = [e for e in edges_out if e["from"] in visible and e["to"] in visible]
-        sep = PATH_SEP
-        subgraphs_f = [
-            s for s in subgraphs_out if any(p == s or p.startswith(f"{s}{sep}") for p in visible)
-        ]
-        return {**raw, "nodes": nodes_f, "edges": edges_f, "subgraphs": subgraphs_f}
+        if actor is not _DESCRIBE_UNSCOPED:
+            a = normalize_actor(actor)
+            visible = {p for p, n in targets if _node_allows_observe(n, a)}
+            nodes_map = {k: v for k, v in nodes_map.items() if k in visible}
+            edges_out = [e for e in edges_out if e["from"] in visible and e["to"] in visible]
+            sep = PATH_SEP
+            subgraphs_out = [
+                s
+                for s in subgraphs_out
+                if any(p == s or p.startswith(f"{s}{sep}") for p in visible)
+            ]
+            raw = {**raw, "nodes": nodes_map, "edges": edges_out, "subgraphs": subgraphs_out}
+        if filter is not None:
+            if callable(filter):
+                nodes_map = {p: d for p, d in raw["nodes"].items() if filter(p, d)}
+            elif isinstance(filter, dict):
+                def _match(desc: dict[str, Any]) -> bool:
+                    return all(desc.get(k) == v for k, v in filter.items())
 
-    def observe(self, path: str | None = None, *, actor: Any | None = None) -> GraphObserveSource:
+                nodes_map = {p: d for p, d in raw["nodes"].items() if _match(d)}
+            visible_after_filter = set(nodes_map.keys())
+            edges_out = [
+                e
+                for e in raw["edges"]
+                if e["from"] in visible_after_filter and e["to"] in visible_after_filter
+            ]
+            sep = PATH_SEP
+            subgraphs_out = [
+                s
+                for s in raw["subgraphs"]
+                if any(
+                    p == s or p.startswith(f"{s}{sep}") for p in visible_after_filter
+                )
+            ]
+            raw = {**raw, "nodes": nodes_map, "edges": edges_out, "subgraphs": subgraphs_out}
+        return raw
+
+    def observe(
+        self,
+        path: str | None = None,
+        *,
+        actor: Any | None = None,
+        structured: bool = False,
+    ) -> GraphObserveSource | ObserveResult:
         """Live message stream for one node (and its path) or the whole graph (§3.6).
 
         Use :meth:`GraphObserveSource.subscribe` to attach a sink. Graph-wide mode
@@ -516,8 +624,68 @@ class Graph:
 
         Nodes with a ``guard`` require ``actor`` such that ``guard(actor, "observe")`` is
         true (default actor is system — :func:`~graphrefly.core.guard.system_actor`).
+
+        When ``structured=True``, returns an :class:`ObserveResult` that accumulates
+        events, tracks counts, and provides a ``dispose()`` method.
+
+        Args:
+            path: Optional node path (``None`` for graph-wide).
+            actor: Optional actor for guard checking.
+            structured: If ``True``, return an :class:`ObserveResult` instead of
+                a raw :class:`GraphObserveSource`.
         """
-        return GraphObserveSource(self, path, actor)
+        source = GraphObserveSource(self, path, actor)
+        if not structured:
+            return source
+        result = ObserveResult()
+
+        if path is not None:
+            def _sink(msgs: Messages) -> None:
+                for m in msgs:
+                    t = m[0]
+                    if t is MessageType.DATA:
+                        val = m[1] if len(m) > 1 else None
+                        result.values[path] = val  # type: ignore[index]
+                        result.events.append((path, m))  # type: ignore[arg-type]
+                    elif t is MessageType.DIRTY:
+                        result.dirty_count += 1
+                        result.events.append((path, m))  # type: ignore[arg-type]
+                    elif t is MessageType.RESOLVED:
+                        result.resolved_count += 1
+                        result.events.append((path, m))  # type: ignore[arg-type]
+                    elif t is MessageType.COMPLETE:
+                        result.completed_cleanly = True
+                        result.events.append((path, m))  # type: ignore[arg-type]
+                    elif t is MessageType.ERROR:
+                        result.errored = True
+                        result.events.append((path, m))  # type: ignore[arg-type]
+
+            unsub = source.subscribe(_sink)
+        else:
+            def _graph_sink(qpath: str, msgs: Messages) -> None:
+                for m in msgs:
+                    t = m[0]
+                    if t is MessageType.DATA:
+                        val = m[1] if len(m) > 1 else None
+                        result.values[qpath] = val
+                        result.events.append((qpath, m))
+                    elif t is MessageType.DIRTY:
+                        result.dirty_count += 1
+                        result.events.append((qpath, m))
+                    elif t is MessageType.RESOLVED:
+                        result.resolved_count += 1
+                        result.events.append((qpath, m))
+                    elif t is MessageType.COMPLETE:
+                        result.completed_cleanly = True
+                        result.events.append((qpath, m))
+                    elif t is MessageType.ERROR:
+                        result.errored = True
+                        result.events.append((qpath, m))
+
+            unsub = source.subscribe(_graph_sink)
+
+        result._dispose_fn = unsub
+        return result
 
     def node(self, path: str) -> NodeImpl[Any]:
         """Return the node for a local name or a ``::`` qualified path."""
@@ -633,6 +801,75 @@ class Graph:
         """Registered ``(from_name, to_name)`` pairs (read-only)."""
         with self._locked():
             return frozenset(self._edges)
+
+    def annotate(self, path: str, reason: str) -> None:
+        """Store an annotation for ``path`` and record it in the trace ring buffer.
+
+        Annotations are informational labels attached to node paths for debugging
+        and auditing. Each call also appends a :class:`TraceEntry` to the ring buffer.
+
+        Args:
+            path: Qualified node path.
+            reason: Human-readable annotation text.
+        """
+        if not self.inspector_enabled:
+            return
+        with self._locked():
+            self._annotations[path] = reason
+            self._trace_ring.append(
+                TraceEntry(timestamp=time.monotonic(), path=path, reason=reason)
+            )
+
+    def trace_log(self) -> list[TraceEntry]:
+        """Return a copy of the trace ring buffer (most recent last).
+
+        Returns:
+            A list of :class:`TraceEntry` objects.
+        """
+        with self._locked():
+            return list(self._trace_ring)
+
+    @staticmethod
+    def diff(a: dict[str, Any], b: dict[str, Any]) -> GraphDiffResult:
+        """Structural diff of two :meth:`describe` outputs.
+
+        Compares ``nodes``, ``edges``, and ``subgraphs`` between snapshots *a* and *b*.
+
+        Args:
+            a: First describe output (the "before" state).
+            b: Second describe output (the "after" state).
+
+        Returns:
+            A :class:`GraphDiffResult` with added, removed, and changed items.
+        """
+        a_nodes = set(a.get("nodes", {}).keys())
+        b_nodes = set(b.get("nodes", {}).keys())
+        added_nodes = sorted(b_nodes - a_nodes)
+        removed_nodes = sorted(a_nodes - b_nodes)
+        changed_nodes: list[str] = []
+        for p in sorted(a_nodes & b_nodes):
+            if a["nodes"][p] != b["nodes"][p]:
+                changed_nodes.append(p)
+
+        a_edges = {(e["from"], e["to"]) for e in a.get("edges", [])}
+        b_edges = {(e["from"], e["to"]) for e in b.get("edges", [])}
+        added_edges = [{"from": f, "to": t} for f, t in sorted(b_edges - a_edges)]
+        removed_edges = [{"from": f, "to": t} for f, t in sorted(a_edges - b_edges)]
+
+        a_subs = set(a.get("subgraphs", []))
+        b_subs = set(b.get("subgraphs", []))
+        added_subgraphs = sorted(b_subs - a_subs)
+        removed_subgraphs = sorted(a_subs - b_subs)
+
+        return GraphDiffResult(
+            added_nodes=added_nodes,
+            removed_nodes=removed_nodes,
+            changed_nodes=changed_nodes,
+            added_edges=added_edges,
+            removed_edges=removed_edges,
+            added_subgraphs=added_subgraphs,
+            removed_subgraphs=removed_subgraphs,
+        )
 
 
 def _finish_resolve_from_node(base: NodeImpl[Any], tail: list[str], path: str) -> NodeImpl[Any]:
@@ -840,7 +1077,10 @@ __all__ = [
     "GRAPH_META_SEGMENT",
     "GRAPH_SNAPSHOT_VERSION",
     "Graph",
+    "GraphDiffResult",
     "GraphObserveSource",
     "META_PATH_SEG",
+    "ObserveResult",
     "PATH_SEP",
+    "TraceEntry",
 ]

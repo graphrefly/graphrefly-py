@@ -74,7 +74,6 @@ Reference pages for modules listed in `website/scripts/gen_api_docs.py` (`EXTRA_
 - [cached](./cached/)
 - [empty](./empty/)
 - [first_value_from](./first_value_from/)
-- [first_value_from_future](./first_value_from_future/)
 - [for_each](./for_each/)
 - [from_any](./from_any/)
 - [from_async_iter](./from_async_iter/)

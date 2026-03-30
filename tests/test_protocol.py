@@ -121,7 +121,11 @@ def test_nested_batch_inside_deferred_callback_drains() -> None:
 
 
 def test_terminal_flushes_deferred_phase2_first() -> None:
-    """GRAPHREFLY-SPEC § 1.3 #4 — COMPLETE not observed before deferred DATA in one send."""
+    """GRAPHREFLY-SPEC § 1.3 #4 — COMPLETE not observed before deferred DATA in one send.
+
+    Both DATA (tier 2) and COMPLETE (tier 3) are deferred inside a batch.
+    DATA is delivered before COMPLETE (canonical ordering).
+    """
     log: list[str] = []
 
     def sink(msgs: list[tuple[MessageType, object] | tuple[MessageType]]) -> None:
@@ -133,8 +137,10 @@ def test_terminal_flushes_deferred_phase2_first() -> None:
             [(MessageType.DATA, 1), (MessageType.COMPLETE,)],
             sink,
         )
-        assert log == ["DATA", "COMPLETE"], "deferred DATA must flush before COMPLETE in one send"
+        # Both DATA and COMPLETE are deferred inside batch (tier 2 and 3).
+        assert log == [], "DATA and COMPLETE should both be deferred inside batch"
 
+    # After batch exits: DATA before COMPLETE (canonical ordering).
     assert log == ["DATA", "COMPLETE"]
 
 

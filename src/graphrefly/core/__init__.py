@@ -12,6 +12,7 @@ from graphrefly.core.guard import (
     record_mutation,
     system_actor,
 )
+from graphrefly.core.dynamic_node import DynamicNodeImpl, dynamic_node
 from graphrefly.core.meta import describe_node, meta_snapshot
 from graphrefly.core.node import (
     Node,
@@ -33,7 +34,10 @@ from graphrefly.core.protocol import (
     emit_with_batch,
     is_batching,
     is_phase2_message,
+    is_terminal_message,
+    message_tier,
     partition_for_batch,
+    propagates_to_meta,
 )
 from graphrefly.core.subgraph_locks import (
     acquire_subgraph_write_lock,
@@ -54,6 +58,7 @@ from graphrefly.core.sugar import (
 
 __all__ = [
     "Actor",
+    "DynamicNodeImpl",
     "DeferWhen",
     "EmitStrategy",
     "GuardAction",
@@ -82,6 +87,9 @@ __all__ = [
     "ensure_registered",
     "is_batching",
     "is_phase2_message",
+    "is_terminal_message",
+    "message_tier",
+    "propagates_to_meta",
     "meta_snapshot",
     "node",
     "normalize_actor",
@@ -90,6 +98,7 @@ __all__ = [
     "record_mutation",
     "system_actor",
     "union_nodes",
+    "dynamic_node",
     "derived",
     "effect",
     "pipe",

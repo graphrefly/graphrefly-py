@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import warnings
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -145,9 +146,23 @@ class SqliteCheckpointAdapter:
             self._conn.close()
 
 
+def _check_json_serializable(data: dict[str, Any]) -> None:
+    """Warn when snapshot values are not JSON-serializable."""
+    try:
+        json.dumps(data, ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        warnings.warn(
+            f"Snapshot contains non-JSON-serializable values: {exc}. "
+            "This may cause errors when persisting to JSON-based adapters.",
+            stacklevel=3,
+        )
+
+
 def save_graph_checkpoint(graph: Graph, adapter: CheckpointAdapter) -> None:
     """Persist :meth:`~graphrefly.graph.Graph.snapshot`."""
-    adapter.save(graph.snapshot())
+    snap = graph.snapshot()
+    _check_json_serializable(snap)
+    adapter.save(snap)
 
 
 def restore_graph_checkpoint(graph: Graph, adapter: CheckpointAdapter) -> bool:
@@ -161,4 +176,6 @@ def restore_graph_checkpoint(graph: Graph, adapter: CheckpointAdapter) -> bool:
 
 def checkpoint_node_value(node: Node[Any]) -> dict[str, Any]:
     """Minimal JSON-shaped payload for a single node's last value (for custom adapters)."""
-    return {"version": 1, "value": node.get()}
+    result: dict[str, Any] = {"version": 1, "value": node.get()}
+    _check_json_serializable(result)
+    return result

@@ -32,6 +32,62 @@ def _msg_val(m: tuple[Any, ...]) -> Any:
 # --- dynamic inner subscription (switch / concat / flat / exhaust) ------------
 
 
+def _forward_inner(
+    inner: Node[Any],
+    actions: NodeActions,
+    on_inner_complete: Callable[[], None],
+) -> Callable[[], None]:
+    """Subscribe to *inner*, forwarding all messages except COMPLETE to *actions*.
+
+    On inner COMPLETE, calls *on_inner_complete* (but does NOT forward the COMPLETE
+    message itself — the caller decides when the output completes).
+    On inner ERROR, forwards the error then calls *on_inner_complete*.
+
+    Returns an unsubscribe callable.
+
+    Matches TS ``forwardInner``.
+    """
+    unsub: Callable[[], None] | None = None
+    emitted = False
+
+    def inner_sink(msgs: Messages) -> None:
+        nonlocal emitted
+        saw_complete = False
+        saw_error = False
+        out: Messages = []
+        for m in msgs:
+            if m[0] is MessageType.COMPLETE:
+                saw_complete = True
+            else:
+                if m[0] is MessageType.DATA:
+                    emitted = True
+                if m[0] is MessageType.ERROR:
+                    saw_error = True
+                out.append(m)
+        if out:
+            actions.down(out)
+        if saw_error or saw_complete:
+            on_inner_complete()
+
+    unsub = inner.subscribe(inner_sink)
+
+    # Emit inner's current value only if subscribe didn't already emit DATA.
+    # Source nodes (state) don't emit DATA on subscribe, but their value
+    # is already settled. Derived nodes that compute during subscribe will
+    # have set emitted=True via inner_sink, so we skip the manual emit.
+    # None is a valid DATA payload (Node[None] / void sources).
+    if unsub is not None and not emitted:
+        actions.down([(MessageType.DATA, inner.get())])
+
+    def stop() -> None:
+        nonlocal unsub
+        if unsub is not None:
+            unsub()
+            unsub = None
+
+    return stop
+
+
 def switch_map(
     fn: Callable[[Any], Node[Any]],
     *,
@@ -55,87 +111,61 @@ def switch_map(
     has_initial = initial is not _UNSET
 
     def _op(outer: Node[Any]) -> Node[Any]:
-        def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
-            inner_unsub: list[Callable[[], None] | None] = [None]
-            outer_done = [False]
-            current: list[Node[Any] | None] = [None]
+        inner_unsub: Callable[[], None] | None = None
+        source_done = False
+        attached = False
 
-            def teardown_inner() -> None:
-                if inner_unsub[0] is not None:
-                    inner_unsub[0]()
-                    inner_unsub[0] = None
-                current[0] = None
+        def clear_inner() -> None:
+            nonlocal inner_unsub
+            if inner_unsub is not None:
+                inner_unsub()
+                inner_unsub = None
 
-            def subscribe_inner(inner: Node[Any]) -> None:
-                teardown_inner()
-                current[0] = inner
-                inner_emitted = [False]
-                inner_ended = [False]
+        def attach(v: Any, a: NodeActions) -> None:
+            nonlocal attached, inner_unsub
+            attached = True
+            clear_inner()
+            inner_unsub = _forward_inner(fn(v), a, lambda: (
+                clear_inner(),
+                a.down([(MessageType.COMPLETE,)]) if source_done else None,
+            ))
 
-                def inner_sink(msgs: Messages) -> None:
-                    for m in msgs:
-                        t = m[0]
-                        if t is MessageType.DATA:
-                            inner_emitted[0] = True
-                            actions.emit(_msg_val(m))
-                        elif t is MessageType.RESOLVED:
-                            inner_emitted[0] = True
-                            actions.down([(MessageType.RESOLVED,)])
-                        elif t is MessageType.DIRTY:
-                            actions.down([(MessageType.DIRTY,)])
-                        elif t is MessageType.ERROR:
-                            inner_unsub[0] = None
-                            current[0] = None
-                            actions.down([m])
-                        elif t is MessageType.COMPLETE:
-                            inner_ended[0] = True
-                            inner_unsub[0] = None
-                            current[0] = None
-                            if outer_done[0]:
-                                actions.down([(MessageType.COMPLETE,)])
-                        else:
-                            actions.down([m])
+        def compute(deps: list[Any], a: NodeActions) -> Any:
+            if not attached:
+                attach(deps[0], a)
+            return clear_inner
 
-                inner_unsub[0] = inner.subscribe(inner_sink)
-                if not inner_emitted[0] and not inner_ended[0]:
-                    actions.emit(inner.get())
-                if inner_ended[0]:
-                    inner_unsub[0] = None
-
-            def outer_sink(msgs: Messages) -> None:
-                for m in msgs:
-                    t = m[0]
-                    if t is MessageType.DIRTY:
-                        actions.down([(MessageType.DIRTY,)])
-                    elif t is MessageType.DATA:
-                        subscribe_inner(fn(_msg_val(m)))
-                    elif t is MessageType.RESOLVED:
-                        actions.down([(MessageType.RESOLVED,)])
-                    elif t is MessageType.COMPLETE:
-                        outer_done[0] = True
-                        if inner_unsub[0] is None:
-                            actions.down([(MessageType.COMPLETE,)])
-                    elif t is MessageType.ERROR:
-                        teardown_inner()
-                        actions.down([m])
-                    else:
-                        actions.down([m])
-
-            outer_unsub = outer.subscribe(outer_sink)
-
-            def cleanup() -> None:
-                teardown_inner()
-                outer_unsub()
-
-            return cleanup
+        def on_message(msg: Any, _index: int, a: NodeActions) -> bool:
+            nonlocal source_done
+            t = msg[0]
+            if t is MessageType.ERROR:
+                clear_inner()
+                a.down([msg])
+                return True
+            if t is MessageType.COMPLETE:
+                source_done = True
+                if inner_unsub is None:
+                    a.down([(MessageType.COMPLETE,)])
+                return True
+            if t is MessageType.DIRTY:
+                a.down([(MessageType.DIRTY,)])
+                return True
+            if t is MessageType.RESOLVED:
+                a.down([(MessageType.RESOLVED,)])
+                return True
+            if t is MessageType.DATA:
+                attach(_msg_val(msg), a)
+                return True
+            return False
 
         opts: dict[str, Any] = {
             "describe_kind": "switch_map",
             "complete_when_deps_complete": False,
+            "on_message": on_message,
         }
         if has_initial:
             opts["initial"] = initial
-        return node(start, **opts)
+        return node([outer], compute, **opts)
 
     return _op
 
@@ -163,106 +193,85 @@ def concat_map(
     has_initial = initial is not _UNSET
 
     def _op(outer: Node[Any]) -> Node[Any]:
-        def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
-            inner_unsub: list[Callable[[], None] | None] = [None]
-            inner_active = [False]
-            outer_done = [False]
-            queue: deque[Any] = deque()
+        queue: deque[Any] = deque()
+        inner_unsub: Callable[[], None] | None = None
+        source_done = False
+        attached = False
 
-            def teardown_inner() -> None:
-                if inner_unsub[0] is not None:
-                    inner_unsub[0]()
-                    inner_unsub[0] = None
+        def clear_inner() -> None:
+            nonlocal inner_unsub
+            if inner_unsub is not None:
+                inner_unsub()
+                inner_unsub = None
 
-            def process_next() -> None:
-                if len(queue) == 0:
-                    inner_active[0] = False
-                    if outer_done[0]:
-                        actions.down([(MessageType.COMPLETE,)])
-                    return
-                subscribe_inner(fn(queue.popleft()))
+        def try_pump(a: NodeActions) -> None:
+            nonlocal inner_unsub
+            if inner_unsub is not None:
+                return
+            if len(queue) == 0:
+                if source_done:
+                    a.down([(MessageType.COMPLETE,)])
+                return
+            v = queue.popleft()
+            inner_unsub = _forward_inner(fn(v), a, lambda: (
+                clear_inner(),
+                try_pump(a),
+            ))
 
-            def subscribe_inner(inner: Node[Any]) -> None:
-                teardown_inner()
-                inner_active[0] = True
-                inner_emitted = [False]
-                inner_ended = [False]
+        def enqueue(v: Any, a: NodeActions) -> None:
+            nonlocal attached
+            attached = True
+            if max_buffer > 0 and len(queue) >= max_buffer:
+                queue.popleft()
+            queue.append(v)
+            try_pump(a)
 
-                def inner_sink(msgs: Messages) -> None:
-                    for m in msgs:
-                        t = m[0]
-                        if t is MessageType.DATA:
-                            inner_emitted[0] = True
-                            actions.emit(_msg_val(m))
-                        elif t is MessageType.RESOLVED:
-                            inner_emitted[0] = True
-                            actions.down([(MessageType.RESOLVED,)])
-                        elif t is MessageType.DIRTY:
-                            actions.down([(MessageType.DIRTY,)])
-                        elif t is MessageType.ERROR:
-                            inner_unsub[0] = None
-                            actions.down([m])
-                        elif t is MessageType.COMPLETE:
-                            inner_ended[0] = True
-                            inner_unsub[0] = None
-                            process_next()
-                        else:
-                            actions.down([m])
+        def compute(deps: list[Any], a: NodeActions) -> Any:
+            if not attached:
+                enqueue(deps[0], a)
+            return clear_inner
 
-                inner_unsub[0] = inner.subscribe(inner_sink)
-                if not inner_emitted[0] and not inner_ended[0]:
-                    actions.emit(inner.get())
-                if inner_ended[0]:
-                    inner_unsub[0] = None
-
-            def outer_sink(msgs: Messages) -> None:
-                for m in msgs:
-                    t = m[0]
-                    if t is MessageType.DIRTY:
-                        actions.down([(MessageType.DIRTY,)])
-                    elif t is MessageType.DATA:
-                        v = _msg_val(m)
-                        if not inner_active[0]:
-                            subscribe_inner(fn(v))
-                        else:
-                            if max_buffer > 0 and len(queue) >= max_buffer:
-                                queue.popleft()
-                            queue.append(v)
-                    elif t is MessageType.RESOLVED:
-                        actions.down([(MessageType.RESOLVED,)])
-                    elif t is MessageType.COMPLETE:
-                        outer_done[0] = True
-                        if not inner_active[0]:
-                            teardown_inner()
-                            actions.down([(MessageType.COMPLETE,)])
-                    elif t is MessageType.ERROR:
-                        teardown_inner()
-                        queue.clear()
-                        actions.down([m])
-                    else:
-                        actions.down([m])
-
-            outer_unsub = outer.subscribe(outer_sink)
-
-            def cleanup() -> None:
-                teardown_inner()
+        def on_message(msg: Any, _index: int, a: NodeActions) -> bool:
+            nonlocal source_done
+            t = msg[0]
+            if t is MessageType.ERROR:
+                clear_inner()
                 queue.clear()
-                outer_unsub()
-
-            return cleanup
+                a.down([msg])
+                return True
+            if t is MessageType.COMPLETE:
+                source_done = True
+                try_pump(a)
+                return True
+            if t is MessageType.DIRTY:
+                a.down([(MessageType.DIRTY,)])
+                return True
+            if t is MessageType.RESOLVED:
+                a.down([(MessageType.RESOLVED,)])
+                return True
+            if t is MessageType.DATA:
+                enqueue(_msg_val(msg), a)
+                return True
+            return False
 
         opts: dict[str, Any] = {
             "describe_kind": "concat_map",
             "complete_when_deps_complete": False,
+            "on_message": on_message,
         }
         if has_initial:
             opts["initial"] = initial
-        return node(start, **opts)
+        return node([outer], compute, **opts)
 
     return _op
 
 
-def flat_map(fn: Callable[[Any], Node[Any]], *, initial: Any = _UNSET) -> PipeOperator:
+def flat_map(
+    fn: Callable[[Any], Node[Any]],
+    *,
+    initial: Any = _UNSET,
+    concurrent: int | None = None,
+) -> PipeOperator:
     """Map each outer value to an inner node; subscribe to every inner concurrently (merge).
 
     Completes when the outer has completed and every inner subscription has ended.
@@ -270,99 +279,101 @@ def flat_map(fn: Callable[[Any], Node[Any]], *, initial: Any = _UNSET) -> PipeOp
     Args:
         fn: ``outer_value -> Node``.
         initial: Optional initial ``get()`` value.
+        concurrent: When set, limit the number of concurrently active inner subscriptions.
+            Outer values beyond this limit are buffered and drained as inner subscriptions
+            complete.
 
     Returns:
         A unary pipe operator.
     """
 
     has_initial = initial is not _UNSET
+    max_concurrent = float("inf") if concurrent is None else max(concurrent, 1)
 
     def _op(outer: Node[Any]) -> Node[Any]:
-        def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
-            inner_unsubs: list[Callable[[], None]] = []
-            outer_done = [False]
+        active = 0
+        source_done = False
+        inner_stops: list[Callable[[], None]] = []
+        buffer: deque[Any] = deque()
+        attached = False
 
-            def subscribe_inner(inner: Node[Any]) -> None:
-                inner_emitted = [False]
-                inner_ended = [False]
-                slot: list[Callable[[], None] | None] = [None]
+        def try_complete(a: NodeActions) -> None:
+            if source_done and active == 0 and len(buffer) == 0:
+                a.down([(MessageType.COMPLETE,)])
 
-                def inner_sink(msgs: Messages) -> None:
-                    for m in msgs:
-                        t = m[0]
-                        if t is MessageType.DATA:
-                            inner_emitted[0] = True
-                            actions.emit(_msg_val(m))
-                        elif t is MessageType.RESOLVED:
-                            inner_emitted[0] = True
-                            actions.down([(MessageType.RESOLVED,)])
-                        elif t is MessageType.DIRTY:
-                            actions.down([(MessageType.DIRTY,)])
-                        elif t is MessageType.ERROR:
-                            if slot[0] is not None:
-                                with suppress(ValueError):
-                                    inner_unsubs.remove(slot[0])
-                                slot[0] = None
-                            actions.down([m])
-                        elif t is MessageType.COMPLETE:
-                            inner_ended[0] = True
-                            if slot[0] is not None:
-                                with suppress(ValueError):
-                                    inner_unsubs.remove(slot[0])
-                                slot[0] = None
-                            if outer_done[0] and len(inner_unsubs) == 0:
-                                actions.down([(MessageType.COMPLETE,)])
-                        else:
-                            actions.down([m])
+        def spawn(v: Any, a: NodeActions) -> None:
+            nonlocal active
+            active += 1
+            stop: Callable[[], None] | None = None
 
-                u = inner.subscribe(inner_sink)
-                slot[0] = u
-                if not inner_ended[0]:
-                    inner_unsubs.append(u)
-                else:
-                    if outer_done[0] and len(inner_unsubs) == 0:
-                        actions.down([(MessageType.COMPLETE,)])
-                if not inner_emitted[0] and not inner_ended[0]:
-                    actions.emit(inner.get())
+            def on_done() -> None:
+                nonlocal stop, active
+                if stop is not None:
+                    with suppress(ValueError):
+                        inner_stops.remove(stop)
+                    stop = None
+                active -= 1
+                drain_buffer(a)
+                try_complete(a)
 
-            def outer_sink(msgs: Messages) -> None:
-                for m in msgs:
-                    t = m[0]
-                    if t is MessageType.DIRTY:
-                        actions.down([(MessageType.DIRTY,)])
-                    elif t is MessageType.DATA:
-                        subscribe_inner(fn(_msg_val(m)))
-                    elif t is MessageType.RESOLVED:
-                        actions.down([(MessageType.RESOLVED,)])
-                    elif t is MessageType.COMPLETE:
-                        outer_done[0] = True
-                        if len(inner_unsubs) == 0:
-                            actions.down([(MessageType.COMPLETE,)])
-                    elif t is MessageType.ERROR:
-                        for u in list(inner_unsubs):
-                            u()
-                        inner_unsubs.clear()
-                        actions.down([m])
-                    else:
-                        actions.down([m])
+            stop = _forward_inner(fn(v), a, on_done)
+            inner_stops.append(stop)
 
-            outer_unsub = outer.subscribe(outer_sink)
+        def drain_buffer(a: NodeActions) -> None:
+            while buffer and active < max_concurrent:
+                spawn(buffer.popleft(), a)
 
-            def cleanup() -> None:
-                for u in list(inner_unsubs):
-                    u()
-                inner_unsubs.clear()
-                outer_unsub()
+        def enqueue(v: Any, a: NodeActions) -> None:
+            if active < max_concurrent:
+                spawn(v, a)
+            else:
+                buffer.append(v)
 
-            return cleanup
+        def clear_all() -> None:
+            nonlocal active
+            for u in list(inner_stops):
+                u()
+            inner_stops.clear()
+            active = 0
+            buffer.clear()
+
+        def compute(deps: list[Any], a: NodeActions) -> Any:
+            nonlocal attached
+            if not attached:
+                attached = True
+                enqueue(deps[0], a)
+            return clear_all
+
+        def on_message(msg: Any, _index: int, a: NodeActions) -> bool:
+            nonlocal source_done
+            t = msg[0]
+            if t is MessageType.ERROR:
+                clear_all()
+                a.down([msg])
+                return True
+            if t is MessageType.COMPLETE:
+                source_done = True
+                try_complete(a)
+                return True
+            if t is MessageType.DIRTY:
+                a.down([(MessageType.DIRTY,)])
+                return True
+            if t is MessageType.RESOLVED:
+                a.down([(MessageType.RESOLVED,)])
+                return True
+            if t is MessageType.DATA:
+                enqueue(_msg_val(msg), a)
+                return True
+            return False
 
         opts: dict[str, Any] = {
             "describe_kind": "flat_map",
             "complete_when_deps_complete": False,
+            "on_message": on_message,
         }
         if has_initial:
             opts["initial"] = initial
-        return node(start, **opts)
+        return node([outer], compute, **opts)
 
     return _op
 
@@ -381,89 +392,63 @@ def exhaust_map(fn: Callable[[Any], Node[Any]], *, initial: Any = _UNSET) -> Pip
     has_initial = initial is not _UNSET
 
     def _op(outer: Node[Any]) -> Node[Any]:
-        def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
-            inner_unsub: list[Callable[[], None] | None] = [None]
-            outer_done = [False]
-            busy = [False]
+        inner_unsub: Callable[[], None] | None = None
+        source_done = False
+        attached = False
 
-            def teardown_inner() -> None:
-                if inner_unsub[0] is not None:
-                    inner_unsub[0]()
-                    inner_unsub[0] = None
+        def clear_inner() -> None:
+            nonlocal inner_unsub
+            if inner_unsub is not None:
+                inner_unsub()
+                inner_unsub = None
 
-            def subscribe_inner(inner: Node[Any]) -> None:
-                teardown_inner()
-                busy[0] = True
-                inner_emitted = [False]
-                inner_ended = [False]
+        def attach(v: Any, a: NodeActions) -> None:
+            nonlocal attached, inner_unsub
+            attached = True
+            inner_unsub = _forward_inner(fn(v), a, lambda: (
+                clear_inner(),
+                a.down([(MessageType.COMPLETE,)]) if source_done else None,
+            ))
 
-                def inner_sink(msgs: Messages) -> None:
-                    for m in msgs:
-                        t = m[0]
-                        if t is MessageType.DATA:
-                            inner_emitted[0] = True
-                            actions.emit(_msg_val(m))
-                        elif t is MessageType.RESOLVED:
-                            inner_emitted[0] = True
-                            actions.down([(MessageType.RESOLVED,)])
-                        elif t is MessageType.DIRTY:
-                            actions.down([(MessageType.DIRTY,)])
-                        elif t is MessageType.ERROR:
-                            busy[0] = False
-                            inner_unsub[0] = None
-                            actions.down([m])
-                        elif t is MessageType.COMPLETE:
-                            inner_ended[0] = True
-                            busy[0] = False
-                            inner_unsub[0] = None
-                            if outer_done[0]:
-                                actions.down([(MessageType.COMPLETE,)])
-                        else:
-                            actions.down([m])
+        def compute(deps: list[Any], a: NodeActions) -> Any:
+            if not attached and inner_unsub is None:
+                attach(deps[0], a)
+            return clear_inner
 
-                inner_unsub[0] = inner.subscribe(inner_sink)
-                if not inner_emitted[0] and not inner_ended[0]:
-                    actions.emit(inner.get())
-                if inner_ended[0]:
-                    busy[0] = False
-                    inner_unsub[0] = None
-
-            def outer_sink(msgs: Messages) -> None:
-                for m in msgs:
-                    t = m[0]
-                    if t is MessageType.DIRTY:
-                        actions.down([(MessageType.DIRTY,)])
-                    elif t is MessageType.DATA:
-                        if not busy[0]:
-                            subscribe_inner(fn(_msg_val(m)))
-                    elif t is MessageType.RESOLVED:
-                        actions.down([(MessageType.RESOLVED,)])
-                    elif t is MessageType.COMPLETE:
-                        outer_done[0] = True
-                        if not busy[0]:
-                            teardown_inner()
-                            actions.down([(MessageType.COMPLETE,)])
-                    elif t is MessageType.ERROR:
-                        teardown_inner()
-                        actions.down([m])
-                    else:
-                        actions.down([m])
-
-            outer_unsub = outer.subscribe(outer_sink)
-
-            def cleanup() -> None:
-                teardown_inner()
-                outer_unsub()
-
-            return cleanup
+        def on_message(msg: Any, _index: int, a: NodeActions) -> bool:
+            nonlocal source_done
+            t = msg[0]
+            if t is MessageType.ERROR:
+                clear_inner()
+                a.down([msg])
+                return True
+            if t is MessageType.COMPLETE:
+                source_done = True
+                if inner_unsub is None:
+                    a.down([(MessageType.COMPLETE,)])
+                return True
+            if t is MessageType.DIRTY:
+                a.down([(MessageType.DIRTY,)])
+                return True
+            if t is MessageType.RESOLVED:
+                a.down([(MessageType.RESOLVED,)])
+                return True
+            if t is MessageType.DATA:
+                if inner_unsub is not None:
+                    a.down([(MessageType.RESOLVED,)])
+                    return True
+                attach(_msg_val(msg), a)
+                return True
+            return False
 
         opts: dict[str, Any] = {
             "describe_kind": "exhaust_map",
             "complete_when_deps_complete": False,
+            "on_message": on_message,
         }
         if has_initial:
             opts["initial"] = initial
-        return node(start, **opts)
+        return node([outer], compute, **opts)
 
     return _op
 
@@ -479,48 +464,50 @@ def debounce(seconds: float) -> PipeOperator:
 
     def _op(src: Node[Any]) -> Node[Any]:
         def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
-            timer: list[threading.Timer | None] = [None]
-            pending: list[Any] = [None]
-            has_pending = [False]
+            timer: threading.Timer | None = None
+            pending: Any = None
+            has_pending = False
 
             def cancel_timer() -> None:
-                if timer[0] is not None:
-                    timer[0].cancel()
-                    timer[0] = None
+                nonlocal timer
+                if timer is not None:
+                    timer.cancel()
+                    timer = None
+
+            def flush() -> None:
+                nonlocal timer, has_pending
+                timer = None
+                if not has_pending:
+                    return
+                v = pending
+                has_pending = False
+                actions.emit(v)
 
             def outer_sink(msgs: Messages) -> None:
+                nonlocal timer, pending, has_pending
                 for m in msgs:
                     t = m[0]
                     if t is MessageType.DATA:
                         cancel_timer()
-                        pending[0] = _msg_val(m)
-                        has_pending[0] = True
-
-                        def flush() -> None:
-                            timer[0] = None
-                            if not has_pending[0]:
-                                return
-                            v = pending[0]
-                            has_pending[0] = False
-                            actions.emit(v)
-
+                        pending = _msg_val(m)
+                        has_pending = True
                         tt = threading.Timer(seconds, flush)
                         tt.daemon = True
                         tt.start()
-                        timer[0] = tt
+                        timer = tt
                     elif t is MessageType.DIRTY:
                         actions.down([(MessageType.DIRTY,)])
                     elif t is MessageType.RESOLVED:
                         actions.down([(MessageType.RESOLVED,)])
                     elif t is MessageType.COMPLETE:
                         cancel_timer()
-                        if has_pending[0]:
-                            has_pending[0] = False
-                            actions.emit(pending[0])
+                        if has_pending:
+                            has_pending = False
+                            actions.emit(pending)
                         actions.down([(MessageType.COMPLETE,)])
                     elif t is MessageType.ERROR:
                         cancel_timer()
-                        has_pending[0] = False
+                        has_pending = False
                         actions.down([m])
                     else:
                         actions.down([m])
@@ -549,39 +536,41 @@ def throttle(seconds: float, *, leading: bool = True, trailing: bool = False) ->
 
     def _op(src: Node[Any]) -> Node[Any]:
         def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
-            window: list[threading.Timer | None] = [None]
-            latest: list[Any] = [None]
-            had_trailing_candidate = [False]
+            window: threading.Timer | None = None
+            latest: Any = None
+            had_trailing_candidate = False
 
             def cancel_window() -> None:
-                if window[0] is not None:
-                    window[0].cancel()
-                    window[0] = None
+                nonlocal window
+                if window is not None:
+                    window.cancel()
+                    window = None
+
+            def close_window() -> None:
+                nonlocal window, had_trailing_candidate
+                window = None
+                if trailing and had_trailing_candidate:
+                    actions.emit(latest)
+                    had_trailing_candidate = False
 
             def outer_sink(msgs: Messages) -> None:
+                nonlocal window, latest, had_trailing_candidate
                 for m in msgs:
                     t = m[0]
                     if t is MessageType.DATA:
                         v = _msg_val(m)
-                        latest[0] = v
-                        if window[0] is not None:
-                            had_trailing_candidate[0] = True
+                        latest = v
+                        if window is not None:
+                            had_trailing_candidate = True
                             continue
                         if leading:
                             actions.emit(v)
                         else:
-                            had_trailing_candidate[0] = True
-
-                        def close_window() -> None:
-                            window[0] = None
-                            if trailing and had_trailing_candidate[0]:
-                                actions.emit(latest[0])
-                                had_trailing_candidate[0] = False
-
+                            had_trailing_candidate = True
                         tt = threading.Timer(seconds, close_window)
                         tt.daemon = True
                         tt.start()
-                        window[0] = tt
+                        window = tt
                     elif t is MessageType.DIRTY:
                         actions.down([(MessageType.DIRTY,)])
                     elif t is MessageType.RESOLVED:
@@ -615,49 +604,34 @@ def throttle(seconds: float, *, leading: bool = True, trailing: bool = False) ->
 def sample(notifier: Node[Any]) -> PipeOperator:
     """Emit the primary's latest ``get()`` whenever ``notifier`` settles with ``DATA``.
 
-    A mirror node follows the primary so ``get()`` on the output reflects the last sampled
-    value; the latest primary value before a sample is read via an internal pass-through node.
+    Uses a two-dep node ``[source, notifier]`` with ``on_message`` — matches TS
+    ``sample`` architecture. Source messages (index 0) are swallowed; notifier
+    ``DATA`` (index 1) triggers ``src.get()`` emission.
     """
 
     def _op(src: Node[Any]) -> Node[Any]:
-        mirror = node([src], lambda d, _: d[0], describe_kind="sample_mirror")
+        def compute(_deps: list[Any], _a: NodeActions) -> Any:
+            return None
 
-        def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
-            def in_sink(msgs: Messages) -> None:
-                for m in msgs:
-                    t = m[0]
-                    if t is MessageType.COMPLETE:
-                        actions.down([(MessageType.COMPLETE,)])
-                    elif t is MessageType.ERROR:
-                        actions.down([m])
-
-            def n_sink(msgs: Messages) -> None:
-                for m in msgs:
-                    if m[0] is MessageType.DATA:
-                        actions.emit(mirror.get())
-                    elif m[0] is MessageType.DIRTY:
-                        actions.down([(MessageType.DIRTY,)])
-                    elif m[0] is MessageType.RESOLVED:
-                        actions.down([(MessageType.RESOLVED,)])
-                    elif m[0] is MessageType.COMPLETE:
-                        actions.down([(MessageType.COMPLETE,)])
-                    elif m[0] is MessageType.ERROR:
-                        actions.down([m])
-                    else:
-                        actions.down([m])
-
-            u0 = mirror.subscribe(in_sink)
-            u1 = notifier.subscribe(n_sink)
-
-            def cleanup() -> None:
-                u0()
-                u1()
-
-            return cleanup
+        def on_message(msg: Any, index: int, a: NodeActions) -> bool:
+            t = msg[0]
+            if t is MessageType.ERROR:
+                a.down([msg])
+                return True
+            if t is MessageType.COMPLETE:
+                a.down([msg])
+                return True
+            if index == 1 and t is MessageType.DATA:
+                a.emit(src.get())
+                return True
+            if index == 1 and t is MessageType.RESOLVED:
+                return True
+            return index == 0
 
         return node(
-            start,
-            initial=src.get(),
+            [src, notifier],
+            compute,
+            on_message=on_message,
             describe_kind="sample",
             complete_when_deps_complete=False,
         )
@@ -674,33 +648,35 @@ def audit(seconds: float) -> PipeOperator:
 
     def _op(src: Node[Any]) -> Node[Any]:
         def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
-            timer: list[threading.Timer | None] = [None]
-            latest: list[Any] = [None]
-            has = [False]
+            timer: threading.Timer | None = None
+            latest: Any = None
+            has = False
 
             def cancel_timer() -> None:
-                if timer[0] is not None:
-                    timer[0].cancel()
-                    timer[0] = None
+                nonlocal timer
+                if timer is not None:
+                    timer.cancel()
+                    timer = None
+
+            def fire() -> None:
+                nonlocal timer, has
+                timer = None
+                if has:
+                    has = False
+                    actions.emit(latest)
 
             def outer_sink(msgs: Messages) -> None:
+                nonlocal timer, latest, has
                 for m in msgs:
                     t = m[0]
                     if t is MessageType.DATA:
-                        latest[0] = _msg_val(m)
-                        has[0] = True
+                        latest = _msg_val(m)
+                        has = True
                         cancel_timer()
-
-                        def fire() -> None:
-                            timer[0] = None
-                            if has[0]:
-                                has[0] = False
-                                actions.emit(latest[0])
-
                         tt = threading.Timer(seconds, fire)
                         tt.daemon = True
                         tt.start()
-                        timer[0] = tt
+                        timer = tt
                     elif t is MessageType.DIRTY:
                         actions.down([(MessageType.DIRTY,)])
                     elif t is MessageType.RESOLVED:
@@ -788,24 +764,27 @@ def timeout(seconds: float, *, error: BaseException | None = None) -> PipeOperat
 
     def _op(src: Node[Any]) -> Node[Any]:
         def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
-            timer: list[threading.Timer | None] = [None]
+            timer: threading.Timer | None = None
 
             def cancel_timer() -> None:
-                if timer[0] is not None:
-                    timer[0].cancel()
-                    timer[0] = None
+                nonlocal timer
+                if timer is not None:
+                    timer.cancel()
+                    timer = None
 
             def schedule() -> None:
+                nonlocal timer
                 cancel_timer()
 
                 def fire() -> None:
-                    timer[0] = None
+                    nonlocal timer
+                    timer = None
                     actions.down([(MessageType.ERROR, err)])
 
                 tt = threading.Timer(seconds, fire)
                 tt.daemon = True
                 tt.start()
-                timer[0] = tt
+                timer = tt
 
             schedule()
 
@@ -960,25 +939,28 @@ def buffer_time(seconds: float) -> PipeOperator:
     def _op(src: Node[Any]) -> Node[Any]:
         def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
             buf: list[Any] = []
-            timer: list[threading.Timer | None] = [None]
+            timer: threading.Timer | None = None
 
             def cancel() -> None:
-                if timer[0] is not None:
-                    timer[0].cancel()
-                    timer[0] = None
+                nonlocal timer
+                if timer is not None:
+                    timer.cancel()
+                    timer = None
 
             def flush() -> None:
-                timer[0] = None
+                nonlocal timer
+                timer = None
                 if buf:
                     actions.emit(list(buf))
                     buf.clear()
 
             def arm() -> None:
+                nonlocal timer
                 cancel()
                 tt = threading.Timer(seconds, flush)
                 tt.daemon = True
                 tt.start()
-                timer[0] = tt
+                timer = tt
 
             arm()
 
@@ -1023,32 +1005,35 @@ def interval(seconds: float) -> Node[Any]:
     """Producer that emits ``0, 1, 2, …`` on a fixed timer interval."""
 
     def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
-        n = [0]
-        timer: list[threading.Timer | None] = [None]
-        stopped = [False]
+        n = 0
+        timer: threading.Timer | None = None
+        stopped = False
 
         def cancel() -> None:
-            if timer[0] is not None:
-                timer[0].cancel()
-                timer[0] = None
+            nonlocal timer
+            if timer is not None:
+                timer.cancel()
+                timer = None
 
         def tick() -> None:
-            if stopped[0]:
+            nonlocal n, timer
+            if stopped:
                 return
-            actions.emit(n[0])
-            n[0] += 1
+            actions.emit(n)
+            n += 1
             tt = threading.Timer(seconds, tick)
             tt.daemon = True
             tt.start()
-            timer[0] = tt
+            timer = tt
 
         tt0 = threading.Timer(seconds, tick)
         tt0.daemon = True
         tt0.start()
-        timer[0] = tt0
+        timer = tt0
 
         def cleanup() -> None:
-            stopped[0] = True
+            nonlocal stopped
+            stopped = True
             cancel()
 
         return cleanup
@@ -1070,18 +1055,21 @@ def repeat(times: int) -> PipeOperator:
 
     def _op(src: Node[Any]) -> Node[Any]:
         def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
-            remaining = [times]
-            outer_unsub: list[Callable[[], None] | None] = [None]
+            remaining = times
+            outer_unsub: Callable[[], None] | None = None
 
             def detach() -> None:
-                if outer_unsub[0] is not None:
-                    outer_unsub[0]()
-                    outer_unsub[0] = None
+                nonlocal outer_unsub
+                if outer_unsub is not None:
+                    outer_unsub()
+                    outer_unsub = None
 
             def attach() -> None:
+                nonlocal outer_unsub
                 detach()
 
                 def outer_sink(msgs: Messages) -> None:
+                    nonlocal remaining
                     for m in msgs:
                         t = m[0]
                         if t is MessageType.DATA:
@@ -1091,9 +1079,9 @@ def repeat(times: int) -> PipeOperator:
                         elif t is MessageType.RESOLVED:
                             actions.down([(MessageType.RESOLVED,)])
                         elif t is MessageType.COMPLETE:
-                            remaining[0] -= 1
+                            remaining -= 1
                             detach()
-                            if remaining[0] <= 0:
+                            if remaining <= 0:
                                 actions.down([(MessageType.COMPLETE,)])
                             else:
                                 attach()
@@ -1103,7 +1091,7 @@ def repeat(times: int) -> PipeOperator:
                         else:
                             actions.down([m])
 
-                outer_unsub[0] = src.subscribe(outer_sink)
+                outer_unsub = src.subscribe(outer_sink)
 
             attach()
 
@@ -1145,22 +1133,23 @@ def pausable() -> PipeOperator:
 
     def _op(src: Node[Any]) -> Node[Any]:
         def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
-            paused = [False]
+            paused = False
             backlog: list[Any] = []
 
             def outer_sink(msgs: Messages) -> None:
+                nonlocal paused
                 for m in msgs:
                     t = m[0]
                     if t is MessageType.PAUSE:
-                        paused[0] = True
+                        paused = True
                         actions.down([m])
                     elif t is MessageType.RESUME:
-                        paused[0] = False
+                        paused = False
                         actions.down([m])
                         for bm in backlog:
                             actions.down([bm])
                         backlog.clear()
-                    elif paused[0] and t in (
+                    elif paused and t in (
                         MessageType.DIRTY,
                         MessageType.DATA,
                         MessageType.RESOLVED,
@@ -1221,18 +1210,20 @@ def window(notifier: Node[Any]) -> PipeOperator:
 
     def _op(src: Node[Any]) -> Node[Any]:
         def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
-            win_actions: list[NodeActions | None] = [None]
-            win_unsub: list[Callable[[], None] | None] = [None]
+            win_actions: NodeActions | None = None
+            win_unsub: Callable[[], None] | None = None
 
             def close_win() -> None:
-                if win_actions[0] is not None:
-                    win_actions[0].down([(MessageType.COMPLETE,)])
-                win_actions[0] = None
-                if win_unsub[0] is not None:
-                    win_unsub[0]()
-                    win_unsub[0] = None
+                nonlocal win_actions, win_unsub
+                if win_actions is not None:
+                    win_actions.down([(MessageType.COMPLETE,)])
+                win_actions = None
+                if win_unsub is not None:
+                    win_unsub()
+                    win_unsub = None
 
             def open_win() -> None:
+                nonlocal win_actions, win_unsub
                 holder: list[NodeActions | None] = [None]
 
                 def win_start(_d: list[Any], wa: NodeActions) -> Callable[[], None]:
@@ -1240,25 +1231,26 @@ def window(notifier: Node[Any]) -> PipeOperator:
                     return lambda: None
 
                 w = node(win_start, describe_kind="window_inner", complete_when_deps_complete=False)
-                win_unsub[0] = w.subscribe(lambda _msgs: None)
-                win_actions[0] = holder[0]
+                win_unsub = w.subscribe(lambda _msgs: None)
+                win_actions = holder[0]
                 actions.emit(w)
 
             def src_sink(msgs: Messages) -> None:
+                nonlocal win_actions
                 for m in msgs:
                     t = m[0]
                     if t is MessageType.DATA:
-                        if win_actions[0] is None:
+                        if win_actions is None:
                             open_win()
-                        if win_actions[0] is not None:
-                            win_actions[0].down([(MessageType.DATA, _msg_val(m))])
+                        if win_actions is not None:
+                            win_actions.down([(MessageType.DATA, _msg_val(m))])
                     elif t is MessageType.COMPLETE:
                         close_win()
                         actions.down([(MessageType.COMPLETE,)])
                     elif t is MessageType.ERROR:
-                        if win_actions[0] is not None:
-                            win_actions[0].down([m])
-                        win_actions[0] = None
+                        if win_actions is not None:
+                            win_actions.down([m])
+                        win_actions = None
                         actions.down([m])
                     elif t is MessageType.DIRTY:
                         actions.down([(MessageType.DIRTY,)])
@@ -1297,19 +1289,21 @@ def window_count(n: int) -> PipeOperator:
 
     def _op(src: Node[Any]) -> Node[Any]:
         def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
-            win_actions: list[NodeActions | None] = [None]
-            win_unsub: list[Callable[[], None] | None] = [None]
-            count = [0]
+            win_actions: NodeActions | None = None
+            win_unsub: Callable[[], None] | None = None
+            count = 0
 
             def close_win() -> None:
-                if win_actions[0] is not None:
-                    win_actions[0].down([(MessageType.COMPLETE,)])
-                win_actions[0] = None
-                if win_unsub[0] is not None:
-                    win_unsub[0]()
-                    win_unsub[0] = None
+                nonlocal win_actions, win_unsub
+                if win_actions is not None:
+                    win_actions.down([(MessageType.COMPLETE,)])
+                win_actions = None
+                if win_unsub is not None:
+                    win_unsub()
+                    win_unsub = None
 
             def open_win() -> None:
+                nonlocal win_actions, win_unsub, count
                 holder: list[NodeActions | None] = [None]
 
                 def win_start(_d: list[Any], wa: NodeActions) -> Callable[[], None]:
@@ -1317,29 +1311,30 @@ def window_count(n: int) -> PipeOperator:
                     return lambda: None
 
                 w = node(win_start, describe_kind="window_inner", complete_when_deps_complete=False)
-                win_unsub[0] = w.subscribe(lambda _msgs: None)
-                win_actions[0] = holder[0]
-                count[0] = 0
+                win_unsub = w.subscribe(lambda _msgs: None)
+                win_actions = holder[0]
+                count = 0
                 actions.emit(w)
 
             def outer_sink(msgs: Messages) -> None:
+                nonlocal win_actions, count
                 for m in msgs:
                     t = m[0]
                     if t is MessageType.DATA:
-                        if win_actions[0] is None:
+                        if win_actions is None:
                             open_win()
-                        if win_actions[0] is not None:
-                            win_actions[0].down([(MessageType.DATA, _msg_val(m))])
-                        count[0] += 1
-                        if count[0] >= n:
+                        if win_actions is not None:
+                            win_actions.down([(MessageType.DATA, _msg_val(m))])
+                        count += 1
+                        if count >= n:
                             close_win()
                     elif t is MessageType.COMPLETE:
                         close_win()
                         actions.down([(MessageType.COMPLETE,)])
                     elif t is MessageType.ERROR:
-                        if win_actions[0] is not None:
-                            win_actions[0].down([m])
-                        win_actions[0] = None
+                        if win_actions is not None:
+                            win_actions.down([m])
+                        win_actions = None
                         actions.down([m])
                     elif t is MessageType.DIRTY:
                         actions.down([(MessageType.DIRTY,)])
@@ -1366,19 +1361,21 @@ def window_time(seconds: float) -> PipeOperator:
 
     def _op(src: Node[Any]) -> Node[Any]:
         def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
-            win_actions: list[NodeActions | None] = [None]
-            win_unsub: list[Callable[[], None] | None] = [None]
-            timer: list[threading.Timer | None] = [None]
+            win_actions: NodeActions | None = None
+            win_unsub: Callable[[], None] | None = None
+            timer: threading.Timer | None = None
 
             def close_win() -> None:
-                if win_actions[0] is not None:
-                    win_actions[0].down([(MessageType.COMPLETE,)])
-                win_actions[0] = None
-                if win_unsub[0] is not None:
-                    win_unsub[0]()
-                    win_unsub[0] = None
+                nonlocal win_actions, win_unsub
+                if win_actions is not None:
+                    win_actions.down([(MessageType.COMPLETE,)])
+                win_actions = None
+                if win_unsub is not None:
+                    win_unsub()
+                    win_unsub = None
 
             def open_win() -> None:
+                nonlocal win_actions, win_unsub
                 holder: list[NodeActions | None] = [None]
 
                 def win_start(_d: list[Any], wa: NodeActions) -> Callable[[], None]:
@@ -1386,8 +1383,8 @@ def window_time(seconds: float) -> PipeOperator:
                     return lambda: None
 
                 w = node(win_start, describe_kind="window_inner", complete_when_deps_complete=False)
-                win_unsub[0] = w.subscribe(lambda _msgs: None)
-                win_actions[0] = holder[0]
+                win_unsub = w.subscribe(lambda _msgs: None)
+                win_actions = holder[0]
                 actions.emit(w)
 
             def rotate() -> None:
@@ -1396,35 +1393,37 @@ def window_time(seconds: float) -> PipeOperator:
                 arm()
 
             def arm() -> None:
-                if timer[0] is not None:
-                    timer[0].cancel()
+                nonlocal timer
+                if timer is not None:
+                    timer.cancel()
                 tt = threading.Timer(seconds, rotate)
                 tt.daemon = True
                 tt.start()
-                timer[0] = tt
+                timer = tt
 
             open_win()
             arm()
 
             def outer_sink(msgs: Messages) -> None:
+                nonlocal timer, win_actions
                 for m in msgs:
                     t = m[0]
                     if t is MessageType.DATA:
-                        if win_actions[0] is not None:
-                            win_actions[0].down([(MessageType.DATA, _msg_val(m))])
+                        if win_actions is not None:
+                            win_actions.down([(MessageType.DATA, _msg_val(m))])
                     elif t is MessageType.COMPLETE:
-                        if timer[0] is not None:
-                            timer[0].cancel()
-                            timer[0] = None
+                        if timer is not None:
+                            timer.cancel()
+                            timer = None
                         close_win()
                         actions.down([(MessageType.COMPLETE,)])
                     elif t is MessageType.ERROR:
-                        if timer[0] is not None:
-                            timer[0].cancel()
-                            timer[0] = None
-                        if win_actions[0] is not None:
-                            win_actions[0].down([m])
-                        win_actions[0] = None
+                        if timer is not None:
+                            timer.cancel()
+                            timer = None
+                        if win_actions is not None:
+                            win_actions.down([m])
+                        win_actions = None
                         actions.down([m])
                     elif t is MessageType.DIRTY:
                         actions.down([(MessageType.DIRTY,)])
@@ -1436,9 +1435,10 @@ def window_time(seconds: float) -> PipeOperator:
             outer_unsub = src.subscribe(outer_sink)
 
             def cleanup() -> None:
-                if timer[0] is not None:
-                    timer[0].cancel()
-                    timer[0] = None
+                nonlocal timer
+                if timer is not None:
+                    timer.cancel()
+                    timer = None
                 close_win()
                 outer_unsub()
 
@@ -1449,24 +1449,33 @@ def window_time(seconds: float) -> PipeOperator:
     return _op
 
 
+debounce_time = debounce
+throttle_time = throttle
+catch_error = rescue
+merge_map = flat_map
+
 __all__ = [
     "audit",
     "buffer",
     "buffer_count",
     "buffer_time",
+    "catch_error",
     "concat_map",
     "debounce",
+    "debounce_time",
     "delay",
     "exhaust_map",
     "flat_map",
     "gate",
     "interval",
+    "merge_map",
     "pausable",
     "repeat",
     "rescue",
     "sample",
     "switch_map",
     "throttle",
+    "throttle_time",
     "timeout",
     "window",
     "window_count",

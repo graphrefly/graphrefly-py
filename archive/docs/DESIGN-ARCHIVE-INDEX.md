@@ -65,6 +65,26 @@ Key sessions from the predecessor that directly informed GraphReFly:
 
 **Files:** `archive/docs/SESSION-access-control-actor-guard.md`
 
+### Session cross-repo-implementation-audit (March 29) — Python companion to TS audit program
+**Topic:** Same **`~/src/graphrefly-ts/docs/audit-plan.md`** program; batch write-ups live in **`~/src/graphrefly-ts/docs/batch-review/`**. This repo’s session file summarizes **Python-specific** follow-ups (batch drain vs TS, xfailed operator tests, SQLite checkpoint concurrency, type-alias hygiene).
+
+**Canonical narrative:** `~/src/graphrefly-ts/archive/docs/SESSION-cross-repo-implementation-audit.md`
+
+**Files:** `archive/docs/SESSION-cross-repo-implementation-audit.md`
+
+### Session tier2-parity-nonlocal-forward-inner (March 30) — Tier 2 Operator Parity: forwardInner, nonlocal, sample Architecture
+**Topic:** Cross-repo parity fixes for three divergences in Python's Tier 2 operators. All code changes are in this repo; TS was already correct.
+
+**Key decisions:**
+- **`_forward_inner` emitted flag** — prevents double-DATA when inner emits during subscribe (Python subscribe doesn't auto-emit initial DATA like TS)
+- **`nonlocal` replaces `[value]` list-boxing** — idiomatic Python 3 across all 18 operators
+- **`sample` rewritten to dep+onMessage** — eliminates mirror node; uses `node([src, notifier], compute, on_message=...)` matching TS
+- **Tier 2 regression testing is the top testing priority** — composite message ordering, void sources through `*_map`, PAUSE/RESUME/INVALIDATE through inners, timer callbacks during batch drain
+
+**Canonical log:** `~/src/graphrefly-ts/archive/docs/SESSION-tier2-parity-nonlocal-forward-inner.md`
+
+**Files:** `archive/docs/SESSION-tier2-parity-nonlocal-forward-inner.md`
+
 ---
 
 ## Reading Guide
@@ -88,5 +108,5 @@ Each session file contains:
 ---
 
 **Created:** March 27, 2026
-**Updated:** March 28, 2026
-**Archive Status:** Active — spec design + access control
+**Updated:** March 30, 2026
+**Archive Status:** Active — spec design + access control + cross-repo implementation audit (companion) + Tier 2 parity

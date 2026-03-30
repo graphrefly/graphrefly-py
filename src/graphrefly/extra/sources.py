@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections.abc import AsyncIterable, Awaitable, Callable, Iterable
-from concurrent.futures import Future
 from contextlib import suppress
 from datetime import datetime
 from typing import Any, cast
@@ -448,49 +447,6 @@ def first_value_from(
     return got[0]
 
 
-def first_value_from_future(source: Node[Any]) -> Future[Any]:
-    """Non-blocking bridge: return a :class:`concurrent.futures.Future` completed by first ``DATA``.
-
-    The future fails with the ``ERROR`` payload, or :class:`LookupError` if the source completes
-    without ``DATA``. Unsubscribes from *source* when the future completes.
-
-    There is no built-in timeout: sources like :func:`never` leave the future pending until
-    cancelled (``future.cancel()``). For blocking use with a deadline, prefer
-    :func:`first_value_from` with *timeout*.
-    """
-
-    fut: Future[Any] = Future()
-    unsub: list[Callable[[], None] | None] = [None]
-
-    def finish() -> None:
-        u = unsub[0]
-        if u is not None:
-            u()
-            unsub[0] = None
-
-    def sink(msgs: Messages) -> None:
-        if fut.done():
-            return
-        for m in msgs:
-            t = m[0]
-            if t is MessageType.DATA:
-                fut.set_result(_msg_val(m))
-                finish()
-                return
-            if t is MessageType.ERROR:
-                err = _msg_val(m)
-                fut.set_exception(err if isinstance(err, BaseException) else RuntimeError(str(err)))
-                finish()
-                return
-            if t is MessageType.COMPLETE:
-                fut.set_exception(LookupError("completed without DATA"))
-                finish()
-                return
-
-    unsub[0] = source.subscribe(sink)
-    return fut
-
-
 # --- multicast ----------------------------------------------------------------
 
 
@@ -618,11 +574,12 @@ def to_array(source: Node[Any]) -> Node[list[Any]]:
     )
 
 
+share_replay = replay
+
 __all__ = [
     "cached",
     "empty",
     "first_value_from",
-    "first_value_from_future",
     "for_each",
     "from_any",
     "from_async_iter",
@@ -635,6 +592,7 @@ __all__ = [
     "of",
     "replay",
     "share",
+    "share_replay",
     "throw_error",
     "to_array",
     "to_list",

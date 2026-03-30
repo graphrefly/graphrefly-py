@@ -16,7 +16,6 @@ from graphrefly.extra.sources import (
     cached,
     empty,
     first_value_from,
-    first_value_from_future,
     for_each,
     from_any,
     from_async_iter,
@@ -129,14 +128,6 @@ def test_first_value_from_and_empty() -> None:
     assert first_value_from(of(8)) == 8
     with pytest.raises(StopIteration):
         first_value_from(empty())
-
-
-def test_first_value_from_future() -> None:
-    fut = first_value_from_future(of(3))
-    assert fut.result(timeout=2.0) == 3
-    fut2 = first_value_from_future(empty())
-    with pytest.raises(LookupError, match="without DATA"):
-        fut2.result(timeout=2.0)
 
 
 def test_for_each() -> None:

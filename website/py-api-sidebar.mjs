@@ -55,7 +55,6 @@ export const pyApiSidebar = [
 			{ label: "cached()", link: "/api/cached" },
 			{ label: "empty()", link: "/api/empty" },
 			{ label: "first_value_from()", link: "/api/first_value_from" },
-			{ label: "first_value_from_future()", link: "/api/first_value_from_future" },
 			{ label: "for_each()", link: "/api/for_each" },
 			{ label: "from_any()", link: "/api/from_any" },
 			{ label: "from_async_iter()", link: "/api/from_async_iter" },

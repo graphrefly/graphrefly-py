@@ -169,7 +169,7 @@ Port proven operators from callbag-recharge-py + new ones from TS.
 
 - [x] `from_timer`, `from_cron`, `from_iter`, `from_any`
 - [x] `from_awaitable`, `from_async_iter`
-- [x] `first_value_from`, `first_value_from_future` (sync / Future bridge)
+- [x] `first_value_from` (sync bridge)
 - [x] `of`, `empty`, `never`, `throw_error`
 - [x] `for_each`, `to_list`
 - [x] `share`, `cached`, `replay` (`replay(..., buffer_size)` reserved; multicast replay TBD)

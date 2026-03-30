@@ -3,6 +3,8 @@
 from graphrefly.core import (
     Actor,
     DeferWhen,
+    DynamicNodeImpl,
+    dynamic_node,
     EmitStrategy,
     GuardAction,
     GuardDenied,
@@ -50,7 +52,10 @@ from graphrefly.graph import (
     META_PATH_SEG,
     PATH_SEP,
     Graph,
+    GraphDiffResult,
     GraphObserveSource,
+    ObserveResult,
+    TraceEntry,
 )
 
 __version__ = "0.1.0"
@@ -59,11 +64,15 @@ __all__ = [
     "GRAPH_META_SEGMENT",
     "GRAPH_SNAPSHOT_VERSION",
     "Graph",
+    "GraphDiffResult",
     "GraphObserveSource",
     "META_PATH_SEG",
+    "ObserveResult",
     "PATH_SEP",
+    "TraceEntry",
     "Actor",
     "DeferWhen",
+    "DynamicNodeImpl",
     "EmitStrategy",
     "GuardAction",
     "GuardDenied",
@@ -100,6 +109,7 @@ __all__ = [
     "record_mutation",
     "system_actor",
     "union_nodes",
+    "dynamic_node",
     "derived",
     "effect",
     "pipe",

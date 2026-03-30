@@ -93,10 +93,13 @@ def scan(
 ) -> PipeOperator:
     """Fold upstream values with ``reducer(acc, value) -> acc``; emit accumulator after each step.
 
+    Unlike RxJS, seed is always required — there is no seedless mode where the first value
+    silently becomes the accumulator.
+
     Args:
         reducer: Accumulator update.
         seed: Initial accumulator (also used for ``initial`` on the inner node).
-        equals: Optional equality for consecutive emissions (default ``operator.is_``).
+        equals: Optional equality for consecutive emissions (default ``operator.eq``).
 
     Returns:
         A :class:`~graphrefly.core.sugar.PipeOperator`.
@@ -115,7 +118,7 @@ def scan(
             acc[0] = reducer(acc[0], v)
             return acc[0]
 
-        eq = equals if equals is not None else op.is_
+        eq = equals if equals is not None else op.eq
         return node(
             [src],
             compute,
@@ -133,6 +136,9 @@ def reduce(  # noqa: A001 — roadmap API name
     seed: Any,
 ) -> PipeOperator:
     """Reduce to one value emitted when the source completes.
+
+    Unlike RxJS, seed is always required. If the source completes without emitting DATA,
+    the seed value is emitted (RxJS would throw without a seed).
 
     On an empty completion (no prior ``DATA``), emits ``seed``.
 
@@ -518,11 +524,20 @@ def start_with(value: Any) -> PipeOperator:
     return _op
 
 
-def tap(side_effect: Callable[[Any], None]) -> PipeOperator:
-    """Invoke ``side_effect(value)`` for each emission; value passes through unchanged.
+def tap(fn_or_observer: Callable[[Any], None] | dict[str, Callable[..., None]]) -> PipeOperator:
+    """Invoke side effects for each emission; value passes through unchanged.
+
+    When ``fn_or_observer`` is a callable, it is invoked for each ``DATA`` value (classic mode).
+
+    When ``fn_or_observer`` is a dict, it may contain keys ``data``, ``error``, and ``complete``,
+    each a callable invoked for the corresponding message type:
+
+    - ``data(value)`` — called on each ``DATA``
+    - ``error(err)`` — called on ``ERROR``
+    - ``complete()`` — called on ``COMPLETE``
 
     Args:
-        side_effect: Called for side effects only.
+        fn_or_observer: A callable ``(value) -> None`` or an observer dict.
 
     Returns:
         A :class:`~graphrefly.core.sugar.PipeOperator`.
@@ -531,23 +546,58 @@ def tap(side_effect: Callable[[Any], None]) -> PipeOperator:
         >>> from graphrefly import pipe, state
         >>> from graphrefly.extra import tap as grf_tap
         >>> n = pipe(state(1), grf_tap(lambda x: None))
+        >>> n2 = pipe(state(1), grf_tap({"data": lambda x: None, "complete": lambda: None}))
     """
 
-    def _op(src: Node[Any]) -> Node[Any]:
+    if callable(fn_or_observer):
+        side_effect = fn_or_observer
+
+        def _op_fn(src: Node[Any]) -> Node[Any]:
+            def compute(deps: list[Any], _actions: NodeActions) -> Any:
+                v = deps[0]
+                side_effect(v)
+                return v
+
+            return node([src], compute, describe_kind="tap")
+
+        return _op_fn
+
+    # Observer dict mode
+    obs = fn_or_observer
+    on_data: Callable[[Any], None] | None = obs.get("data")
+    on_error: Callable[[Any], None] | None = obs.get("error")
+    on_complete: Callable[[], None] | None = obs.get("complete")
+
+    def _op_obs(src: Node[Any]) -> Node[Any]:
         def compute(deps: list[Any], _actions: NodeActions) -> Any:
             v = deps[0]
-            side_effect(v)
+            if on_data is not None:
+                on_data(v)
             return v
 
-        return node([src], compute, describe_kind="tap")
+        def on_message(msg: Any, _index: int, actions: NodeActions) -> bool:
+            t = msg[0]
+            if t is MessageType.ERROR:
+                if on_error is not None:
+                    on_error(msg[1] if len(msg) > 1 else None)
+                actions.down([msg])
+                return True
+            if t is MessageType.COMPLETE:
+                if on_complete is not None:
+                    on_complete()
+                actions.down([(MessageType.COMPLETE,)])
+                return True
+            return False
 
-    return _op
+        return node([src], compute, on_message=on_message, describe_kind="tap")
+
+    return _op_obs
 
 
 def distinct_until_changed(
     equals: Callable[[Any, Any], bool] | None = None,
 ) -> PipeOperator:
-    """Suppress consecutive duplicates using ``equals`` (default: ``operator.is_``).
+    """Suppress consecutive duplicates using ``equals`` (default: ``operator.eq``).
 
     Args:
         equals: Optional binary equality for adjacent values.
@@ -560,7 +610,7 @@ def distinct_until_changed(
         >>> from graphrefly.extra import distinct_until_changed as grf_duc
         >>> n = pipe(state(1), grf_duc())
     """
-    eq = equals if equals is not None else op.is_
+    eq = equals if equals is not None else op.eq
 
     def _op(src: Node[Any]) -> Node[Any]:
         return node([src], lambda d, _: d[0], equals=eq, describe_kind="distinct_until_changed")
@@ -988,8 +1038,11 @@ def race(*sources: Node[Any]) -> Node[Any]:
     )
 
 
+combine_latest = combine
+
 __all__ = [
     "combine",
+    "combine_latest",
     "concat",
     "distinct_until_changed",
     "element_at",

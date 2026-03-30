@@ -154,8 +154,8 @@ class ReactiveMapBundle:
         eff = self._default_ttl if ttl is None else ttl
         exp: float | None = None
         if eff is not None:
-            if eff < 0:
-                msg = "ttl must be >= 0"
+            if eff <= 0:
+                msg = "ttl must be > 0"
                 raise ValueError(msg)
             exp = _mono_now() + eff
 

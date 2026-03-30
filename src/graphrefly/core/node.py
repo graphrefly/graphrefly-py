@@ -17,7 +17,7 @@ from graphrefly.core.guard import (
     normalize_actor,
     record_mutation,
 )
-from graphrefly.core.protocol import Messages, MessageType, emit_with_batch
+from graphrefly.core.protocol import Messages, MessageType, emit_with_batch, propagates_to_meta
 from graphrefly.core.subgraph_locks import (
     acquire_subgraph_write_lock_with_defer,
     ensure_registered,
@@ -325,19 +325,24 @@ class NodeImpl[T]:
                     else:
                         self._cached = None
                 # Invoke cleanup for compute nodes (deps+fn) — spec §2.4
-                # requires cleanup on teardown, not just before next invocation.
-                # _stop_producer handles cleanup for producer nodes separately.
                 if self._cleanup is not None:
                     cb = self._cleanup
                     self._cleanup = None
                     cb()
                 try:
-                    for meta_node in self._meta.values():
-                        with suppress(Exception):
-                            meta_node.down([(MessageType.TEARDOWN,)], internal=True)
+                    self._propagate_to_meta(t)
                 finally:
                     self._disconnect_upstream()
                     self._stop_producer()
+            # Propagate other meta-eligible signals (centralized in protocol.py).
+            if t is not MessageType.TEARDOWN and propagates_to_meta(t):
+                self._propagate_to_meta(t)
+
+    def _propagate_to_meta(self, t: MessageType) -> None:
+        """Propagate a signal to all companion meta nodes (best-effort)."""
+        for meta_node in self._meta.values():
+            with suppress(Exception):
+                meta_node.down([(t,)], internal=True)
 
     def _can_skip_dirty(self) -> bool:
         return self._sink_count == 1 and self._single_dep_sink_count == 1

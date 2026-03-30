@@ -61,7 +61,7 @@ def test_switch_map_switches_inner() -> None:
     outer = state(0)
     inner1 = state("x")
     inner2 = state("y")
-    inners = {1: inner1, 2: inner2}
+    inners = {0: state("_"), 1: inner1, 2: inner2}
     sink: list[Messages] = []
     out = pipe(outer, switch_map(lambda v: inners[v]))
     out.subscribe(sink.append)
@@ -105,17 +105,19 @@ def test_concat_map_sequential() -> None:
     out = pipe(outer, concat_map(make_inner))
     out.subscribe(sink.append)
 
+    # Initial value 0 is processed as a dep → results[0] = (0, ...)
+    assert len(results) == 1
+    assert results[0][0] == 0
+
     outer.down([(MessageType.DATA, 1)])
     outer.down([(MessageType.DATA, 2)])
-    outer.down([(MessageType.DATA, 3)])
-    assert len(results) == 1
-    v1, h1 = results[0]
-    assert v1 == 1
-    h1[0].down([(MessageType.DATA, "a")])
+    # 1 and 2 are queued since inner for 0 is still active
+    _, h0 = results[0]
+    h0[0].down([(MessageType.DATA, "a")])
     assert "a" in _values(sink)
-    h1[0].down([(MessageType.COMPLETE,)])
+    h0[0].down([(MessageType.COMPLETE,)])
     assert len(results) == 2
-    assert results[1][0] == 2
+    assert results[1][0] == 1
 
 
 def test_concat_map_max_buffer() -> None:
@@ -130,11 +132,13 @@ def test_concat_map_max_buffer() -> None:
     out = pipe(outer, concat_map(make_inner, max_buffer=1))
     out.subscribe(lambda _m: None)
 
+    # Initial value 0 is processed as dep → inners[0] = (0, ...)
     outer.down([(MessageType.DATA, 1)])
     outer.down([(MessageType.DATA, 2)])
     outer.down([(MessageType.DATA, 3)])
-    _, h1 = inners[0]
-    h1[0].down([(MessageType.COMPLETE,)])
+    # max_buffer=1 keeps only latest queued: 3
+    _, h0 = inners[0]
+    h0[0].down([(MessageType.COMPLETE,)])
     assert len(inners) == 2
     assert inners[1][0] == 3
 
@@ -143,11 +147,13 @@ def test_flat_map_concurrent() -> None:
     outer = state(0)
     p1, h1 = _make_deferred_producer()
     p2, h2 = _make_deferred_producer()
+    p3, h3 = _make_deferred_producer()
     counter = [0]
 
     def make_inner(_v: int) -> Any:
         counter[0] += 1
-        return p1 if counter[0] == 1 else p2
+        # counter 1 = initial dep value, 2 = DATA 1, 3 = DATA 2
+        return [p1, p2, p3][counter[0] - 1]
 
     sink: list[Messages] = []
     out = pipe(outer, flat_map(make_inner))
@@ -179,11 +185,13 @@ def test_exhaust_map_drops_while_busy() -> None:
     outer = state(0)
     p, h = _make_deferred_producer()
     sink: list[Messages] = []
-    out = pipe(outer, exhaust_map(lambda v: p if v == 1 else state("late")))
+    # v==0 (initial) and v==1 use deferred producer p; others use state("late")
+    out = pipe(outer, exhaust_map(lambda v: p if v in (0, 1) else state("late")))
     out.subscribe(sink.append)
 
-    outer.down([(MessageType.DATA, 1)])
-    outer.down([(MessageType.DATA, 2)])
+    # Initial value 0 subscribes to p (busy=True)
+    outer.down([(MessageType.DATA, 1)])  # ignored — busy
+    outer.down([(MessageType.DATA, 2)])  # ignored — busy
     h[0].down([(MessageType.DATA, "a")])
     assert "a" in _values(sink)
     h[0].down([(MessageType.COMPLETE,)])
