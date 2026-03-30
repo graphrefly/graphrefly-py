@@ -20,8 +20,6 @@ from graphrefly.extra.backoff import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from graphrefly.core.sugar import PipeOperator
-
 __all__ = [
     "CircuitBreaker",
     "CircuitOpenError",
@@ -56,10 +54,11 @@ def _coerce_delay(raw_delay: Any) -> float:
 
 
 def retry(
+    source: Node[Any],
     count: int | None = None,
     *,
     backoff: BackoffStrategy | BackoffPreset | None = None,
-) -> PipeOperator:
+) -> Node[Any]:
     """Retry upstream after ``ERROR`` with optional backoff (threading timer between attempts).
 
     Unsubscribes from the source after each terminal ``ERROR``, waits (possibly zero), then
@@ -78,101 +77,98 @@ def retry(
         resolve_backoff_preset(backoff) if isinstance(backoff, str) else backoff
     )
 
-    def _op(src: Node[Any]) -> Node[Any]:
-        def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
-            attempt = [0]
-            stopped = [False]
-            prev_delay: list[float | None] = [None]
-            upstream_unsub: list[Callable[[], None] | None] = [None]
-            timer_holder: list[threading.Timer | None] = [None]
-            timer_generation = [0]
-            lock = threading.Lock()
+    def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
+        attempt = [0]
+        stopped = [False]
+        prev_delay: list[float | None] = [None]
+        upstream_unsub: list[Callable[[], None] | None] = [None]
+        timer_holder: list[threading.Timer | None] = [None]
+        timer_generation = [0]
+        lock = threading.Lock()
 
-            def cancel_timer() -> None:
-                if timer_holder[0] is not None:
-                    timer_holder[0].cancel()
-                    timer_holder[0] = None
+        def cancel_timer() -> None:
+            if timer_holder[0] is not None:
+                timer_holder[0].cancel()
+                timer_holder[0] = None
 
-            def disconnect_upstream() -> None:
-                if upstream_unsub[0] is not None:
-                    upstream_unsub[0]()
-                    upstream_unsub[0] = None
+        def disconnect_upstream() -> None:
+            if upstream_unsub[0] is not None:
+                upstream_unsub[0]()
+                upstream_unsub[0] = None
 
-            def connect() -> None:
-                cancel_timer()
-                disconnect_upstream()
+        def connect() -> None:
+            cancel_timer()
+            disconnect_upstream()
 
-                def sink(msgs: Messages) -> None:
-                    for m in msgs:
-                        t = m[0]
-                        if t is MessageType.DIRTY:
-                            actions.down([(MessageType.DIRTY,)])
-                        elif t is MessageType.DATA:
-                            attempt[0] = 0
-                            prev_delay[0] = None
-                            actions.emit(_msg_val(m))
-                        elif t is MessageType.RESOLVED:
-                            actions.down([(MessageType.RESOLVED,)])
-                        elif t is MessageType.COMPLETE:
-                            disconnect_upstream()
-                            actions.down([(MessageType.COMPLETE,)])
-                        elif t is MessageType.ERROR:
-                            schedule_retry_or_finish(_msg_val(m))
-                            return
-                        else:
-                            actions.down([m])
-
-                upstream_unsub[0] = src.subscribe(sink)
-
-            def schedule_retry_or_finish(err: BaseException) -> None:
-                with lock:
-                    if stopped[0]:
-                        return
-                    if attempt[0] >= max_retries:
+            def sink(msgs: Messages) -> None:
+                for m in msgs:
+                    t = m[0]
+                    if t is MessageType.DIRTY:
+                        actions.down([(MessageType.DIRTY,)])
+                    elif t is MessageType.DATA:
+                        attempt[0] = 0
+                        prev_delay[0] = None
+                        actions.emit(_msg_val(m))
+                    elif t is MessageType.RESOLVED:
+                        actions.down([(MessageType.RESOLVED,)])
+                    elif t is MessageType.COMPLETE:
                         disconnect_upstream()
-                        actions.down([(MessageType.ERROR, err)])
+                        actions.down([(MessageType.COMPLETE,)])
+                    elif t is MessageType.ERROR:
+                        schedule_retry_or_finish(_msg_val(m))
                         return
+                    else:
+                        actions.down([m])
 
-                    raw = 0.0 if strategy is None else strategy(attempt[0], err, prev_delay[0])
-                    delay = _coerce_delay(0.0 if raw is None else raw)
-                    prev_delay[0] = delay
-                    attempt[0] += 1
-                    timer_generation[0] += 1
-                    current_gen = timer_generation[0]
+            upstream_unsub[0] = source.subscribe(sink)
+
+        def schedule_retry_or_finish(err: BaseException) -> None:
+            with lock:
+                if stopped[0]:
+                    return
+                if attempt[0] >= max_retries:
                     disconnect_upstream()
+                    actions.down([(MessageType.ERROR, err)])
+                    return
 
-                safe_delay = delay if delay > 0 else 1e-6
-
-                def fire() -> None:
-                    with lock:
-                        if stopped[0] or current_gen != timer_generation[0]:
-                            return
-                    connect()
-
-                tt = threading.Timer(safe_delay, fire)
-                tt.daemon = True
-                tt.start()
-                timer_holder[0] = tt
-
-            connect()
-
-            def cleanup() -> None:
-                with lock:
-                    stopped[0] = True
-                    timer_generation[0] += 1
-                cancel_timer()
+                raw = 0.0 if strategy is None else strategy(attempt[0], err, prev_delay[0])
+                delay = _coerce_delay(0.0 if raw is None else raw)
+                prev_delay[0] = delay
+                attempt[0] += 1
+                timer_generation[0] += 1
+                current_gen = timer_generation[0]
                 disconnect_upstream()
 
-            return cleanup
+            safe_delay = delay if delay > 0 else 1e-6
 
-        return node(
-            start,
-            describe_kind="operator",
-            complete_when_deps_complete=False,
-            initial=src.get(),
-        )
+            def fire() -> None:
+                with lock:
+                    if stopped[0] or current_gen != timer_generation[0]:
+                        return
+                connect()
 
-    return _op
+            tt = threading.Timer(safe_delay, fire)
+            tt.daemon = True
+            tt.start()
+            timer_holder[0] = tt
+
+        connect()
+
+        def cleanup() -> None:
+            with lock:
+                stopped[0] = True
+                timer_generation[0] += 1
+            cancel_timer()
+            disconnect_upstream()
+
+        return cleanup
+
+    return node(
+        start,
+        describe_kind="operator",
+        complete_when_deps_complete=False,
+        initial=source.get(),
+    )
 
 
 CircuitState = Literal["closed", "open", "half-open"]
@@ -462,7 +458,7 @@ def token_tracker(capacity: float, refill_per_second: float) -> TokenBucket:
     return token_bucket(capacity, refill_per_second)
 
 
-def rate_limiter(max_events: int, window_seconds: float) -> PipeOperator:
+def rate_limiter(source: Node[Any], max_events: int, window_seconds: float) -> Node[Any]:
     """Sliding-window limit: at most *max_events* ``DATA`` emissions per *window_seconds*.
 
     Values that exceed the window budget are queued (FIFO) and emitted as slots free.
@@ -475,92 +471,89 @@ def rate_limiter(max_events: int, window_seconds: float) -> PipeOperator:
         msg = "window_seconds must be > 0"
         raise ValueError(msg)
 
-    def _op(src: Node[Any]) -> Node[Any]:
-        def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
-            times: deque[float] = deque()
-            pending: deque[Any] = deque()
-            timer: list[threading.Timer | None] = [None]
-            timer_gen = [0]
+    def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
+        times: deque[float] = deque()
+        pending: deque[Any] = deque()
+        timer: list[threading.Timer | None] = [None]
+        timer_gen = [0]
 
-            def cancel_timer() -> None:
-                if timer[0] is not None:
-                    timer[0].cancel()
-                    timer[0] = None
+        def cancel_timer() -> None:
+            if timer[0] is not None:
+                timer[0].cancel()
+                timer[0] = None
 
-            def prune(now: float) -> None:
-                boundary = now - window_seconds
-                while times and times[0] <= boundary:
-                    times.popleft()
+        def prune(now: float) -> None:
+            boundary = now - window_seconds
+            while times and times[0] <= boundary:
+                times.popleft()
 
-            def schedule_emit(when: float) -> None:
-                cancel_timer()
-                timer_gen[0] += 1
-                gen = timer_gen[0]
-                delay = max(0.0, when - time.monotonic())
+        def schedule_emit(when: float) -> None:
+            cancel_timer()
+            timer_gen[0] += 1
+            gen = timer_gen[0]
+            delay = max(0.0, when - time.monotonic())
 
-                def fire() -> None:
-                    if gen != timer_gen[0]:
-                        return
-                    timer[0] = None
+            def fire() -> None:
+                if gen != timer_gen[0]:
+                    return
+                timer[0] = None
+                try_emit()
+
+            tt = threading.Timer(delay, fire)
+            tt.daemon = True
+            tt.start()
+            timer[0] = tt
+
+        def try_emit() -> None:
+            while pending:
+                now = time.monotonic()
+                prune(now)
+                if len(times) < max_events:
+                    times.append(now)
+                    actions.emit(pending.popleft())
+                else:
+                    oldest = times[0]
+                    schedule_emit(oldest + window_seconds)
+                    return
+
+        def sink(msgs: Messages) -> None:
+            for m in msgs:
+                t = m[0]
+                if t is MessageType.DIRTY:
+                    actions.down([(MessageType.DIRTY,)])
+                elif t is MessageType.DATA:
+                    pending.append(_msg_val(m))
                     try_emit()
+                elif t is MessageType.RESOLVED:
+                    actions.down([(MessageType.RESOLVED,)])
+                elif t is MessageType.COMPLETE:
+                    cancel_timer()
+                    pending.clear()
+                    times.clear()
+                    actions.down([(MessageType.COMPLETE,)])
+                elif t is MessageType.ERROR:
+                    cancel_timer()
+                    pending.clear()
+                    times.clear()
+                    actions.down([m])
+                else:
+                    actions.down([m])
 
-                tt = threading.Timer(delay, fire)
-                tt.daemon = True
-                tt.start()
-                timer[0] = tt
+        unsub = source.subscribe(sink)
 
-            def try_emit() -> None:
-                while pending:
-                    now = time.monotonic()
-                    prune(now)
-                    if len(times) < max_events:
-                        times.append(now)
-                        actions.emit(pending.popleft())
-                    else:
-                        oldest = times[0]
-                        schedule_emit(oldest + window_seconds)
-                        return
+        def cleanup() -> None:
+            timer_gen[0] += 1
+            cancel_timer()
+            unsub()
 
-            def sink(msgs: Messages) -> None:
-                for m in msgs:
-                    t = m[0]
-                    if t is MessageType.DIRTY:
-                        actions.down([(MessageType.DIRTY,)])
-                    elif t is MessageType.DATA:
-                        pending.append(_msg_val(m))
-                        try_emit()
-                    elif t is MessageType.RESOLVED:
-                        actions.down([(MessageType.RESOLVED,)])
-                    elif t is MessageType.COMPLETE:
-                        cancel_timer()
-                        pending.clear()
-                        times.clear()
-                        actions.down([(MessageType.COMPLETE,)])
-                    elif t is MessageType.ERROR:
-                        cancel_timer()
-                        pending.clear()
-                        times.clear()
-                        actions.down([m])
-                    else:
-                        actions.down([m])
+        return cleanup
 
-            unsub = src.subscribe(sink)
-
-            def cleanup() -> None:
-                timer_gen[0] += 1
-                cancel_timer()
-                unsub()
-
-            return cleanup
-
-        return node(
-            start,
-            describe_kind="operator",
-            complete_when_deps_complete=False,
-            initial=src.get(),
-        )
-
-    return _op
+    return node(
+        start,
+        describe_kind="operator",
+        complete_when_deps_complete=False,
+        initial=source.get(),
+    )
 
 
 StatusValue = Literal["pending", "active", "completed", "errored"]

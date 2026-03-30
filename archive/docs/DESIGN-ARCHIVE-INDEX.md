@@ -49,7 +49,7 @@ Key sessions from the predecessor that directly informed GraphReFly:
 
 **Validated scenarios:** LLM cost control, security policy, human-in-the-loop, Excel calculations, multi-agent routing, LLM graph building, git versioning.
 
-**Outcome:** `docs/GRAPHREFLY-SPEC.md` (v0.1.0), `docs/roadmap.md`, new repo decision.
+**Outcome:** `~/src/graphrefly/GRAPHREFLY-SPEC.md` (v0.1.0), `docs/roadmap.md`, new repo decision.
 
 ### Session access-control-actor-guard (March 28) — Built-in ABAC: Actor, Guard, Policy Builder
 **Topic:** Designing built-in access control for GraphReFly that replaces external authz libraries (e.g. CASL). The graph is the single enforcement point — every mutation flows through `down()`/`set()`/`signal()`, so one guard per node is complete coverage.
@@ -69,7 +69,7 @@ Key sessions from the predecessor that directly informed GraphReFly:
 
 ## Reading Guide
 
-**For architecture newcomers:** Start with the spec (`docs/GRAPHREFLY-SPEC.md`), then this session.
+**For architecture newcomers:** Start with the spec (`~/src/graphrefly/GRAPHREFLY-SPEC.md`), then this session.
 
 **For callbag-recharge-py context:** Read the predecessor archive index in the callbag-recharge-py repo, focusing on the Python port strategy session.
 

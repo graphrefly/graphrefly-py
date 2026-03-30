@@ -26,7 +26,7 @@ from graphrefly.core.subgraph_locks import (
 
 # --- Status & typing (graphrefly-ts node.ts) ---------------------------------
 
-NodeStatus = str  # structural: same strings as TS NodeStatus
+type NodeStatus = str  # structural: same strings as TS NodeStatus
 
 # --- BitSet: Python int bitmask (unlimited precision; TS uses int + Uint32Array) ---
 
@@ -141,7 +141,7 @@ class NodeActions:
         self._up(messages)
 
 
-NodeFn = Callable[[list[Any], NodeActions], Any]
+type NodeFn = Callable[[list[Any], NodeActions], Any]
 
 
 class SubscribeHints:
@@ -324,6 +324,13 @@ class NodeImpl[T]:
                             self._cached = None
                     else:
                         self._cached = None
+                # Invoke cleanup for compute nodes (deps+fn) — spec §2.4
+                # requires cleanup on teardown, not just before next invocation.
+                # _stop_producer handles cleanup for producer nodes separately.
+                if self._cleanup is not None:
+                    cb = self._cleanup
+                    self._cleanup = None
+                    cb()
                 try:
                     for meta_node in self._meta.values():
                         with suppress(Exception):
@@ -383,8 +390,9 @@ class NodeImpl[T]:
                     self.down([(MessageType.RESOLVED,)], internal=True)
                 return
             if self._cleanup is not None:
-                self._cleanup()
+                cb = self._cleanup
                 self._cleanup = None
+                cb()
             self._manual_emit_used = False
             self._last_dep_values = dep_values
             out = self._fn(dep_values, self._actions)  # type: ignore[misc]
@@ -516,7 +524,9 @@ class NodeImpl[T]:
             return
         self._producer_started = False
         if self._cleanup is not None:
-            self._cleanup()
+            cb = self._cleanup
+            self._cleanup = None
+            cb()
             self._cleanup = None
 
     def _start_producer(self) -> None:
@@ -697,7 +707,7 @@ class NodeImpl[T]:
                         self._emit_to_sinks,
                         filtered,
                         strategy="partition",
-                        defer_when="depth",
+                        defer_when="batching",
                         subgraph_lock=sg_lock,
                     )
                 return
@@ -705,7 +715,7 @@ class NodeImpl[T]:
             self._emit_to_sinks,
             sink_messages,
             strategy="partition",
-            defer_when="depth",
+            defer_when="batching",
             subgraph_lock=sg_lock,
         )
 

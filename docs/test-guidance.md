@@ -1,6 +1,6 @@
 # Test guidance
 
-Guidelines for writing, organizing, and maintaining tests in **graphrefly-py**. Read this before adding tests. Behavioral truth is **`docs/GRAPHREFLY-SPEC.md`**; this file adds Python-specific testing patterns.
+Guidelines for writing, organizing, and maintaining tests in **graphrefly-py**. Read this before adding tests. Behavioral truth is **`~/src/graphrefly/GRAPHREFLY-SPEC.md`**; this file adds Python-specific testing patterns.
 
 **Predecessor:** Patterns and stress tests in `~/src/callbag-recharge-py` are a valuable reference when porting operators and concurrency — adapt to GraphReFly **Messages** and lifecycle types.
 
@@ -10,7 +10,7 @@ Guidelines for writing, organizing, and maintaining tests in **graphrefly-py**. 
 
 1. **Verify before fixing.** Every suspected bug needs a failing test (or a new test that proves the hypothesis wrong). Do not fix without evidence.
 
-2. **Spec and code > old tests.** When a new test disagrees with an older test, use **`GRAPHREFLY-SPEC.md`** and source code to decide. Update the wrong artifact.
+2. **Spec and code > old tests.** When a new test disagrees with an older test, use **`~/src/graphrefly/GRAPHREFLY-SPEC.md`** and source code to decide. Update the wrong artifact.
 
 3. **Design choices ≠ bugs.** Documented invariants (e.g. batch defers **DATA** not **DIRTY**; **RESOLVED** for unchanged recompute) are intentional. Check the spec before “fixing” behavior.
 
@@ -21,7 +21,7 @@ Guidelines for writing, organizing, and maintaining tests in **graphrefly-py**. 
 6. **Prefer helpers over raw wiring.** When the project provides observation helpers (message capture, fake sinks), use them for assertions. Reserve hand-built sinks for low-level protocol tests.
 
 7. **Authority hierarchy for expected behavior:**
-   - `docs/GRAPHREFLY-SPEC.md` — primary
+   - `~/src/graphrefly/GRAPHREFLY-SPEC.md` — primary
    - `docs/roadmap.md` — phase acceptance
    - `~/src/callbag-recharge-py` — porting reference only
 

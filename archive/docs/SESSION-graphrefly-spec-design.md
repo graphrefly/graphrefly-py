@@ -103,7 +103,7 @@ GraphReFly = reactive graph protocol where human + LLM are peers operating on th
 ## FILES CREATED / CHANGED
 
 **graphrefly-py:**
-- `docs/GRAPHREFLY-SPEC.md` — the unified spec (v0.1.0 draft)
+- `~/src/graphrefly/GRAPHREFLY-SPEC.md` — the unified spec (v0.1.0 draft)
 - `docs/roadmap.md` — implementation roadmap
 - `archive/docs/SESSION-graphrefly-spec-design.md` — this session
 - `archive/docs/DESIGN-ARCHIVE-INDEX.md` — design archive index

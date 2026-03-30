@@ -3,7 +3,7 @@
 Reactive graph protocol for human and LLM co-operation.
 
 Python implementation of GraphReFly, based on the shared behavior defined in
-`docs/GRAPHREFLY-SPEC.md`.
+`~/src/graphrefly/GRAPHREFLY-SPEC.md`.
 
 ## Install
 

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
-from graphrefly import Graph, Messages, MessageType, node, pipe, state
+from graphrefly import Graph, Messages, MessageType, node, state
 from graphrefly.extra.backoff import (
     BackoffPreset,
     constant,
@@ -114,7 +114,7 @@ def test_resolve_backoff_preset() -> None:
 def test_retry_zero_forwards_error() -> None:
     src = _errors_then_ok(errors_before_ok=5)
     sink: list[Messages] = []
-    out = pipe(src, retry(0))
+    out = retry(src, 0)
     out.subscribe(sink.append)
     time.sleep(0.08)
     assert _has_error(sink)
@@ -125,7 +125,7 @@ def test_retry_recovers_with_backoff() -> None:
     src = _errors_then_ok(errors_before_ok=2)
     sink: list[Messages] = []
     bo = exponential(base=0.01, factor=2.0, max_delay=0.05, jitter="none")
-    out = pipe(src, retry(2, backoff=bo))
+    out = retry(src, 2, backoff=bo)
     out.subscribe(sink.append)
     time.sleep(0.35)
     assert _values(sink) == ["recovered"]
@@ -135,7 +135,7 @@ def test_retry_recovers_with_backoff() -> None:
 def test_retry_exhausted() -> None:
     src = _errors_then_ok(errors_before_ok=5)
     sink: list[Messages] = []
-    out = pipe(src, retry(1, backoff=constant(0.0)))
+    out = retry(src, 1, backoff=constant(0.0))
     out.subscribe(sink.append)
     time.sleep(0.15)
     assert _has_error(sink)
@@ -145,7 +145,7 @@ def test_retry_exhausted() -> None:
 def test_rate_limiter_queues_then_drains() -> None:
     s = state(0)
     sink: list[Messages] = []
-    out = pipe(s, rate_limiter(2, 0.06))
+    out = rate_limiter(s, 2, 0.06)
     out.subscribe(sink.append)
     for i in range(1, 5):
         s.down([(MessageType.DATA, i)])

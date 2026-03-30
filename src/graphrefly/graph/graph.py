@@ -662,8 +662,14 @@ def _resolve_meta_chain(n: NodeImpl[Any], parts: list[str], path: str) -> NodeIm
     return _resolve_meta_chain(child, rest, path) if rest else child
 
 
-def _is_teardown_only(messages: Messages) -> bool:
-    return bool(messages) and all(m[0] == MessageType.TEARDOWN for m in messages)
+_META_FILTERED_TYPES = frozenset(
+    {MessageType.TEARDOWN, MessageType.INVALIDATE, MessageType.COMPLETE, MessageType.ERROR}
+)
+
+
+def _filter_meta_messages(messages: Messages) -> Messages:
+    """Strip lifecycle-destructive messages before delivering to meta companions (spec §2.3)."""
+    return [m for m in messages if m[0] not in _META_FILTERED_TYPES]
 
 
 def _signal_node_subtree(
@@ -686,12 +692,12 @@ def _signal_node_subtree(
             n.down(messages, actor=actor, guard_action="signal")
         except GuardDenied as e:
             raise GuardDenied(e.actor, path, e.action) from e
-    # Primary's down() already cascades TEARDOWN to meta companions.
-    if _is_teardown_only(messages):
+    meta_msgs = _filter_meta_messages(messages)
+    if not meta_msgs:
         return
     for k in sorted(n.meta):
         mp = f"{path}{PATH_SEP}{GRAPH_META_SEGMENT}{PATH_SEP}{k}"
-        _signal_node_subtree(n.meta[k], messages, visited, actor, mp, internal=internal)
+        _signal_node_subtree(n.meta[k], meta_msgs, visited, actor, mp, internal=internal)
 
 
 def _collect_observe_targets(g: Graph, prefix: str) -> list[tuple[str, NodeImpl[Any]]]:
@@ -828,3 +834,13 @@ def _signal_graph(
     for name, n in nodes:
         q = f"{prefix}{name}" if prefix else name
         _signal_node_subtree(n, messages, visited, actor, q, internal=internal)
+
+
+__all__ = [
+    "GRAPH_META_SEGMENT",
+    "GRAPH_SNAPSHOT_VERSION",
+    "Graph",
+    "GraphObserveSource",
+    "META_PATH_SEG",
+    "PATH_SEP",
+]

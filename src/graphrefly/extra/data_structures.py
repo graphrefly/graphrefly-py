@@ -250,11 +250,42 @@ class ReactiveLogBundle:
 
     _state: Node[Versioned]
     entries: Node[Versioned]
+    _max_size: int | None
+
+    def _trim(self, t: tuple[Any, ...]) -> tuple[Any, ...]:
+        """Trim from head if bounded and over capacity."""
+        if self._max_size is not None and len(t) > self._max_size:
+            return t[len(t) - self._max_size :]
+        return t
 
     def append(self, value: Any) -> None:
         cur = self._state.get()
         t: tuple[Any, ...] = cur.value if isinstance(cur, Versioned) else (cur or ())
-        _push_two_phase(self._state, _bump(cur, (*t, value)))
+        t = self._trim((*t, value))
+        _push_two_phase(self._state, _bump(cur, t))
+
+    def append_many(self, values: Sequence[Any]) -> None:
+        """Extend log with all *values*, trim once, emit one snapshot."""
+        cur = self._state.get()
+        t: tuple[Any, ...] = cur.value if isinstance(cur, Versioned) else (cur or ())
+        t = self._trim((*t, *values))
+        _push_two_phase(self._state, _bump(cur, t))
+
+    def trim_head(self, n: int) -> None:
+        """Remove first *n* entries from the log and emit a snapshot.
+
+        Args:
+            n: Number of entries to remove from the head (must be >= 0).
+        """
+        if n < 0:
+            msg = "n must be >= 0"
+            raise ValueError(msg)
+        cur = self._state.get()
+        t: tuple[Any, ...] = cur.value if isinstance(cur, Versioned) else (cur or ())
+        if n >= len(t):
+            _push_two_phase(self._state, _bump(cur, ()))
+        else:
+            _push_two_phase(self._state, _bump(cur, t[n:]))
 
     def clear(self) -> None:
         cur = self._state.get()
@@ -283,17 +314,20 @@ class ReactiveLogBundle:
 def reactive_log(
     initial: Sequence[Any] | None = None,
     *,
+    max_size: int | None = None,
     name: str | None = None,
 ) -> ReactiveLogBundle:
     """Creates an append-only reactive log (tuple snapshot).
 
     Args:
         initial: Optional seed sequence; copied to a tuple.
+        max_size: If set, maximum number of entries; oldest entries are trimmed
+            from the head when the buffer exceeds this size (must be >= 1).
         name: Optional registry name for ``describe()`` / debugging.
 
     Returns:
-        A :class:`ReactiveLogBundle` with ``append`` / ``clear`` and
-        :meth:`~ReactiveLogBundle.tail`.
+        A :class:`ReactiveLogBundle` with ``append`` / ``append_many`` /
+        ``trim_head`` / ``clear`` and :meth:`~ReactiveLogBundle.tail`.
 
     Examples:
         >>> from graphrefly.extra import reactive_log
@@ -302,14 +336,21 @@ def reactive_log(
         >>> lg.entries.get().value
         (1, 2, 3)
     """
+    if max_size is not None and max_size < 1:
+        msg = "max_size must be >= 1"
+        raise ValueError(msg)
+
     init = tuple(initial) if initial is not None else ()
+    # Trim initial if it exceeds max_size
+    if max_size is not None and len(init) > max_size:
+        init = init[len(init) - max_size :]
     inner = state(
         Versioned(version=0, value=init),
         describe_kind="state",
         equals=_versioned_equals,
         name=name,
     )
-    return ReactiveLogBundle(_state=inner, entries=inner)
+    return ReactiveLogBundle(_state=inner, entries=inner, _max_size=max_size)
 
 
 # --- reactive_index (primary key + secondary sort key) ----------------------
@@ -486,6 +527,19 @@ class PubSubHub:
     def publish(self, name: str, value: Any) -> None:
         t = self.topic(name)
         _push_two_phase(t, value)
+
+    def remove_topic(self, name: str) -> bool:
+        """Tear down and remove a topic node by name.
+
+        Returns ``True`` if the topic existed and was removed, ``False`` otherwise.
+        """
+        with self._lock:
+            n = self._topics.get(name)
+            if n is None:
+                return False
+            n.down([(MessageType.TEARDOWN,)])
+            del self._topics[name]
+            return True
 
 
 def pubsub() -> PubSubHub:

@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any, Literal, TypedDict
 
-GuardAction = str
+type GuardAction = str
 """Known actions: ``"write"``, ``"signal"``, ``"observe"``.
 
 Open type (plain ``str``) so callers can define domain-specific actions

@@ -21,7 +21,7 @@ install dependencies.
 
 ## Key docs
 
-- `docs/GRAPHREFLY-SPEC.md` — protocol and behavioral specification (shared with graphrefly-ts)
+- `~/src/graphrefly/GRAPHREFLY-SPEC.md` — protocol and behavioral specification (shared with graphrefly-ts)
 - `docs/roadmap.md` — phased implementation plan
 - `docs/docs-guidance.md` — how to write and maintain documentation here
 - `docs/test-guidance.md` — testing conventions and organization
@@ -32,7 +32,7 @@ install dependencies.
 For **implementation help**, **test patterns**, **concurrency** (e.g. subgraph locks), and
 **porting** lessons from the earlier Python reactive library, agents may read
 `~/src/callbag-recharge-py`. That project is **callbag-recharge**, not GraphReFly: the
-spec for this repo is **`docs/GRAPHREFLY-SPEC.md`**. Translate old callbag/STATE/DATA/END
+spec for this repo is **`~/src/graphrefly/GRAPHREFLY-SPEC.md`**. Translate old callbag/STATE/DATA/END
 concepts into GraphReFly **Messages** and the single primitive `node`.
 
 ## Claude Code skills

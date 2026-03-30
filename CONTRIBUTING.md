@@ -33,5 +33,5 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/):
 
 ## Architecture
 
-- Behavior and protocol: `docs/GRAPHREFLY-SPEC.md`
+- Behavior and protocol: `~/src/graphrefly/GRAPHREFLY-SPEC.md`
 - Implementation phases: `docs/roadmap.md`

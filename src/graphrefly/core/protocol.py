@@ -41,8 +41,8 @@ _BATCH_DEFER_TYPES: frozenset[MessageType] = frozenset({MessageType.DATA, Messag
 # Terminals (GRAPHREFLY-SPEC § 1.3 #4): flush deferred phase-2 first so they are not observed after.
 _TERMINAL_TYPES: frozenset[MessageType] = frozenset({MessageType.COMPLETE, MessageType.ERROR})
 
-EmitStrategy = Literal["partition", "sequential"]
-DeferWhen = Literal["depth", "batching"]
+type EmitStrategy = Literal["partition", "sequential"]
+type DeferWhen = Literal["depth", "batching"]
 
 
 def _wrap_deferred_subgraph(
@@ -86,14 +86,22 @@ def _batch_state() -> _BatchState:
         return bs
 
 
+_MAX_DRAIN_ITERATIONS = 1000
+
+
 def _drain_pending(bs: _BatchState) -> None:
     """Run all queued deferred callbacks until the queue is quiescent."""
     owns_flush = not bs.flush_in_progress
     if owns_flush:
         bs.flush_in_progress = True
     errors: list[Exception] = []
+    iterations = 0
     try:
         while bs.pending:
+            iterations += 1
+            if iterations > _MAX_DRAIN_ITERATIONS:
+                msg = f"batch drain exceeded {_MAX_DRAIN_ITERATIONS} iterations"
+                raise RuntimeError(msg)
             batch = bs.pending
             bs.pending = []
             for fn in batch:
@@ -196,11 +204,13 @@ def emit_with_batch(
     **Defer predicate** (when to queue DATA/RESOLVED instead of calling *sink*):
 
     - ``defer_when="batching"`` — defer while :func:`is_batching` (depth **or**
-      flush-in-progress). Matches historical ``dispatch_messages`` / nested-drain QA.
+      flush-in-progress). Matches TS ``emitWithBatch`` behavior: during drain,
+      further phase-2 emissions are re-deferred to preserve strict DIRTY-before-DATA
+      ordering across the entire flush. Used by node hot path.
 
     - ``defer_when="depth"`` — defer only while ``batch`` depth > 0 (not while
-      draining). Matches TS ``emitWithBatch`` / node hot path so nested work during
-      flush does not re-defer.
+      draining). Nested work during flush emits immediately. Use only when
+      re-deferral is explicitly unwanted.
 
     **Concurrency:** when *subgraph_lock* is the owning node (or any registry member
     in the same component), deferred phase-2 deliveries re-acquire

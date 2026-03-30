@@ -18,7 +18,7 @@ Single-source-of-truth strategy: **protocol spec lives in `~/src/graphrefly`**; 
 
 | Tier | What | Where it lives | Flows to |
 |------|------|----------------|----------|
-| **0 — Protocol spec** | `GRAPHREFLY-SPEC.md` | `~/src/graphrefly/` (canonical) | Both sites via `sync-docs.mjs` |
+| **0 — Protocol spec** | `~/src/graphrefly/GRAPHREFLY-SPEC.md` | `~/src/graphrefly/` repo (sibling checkout) | Both sites via `sync-docs.mjs` |
 | **1 — Docstrings** | Structured doc blocks on exports | `src/graphrefly/*.py` | Generated API pages via `website/scripts/gen_api_docs.py` (`extra/tier1.py`, `extra/tier2.py`, `extra/sources.py`, `extra/backoff.py`, `extra/checkpoint.py`, `extra/resilience.py`, `extra/data_structures.py`, …) → `website/src/content/docs/api/` |
 | **2 — Runnable examples** | Self-contained scripts using public imports | `examples/*.py` | Imported by recipes + demos |
 | **3 — Recipes / guides** | Long-form Starlight pages with context | `website/src/content/docs/recipes/` | Pull code from `examples/` |
@@ -46,7 +46,7 @@ cd website && pnpm sync-docs --check      # CI dry-run — exit 1 if stale
 
 | Source | Origin |
 |--------|--------|
-| `GRAPHREFLY-SPEC.md` | `~/src/graphrefly/` (shared spec repo) with fallback to `docs/` |
+| `~/src/graphrefly/GRAPHREFLY-SPEC.md` | `~/src/graphrefly/` repo only (no in-repo copy) |
 | `roadmap.md`, `optimizations.md`, etc. | `docs/` (this repo) |
 
 ---
@@ -123,7 +123,7 @@ To document a new public **function**, **class**, or PEP 695 **type** alias, add
 ## Style
 
 - Prefer **precise, testable statements** over marketing language.
-- Link to **`GRAPHREFLY-SPEC.md`** sections instead of copying large excerpts.
+- Link to **`~/src/graphrefly/GRAPHREFLY-SPEC.md`** sections instead of copying large excerpts.
 - Use **Markdown** headings consistently (`##` / `###`); one H1 per file at the top.
 - For message types and code identifiers, use the same names as the spec (`DATA`, `DIRTY`, `RESOLVED`, ...).
 
@@ -143,7 +143,6 @@ To document a new public **function**, **class**, or PEP 695 **type** alias, add
 | What | Where | Editable? |
 |------|-------|-----------|
 | Canonical spec | `~/src/graphrefly/GRAPHREFLY-SPEC.md` | Yes — coordinate across repos |
-| Local spec copy | `docs/GRAPHREFLY-SPEC.md` | Synced — prefer editing canonical |
 | Source of truth (docstrings) | `src/graphrefly/*.py` | Yes — primary edit target |
 | API doc generator | `website/scripts/gen_api_docs.py` | Yes — tier1 operators |
 | Generated API pages | `website/src/content/docs/api/*.md` | **No** — run `docs:gen` |

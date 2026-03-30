@@ -35,11 +35,13 @@ Deliver *messages* to *sink* with batch-aware phase-2 deferral.
 **Defer predicate** (when to queue DATA/RESOLVED instead of calling *sink*):
 
 - ``defer_when="batching"`` — defer while :func:`is_batching` (depth **or**
-  flush-in-progress). Matches historical ``dispatch_messages`` / nested-drain QA.
+  flush-in-progress). Matches TS ``emitWithBatch`` behavior: during drain,
+  further phase-2 emissions are re-deferred to preserve strict DIRTY-before-DATA
+  ordering across the entire flush. Used by node hot path.
 
 - ``defer_when="depth"`` — defer only while ``batch`` depth &gt; 0 (not while
-  draining). Matches TS ``emitWithBatch`` / node hot path so nested work during
-  flush does not re-defer.
+  draining). Nested work during flush emits immediately. Use only when
+  re-deferral is explicitly unwanted.
 
 **Concurrency:** when *subgraph_lock* is the owning node (or any registry member
 in the same component), deferred phase-2 deliveries re-acquire

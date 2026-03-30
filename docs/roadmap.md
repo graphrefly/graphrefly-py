@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Spec:** [GRAPHREFLY-SPEC.md](GRAPHREFLY-SPEC.md)
+> **Spec:** `~/src/graphrefly/GRAPHREFLY-SPEC.md` (canonical; not vendored in this repo)
 >
 > **Contributing docs:** [docs-guidance.md](docs-guidance.md), [test-guidance.md](test-guidance.md)
 >
@@ -15,7 +15,7 @@
 ### 0.1 — Project scaffold
 
 - [x] Repository setup: uv, mise, ruff, pytest, mypy
-- [x] `GRAPHREFLY-SPEC.md` in docs (done)
+- [x] Behavioral spec read from `~/src/graphrefly/GRAPHREFLY-SPEC.md` only (no `docs/` copy)
 - [x] Folder structure: `src/graphrefly/core/`, `src/graphrefly/extra/`, `src/graphrefly/graph/`
 - [x] Package config: `graphrefly-py` on PyPI, `graphrefly` import name
 

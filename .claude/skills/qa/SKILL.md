@@ -43,7 +43,7 @@ Classify each finding into:
 
 For **patch** and **defer**, prioritize:
 
-1. **Spec alignment** — behavior matches **`docs/GRAPHREFLY-SPEC.md`**
+1. **Spec alignment** — behavior matches **`~/src/graphrefly/GRAPHREFLY-SPEC.md`**
 2. **Semantic correctness** — message and lifecycle semantics
 3. **Thread safety** — GIL and free-threaded correctness where applicable
 4. **Completeness** — edge cases
@@ -93,7 +93,7 @@ If a failure implies a design question, **HALT** and ask the user before paperin
 Update documentation as appropriate:
 
 - **`docs/docs-guidance.md`** — if documentation *conventions* or generator commands change, update this file so `/qa` stays aligned
-- **`docs/GRAPHREFLY-SPEC.md`** — only if the user-owned spec change is part of this task (usually avoid; spec is shared with graphrefly-ts)
+- **`~/src/graphrefly/GRAPHREFLY-SPEC.md`** — only if the user-owned spec change is part of this task (usually avoid; spec is shared with graphrefly-ts)
 - **`docs/optimizations.md`** — when this review records **open architectural decisions** or cross-language parity notes; mirror substantive entries to **`graphrefly-ts/docs/optimizations.md`** if that repo is in the workspace
 - **`docs/roadmap.md`** — mark items done, add items if scope changed
 - **`docs/test-guidance.md`** — if new test patterns or file conventions were established

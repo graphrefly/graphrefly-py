@@ -21,7 +21,7 @@ Load context and plan the implementation in a single pass. **Parallelize all rea
 
 Read in parallel:
 
-- **`docs/GRAPHREFLY-SPEC.md`** — primary behavioral authority; read sections relevant to the task
+- **`~/src/graphrefly/GRAPHREFLY-SPEC.md`** — primary behavioral authority; read sections relevant to the task
 - **`docs/optimizations.md`** — built-in optimizations, cross-language notes, and **open design decisions** (read when touching protocol, batch, node lifecycle, or parity with graphrefly-ts)
 - **`docs/test-guidance.md`** — checklists for the layer you touch (protocol, node, graph, operators)
 - **`docs/roadmap.md`** — phase alignment and acceptance criteria (read for new features or scope questions)

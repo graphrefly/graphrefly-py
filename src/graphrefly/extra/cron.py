@@ -73,3 +73,6 @@ def matches_cron(schedule: CronSchedule, dt: datetime) -> bool:
         and dt.month in schedule.months
         and dt.isoweekday() % 7 in schedule.days_of_week
     )
+
+
+__all__ = ["CronSchedule", "matches_cron", "parse_cron"]
