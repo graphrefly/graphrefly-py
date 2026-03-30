@@ -21,3 +21,9 @@ The synchronous bridge: block until the first ``DATA`` or terminal ``ERROR``.
 
 On ``COMPLETE`` without prior ``DATA``, raises :class:`StopIteration`. With *timeout*,
 raises :class:`TimeoutError` if no terminal message arrives in time.
+
+## Cross-language note
+
+**Cross-language note:** Python exposes `first_value_from` as a synchronous blocking call.
+The TypeScript equivalent `firstValueFrom` returns a `Promise`.
+Both escape-hatch semantics are equivalent; the implementation differs due to language concurrency models.

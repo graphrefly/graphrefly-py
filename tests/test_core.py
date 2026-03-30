@@ -682,3 +682,40 @@ def test_meta_mapping_is_read_only() -> None:
     n = node(initial=0, meta={"k": 1})
     with pytest.raises(TypeError):
         n.meta["new"] = n.meta["k"]  # type: ignore[index]
+
+
+def test_terminal_blocks_later_data_when_not_resubscribable() -> None:
+    """After ERROR on a non-resubscribable node, no further DATA/DIRTY/RESOLVED reaches sink.
+
+    # Spec: GRAPHREFLY-SPEC §1.3.4
+    """
+    source = node(initial=0)
+    call_count = 0
+
+    def failing_fn(deps: list, _a: object) -> int:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("forced error")
+        return deps[0]
+
+    broken = node([source], failing_fn, resubscribable=False)
+    post_error: list[object] = []
+
+    def sink(msgs: list) -> None:
+        for m in msgs:
+            if m[0] in (MessageType.DATA, MessageType.DIRTY, MessageType.RESOLVED):
+                post_error.append(m[0])
+
+    unsub = broken.subscribe(sink)
+    # Trigger the first call → ERROR
+    source.down([(MessageType.DATA, 1)])
+    assert broken.status == "errored"
+    # Clear any messages collected before and during the error
+    post_error.clear()
+    # Push another value upstream — node is terminal and non-resubscribable
+    source.down([(MessageType.DATA, 2)])
+    assert post_error == [], (
+        "Received messages after ERROR on non-resubscribable node: " + str(post_error)
+    )
+    unsub()

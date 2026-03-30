@@ -36,7 +36,21 @@ class CheckpointAdapter(Protocol):
 
 
 class MemoryCheckpointAdapter:
-    """In-memory adapter (process-local; useful for tests)."""
+    """In-memory checkpoint adapter (process-local; useful for tests and embedding).
+
+    Stores a deep-copy of the snapshot so mutations to the saved dict do not
+    affect the stored state.
+
+    Example:
+        ```python
+        from graphrefly import Graph, state
+        from graphrefly.extra.checkpoint import MemoryCheckpointAdapter, save_graph_checkpoint
+        g = Graph("g"); g.add("x", state(1))
+        adapter = MemoryCheckpointAdapter()
+        save_graph_checkpoint(g, adapter)
+        assert adapter.load()["nodes"]["x"]["value"] == 1
+        ```
+    """
 
     __slots__ = ("_data",)
 
@@ -51,7 +65,23 @@ class MemoryCheckpointAdapter:
 
 
 class DictCheckpointAdapter:
-    """Store under a fixed key inside a caller-owned ``dict`` (tests / embedding)."""
+    """Store a checkpoint under a fixed key inside a caller-owned ``dict``.
+
+    Useful for tests or environments where you already manage a shared dict.
+
+    Args:
+        storage: The dict to store the checkpoint in.
+        key: Key under which the snapshot is stored (default ``"graphrefly_checkpoint"``).
+
+    Example:
+        ```python
+        from graphrefly.extra.checkpoint import DictCheckpointAdapter
+        store = {}
+        adapter = DictCheckpointAdapter(store)
+        adapter.save({"version": 1, "nodes": {}, "edges": [], "subgraphs": [], "name": "g"})
+        assert "graphrefly_checkpoint" in store
+        ```
+    """
 
     __slots__ = ("_key", "_storage")
 
@@ -68,7 +98,26 @@ class DictCheckpointAdapter:
 
 
 class FileCheckpointAdapter:
-    """Atomic JSON file persistence (write temp + replace)."""
+    """Persist checkpoint data as JSON to a file using atomic write-then-replace.
+
+    Writes to a temporary file in the same directory, then renames it over the
+    target path to avoid partial writes.
+
+    Args:
+        path: Destination file path (``str`` or :class:`pathlib.Path`).
+
+    Example:
+        ```python
+        import tempfile, os
+        from graphrefly.extra.checkpoint import FileCheckpointAdapter
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            tmp = f.name
+        adapter = FileCheckpointAdapter(tmp)
+        adapter.save({"version": 1, "nodes": {}, "edges": [], "subgraphs": [], "name": "g"})
+        assert os.path.exists(tmp)
+        os.unlink(tmp)
+        ```
+    """
 
     __slots__ = ("_path",)
 
@@ -108,9 +157,26 @@ def _stable_snapshot_json(data: dict[str, Any]) -> str:
 
 
 class SqliteCheckpointAdapter:
-    """Persist one JSON blob under a fixed key using :mod:`sqlite3` (stdlib, zero deps).
+    """Persist one checkpoint blob under a fixed key using :mod:`sqlite3` (stdlib, zero deps).
 
-    Call :meth:`close` when discarding the adapter.
+    Uses a single-row table. Call :meth:`close` when the adapter is no longer needed.
+
+    Args:
+        path: Path to the SQLite database file (``str`` or :class:`pathlib.Path`).
+        key: Row key for the checkpoint (default ``"graphrefly_checkpoint"``).
+
+    Example:
+        ```python
+        import tempfile, os
+        from graphrefly.extra.checkpoint import SqliteCheckpointAdapter
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            tmp = f.name
+        adapter = SqliteCheckpointAdapter(tmp)
+        adapter.save({"version": 1, "nodes": {}, "edges": [], "subgraphs": [], "name": "g"})
+        assert adapter.load()["version"] == 1
+        adapter.close()
+        os.unlink(tmp)
+        ```
     """
 
     __slots__ = ("_conn", "_key")
@@ -159,14 +225,49 @@ def _check_json_serializable(data: dict[str, Any]) -> None:
 
 
 def save_graph_checkpoint(graph: Graph, adapter: CheckpointAdapter) -> None:
-    """Persist :meth:`~graphrefly.graph.Graph.snapshot`."""
+    """Persist a :meth:`~graphrefly.graph.Graph.snapshot` via a :class:`CheckpointAdapter`.
+
+    Args:
+        graph: The :class:`~graphrefly.graph.Graph` to snapshot.
+        adapter: Any :class:`CheckpointAdapter` (memory, file, SQLite, etc.).
+
+    Example:
+        ```python
+        from graphrefly import Graph, state
+        from graphrefly.extra.checkpoint import MemoryCheckpointAdapter, save_graph_checkpoint
+        g = Graph("g"); g.add("x", state(5))
+        adapter = MemoryCheckpointAdapter()
+        save_graph_checkpoint(g, adapter)
+        ```
+    """
     snap = graph.snapshot()
     _check_json_serializable(snap)
     adapter.save(snap)
 
 
 def restore_graph_checkpoint(graph: Graph, adapter: CheckpointAdapter) -> bool:
-    """Load a snapshot via :meth:`~graphrefly.graph.Graph.restore`; return whether data existed."""
+    """Load a snapshot from *adapter* and apply it to *graph* via :meth:`~graphrefly.graph.Graph.restore`.
+
+    Args:
+        graph: The target :class:`~graphrefly.graph.Graph`.
+        adapter: Any :class:`CheckpointAdapter` to load from.
+
+    Returns:
+        ``True`` if snapshot data existed and was applied; ``False`` if the adapter
+        had no saved data.
+
+    Example:
+        ```python
+        from graphrefly import Graph, state
+        from graphrefly.extra.checkpoint import MemoryCheckpointAdapter, save_graph_checkpoint, restore_graph_checkpoint
+        g = Graph("g"); x = state(0); g.add("x", x)
+        adapter = MemoryCheckpointAdapter()
+        save_graph_checkpoint(g, adapter)
+        x.down([("DATA", 99)])
+        restored = restore_graph_checkpoint(g, adapter)
+        assert restored and g.get("x") == 0
+        ```
+    """
     data = adapter.load()
     if data is None:
         return False
@@ -175,7 +276,26 @@ def restore_graph_checkpoint(graph: Graph, adapter: CheckpointAdapter) -> bool:
 
 
 def checkpoint_node_value(node: Node[Any]) -> dict[str, Any]:
-    """Minimal JSON-shaped payload for a single node's last value (for custom adapters)."""
+    """Build a minimal versioned JSON payload for a single node's last cached value.
+
+    Useful for custom adapters that persist individual nodes rather than whole
+    graph snapshots. Emits a warning when the value is not JSON-serializable.
+
+    Args:
+        node: Any :class:`~graphrefly.core.node.Node` whose ``get()`` value to capture.
+
+    Returns:
+        A ``dict`` with ``version`` (``1``) and ``value`` keys.
+
+    Example:
+        ```python
+        from graphrefly import state
+        from graphrefly.extra.checkpoint import checkpoint_node_value
+        x = state(42)
+        payload = checkpoint_node_value(x)
+        assert payload == {"version": 1, "value": 42}
+        ```
+    """
     result: dict[str, Any] = {"version": 1, "value": node.get()}
     _check_json_serializable(result)
     return result

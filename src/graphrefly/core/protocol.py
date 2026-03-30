@@ -158,20 +158,28 @@ def _should_defer_phase2(bs: _BatchState, defer_when: DeferWhen) -> bool:
 def batch() -> Generator[None]:
     """Defer phase-2 messages (DATA, RESOLVED) until the outermost batch exits.
 
-    DIRTY and non-phase-2 types propagate immediately. Nested batches share one
-    defer queue; flush runs only when the outermost context exits.
+    ``DIRTY`` and non-phase-2 types propagate immediately. Nested batches share
+    one defer queue; flush runs only when the outermost context exits. Each
+    thread has isolated batch state (GRAPHREFLY-SPEC §4.2).
 
-    If the outermost context exits with an exception, deferred phase-2 work for
-    that frame is discarded — phase-2 is not flushed after an error. While the
-    drain loop is running (``flush_in_progress``), a nested ``batch()`` that
-    throws must **not** clear the global queue (cross-language decision A4;
-    matches graphrefly-ts ``batch``).
+    If the outermost context exits with an exception, deferred phase-2 work is
+    discarded. While the drain loop is running (``flush_in_progress``), nested
+    :func:`emit_with_batch` calls with ``defer_when="batching"`` still defer
+    ``DATA``/``RESOLVED`` until the queue drains.
 
-    Each thread has isolated batch state (GRAPHREFLY-SPEC § 4.2).
+    Returns:
+        A context manager that yields ``None``; has no return value.
 
-    While deferred work is running, :func:`is_batching` remains true so nested
-    :func:`emit_with_batch` calls (``defer_when="batching"``) still defer
-    DATA/RESOLVED until the queue drains.
+    Example:
+        ```python
+        from graphrefly import state, batch
+        x = state(0)
+        y = state(0)
+        with batch():
+            x.down([("DATA", 1)])
+            y.down([("DATA", 2)])
+        # Downstream sees both updates atomically
+        ```
     """
     bs = _batch_state()
     bs.depth += 1
@@ -188,7 +196,19 @@ def batch() -> Generator[None]:
 
 
 def is_batching() -> bool:
-    """True while inside ``batch()`` *or* while deferred phase-2 work is draining."""
+    """Return True while inside ``batch()`` or while deferred phase-2 work is draining.
+
+    Returns:
+        ``True`` when batch depth > 0 or the drain loop is active.
+
+    Example:
+        ```python
+        from graphrefly import batch, is_batching
+        assert not is_batching()
+        with batch():
+            assert is_batching()
+        ```
+    """
     bs = _batch_state()
     return bs.depth > 0 or bs.flush_in_progress
 
@@ -264,31 +284,28 @@ def emit_with_batch(
 ) -> None:
     """Deliver *messages* to *sink* with batch-aware phase-2 deferral.
 
-    **Strategies** (single implementation; see ``docs/optimizations.md``):
+    Args:
+        sink: Callable receiving a :class:`~graphrefly.core.protocol.Messages` list.
+        messages: The messages to deliver.
+        strategy: ``"partition"`` (default for :class:`~graphrefly.core.node.NodeImpl`)
+            splits messages into immediate vs phase-2 groups; ``"sequential"`` walks
+            each message in order and handles ``COMPLETE``/``ERROR`` after phase-2.
+        defer_when: ``"batching"`` (default) defers phase-2 while
+            :func:`is_batching` (depth or drain in progress); ``"depth"`` defers
+            only while batch depth > 0.
+        subgraph_lock: When set, re-acquires the subgraph write lock around deferred
+            phase-2 calls to serialize batch drains with other writers.
 
-    - ``strategy="partition"`` — graphrefly-ts ``emitWithBatch``: split the array
-      into immediate vs phase-2 groups; emit immediate once, then defer or emit
-      the phase-2 block. Used by :class:`~graphrefly.core.node.NodeImpl` ``down``.
-
-    - ``strategy="sequential"`` — walk tuples in order; each COMPLETE/ERROR drains
-      pending phase-2 first (spec §1.3 #4). Used by tests and low-level protocol
-      helpers.
-
-    **Defer predicate** (when to queue DATA/RESOLVED instead of calling *sink*):
-
-    - ``defer_when="batching"`` — defer while :func:`is_batching` (depth **or**
-      flush-in-progress). Matches TS ``emitWithBatch`` behavior: during drain,
-      further phase-2 emissions are re-deferred to preserve strict DIRTY-before-DATA
-      ordering across the entire flush. Used by node hot path.
-
-    - ``defer_when="depth"`` — defer only while ``batch`` depth > 0 (not while
-      draining). Nested work during flush emits immediately. Use only when
-      re-deferral is explicitly unwanted.
-
-    **Concurrency:** when *subgraph_lock* is the owning node (or any registry member
-    in the same component), deferred phase-2 deliveries re-acquire
-    :func:`~graphrefly.core.subgraph_locks.acquire_subgraph_write_lock_with_defer`
-    around the sink call so batch drains stay serialized with other writers (roadmap 0.4).
+    Example:
+        ```python
+        from graphrefly.core.protocol import emit_with_batch, MessageType, batch
+        received = []
+        sink = lambda msgs: received.extend(msgs)
+        with batch():
+            emit_with_batch(sink, [("DATA", 1), ("DATA", 2)])
+        # Both DATA messages flushed together after batch exits
+        assert len(received) == 2
+        ```
     """
     if not messages:
         return

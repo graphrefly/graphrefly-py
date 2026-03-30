@@ -27,7 +27,22 @@ def _msg_val(m: tuple[Any, ...]) -> Any:
 
 
 def of(*values: Any) -> Node[Any]:
-    """Emit each argument as ``DATA`` in order, then ``COMPLETE`` (cold on subscribe)."""
+    """Emit each argument as ``DATA`` in order, then ``COMPLETE`` on subscribe.
+
+    Args:
+        *values: Values to emit sequentially as ``DATA`` messages.
+
+    Returns:
+        A cold :class:`~graphrefly.core.node.Node` that completes after emitting all values.
+
+    Example:
+        ```python
+        from graphrefly.extra import of
+        from graphrefly.extra.sources import first_value_from
+        n = of(1, 2, 3)
+        assert first_value_from(n) == 1
+        ```
+    """
 
     def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
         try:
@@ -42,7 +57,18 @@ def of(*values: Any) -> Node[Any]:
 
 
 def empty() -> Node[Any]:
-    """Emit ``COMPLETE`` immediately when the first sink subscribes."""
+    """Emit ``COMPLETE`` immediately when the first sink subscribes.
+
+    Returns:
+        A :class:`~graphrefly.core.node.Node` that completes with no ``DATA``.
+
+    Example:
+        ```python
+        from graphrefly.extra import empty
+        from graphrefly.extra.sources import to_list
+        assert to_list(empty()) == []
+        ```
+    """
 
     def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
         actions.down([(MessageType.COMPLETE,)])
@@ -52,7 +78,19 @@ def empty() -> Node[Any]:
 
 
 def never() -> Node[Any]:
-    """Subscribe connects a no-op producer; no ``DATA`` or ``COMPLETE``."""
+    """Create a source that never emits any messages.
+
+    Returns:
+        A :class:`~graphrefly.core.node.Node` whose producer is a no-op
+        (no ``DATA``, no ``COMPLETE``).
+
+    Example:
+        ```python
+        from graphrefly.extra import never
+        n = never()
+        # n.get() is None; no DATA will ever arrive
+        ```
+    """
 
     def start(_deps: list[Any], _actions: NodeActions) -> Callable[[], None]:
         return lambda: None
@@ -61,7 +99,25 @@ def never() -> Node[Any]:
 
 
 def throw_error(error: BaseException | Any) -> Node[Any]:
-    """Emit a single ``ERROR`` with *error* when the first sink subscribes."""
+    """Emit a single ``ERROR`` message when the first sink subscribes.
+
+    Args:
+        error: The exception or value to send as the ``ERROR`` payload.
+
+    Returns:
+        A :class:`~graphrefly.core.node.Node` that immediately errors on subscribe.
+
+    Example:
+        ```python
+        from graphrefly.extra import throw_error
+        n = throw_error(ValueError("bad"))
+        try:
+            from graphrefly.extra.sources import first_value_from
+            first_value_from(n)
+        except ValueError:
+            pass
+        ```
+    """
 
     def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
         actions.down([(MessageType.ERROR, error)])
@@ -74,9 +130,22 @@ def throw_error(error: BaseException | Any) -> Node[Any]:
 
 
 def from_iter(iterable: Iterable[Any]) -> Node[Any]:
-    """Drain a synchronous *iterable* on subscribe: one ``DATA`` per item, then ``COMPLETE``.
+    """Drain a synchronous iterable on subscribe, emitting one ``DATA`` per item then ``COMPLETE``.
 
-    If iteration raises, the producer emits ``ERROR`` and stops.
+    If iteration raises an exception, the producer emits ``ERROR`` and stops.
+
+    Args:
+        iterable: Any synchronous iterable (list, generator, etc.).
+
+    Returns:
+        A cold :class:`~graphrefly.core.node.Node` that completes after the iterable is drained.
+
+    Example:
+        ```python
+        from graphrefly.extra import from_iter
+        from graphrefly.extra.sources import to_list
+        assert to_list(from_iter([1, 2, 3])) == [1, 2, 3]
+        ```
     """
 
     def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
@@ -97,11 +166,27 @@ def from_timer(
     *,
     first: int = 0,
 ) -> Node[Any]:
-    """Like Rx ``timer``: after *delay* seconds emit *first*, then optionally tick forever.
+    """Emit a value after a delay, then optionally tick at a fixed period (like Rx ``timer``).
 
-    If *period* is ``None``, emit once (value *first*) and ``COMPLETE``.
-    If *period* is set, emit *first*, then *first+1*, *first+2*, … every *period* seconds
-    (same counter shape as :func:`~graphrefly.extra.tier2.interval`).
+    If *period* is ``None``, emit *first* once then ``COMPLETE``. If *period* is
+    set, emit *first*, *first+1*, *first+2*, … every *period* seconds. Timer
+    threads are daemonized and cancelled on unsubscribe.
+
+    Args:
+        delay: Seconds to wait before the first emission (must be >= 0).
+        period: Optional repeat interval in seconds (``None`` = one-shot).
+        first: Integer value for the first emission (default ``0``).
+
+    Returns:
+        A :class:`~graphrefly.core.node.Node` that emits on a timer thread.
+
+    Example:
+        ```python
+        from graphrefly.extra import from_timer
+        from graphrefly.extra.sources import first_value_from
+        n = from_timer(0.001)
+        assert first_value_from(n) == 0
+        ```
     """
 
     if delay < 0 or (period is not None and period < 0):
@@ -296,12 +381,28 @@ def from_async_iter(aiterable: AsyncIterable[Any]) -> Node[Any]:
 
 
 def from_any(value: Any) -> Node[Any]:
-    """Coerce *value* into a single-root :class:`~graphrefly.core.node.Node`.
+    """Coerce a value into a :class:`~graphrefly.core.node.Node` using the best matching source.
 
-    - Existing :class:`~graphrefly.core.node.Node` → returned as-is
-    - :class:`collections.abc.AsyncIterable` / async iterator → :func:`from_async_iter`
-    - Awaitable / :class:`asyncio.Future` / coroutine → :func:`from_awaitable`
-    - Otherwise → :func:`from_iter` if ``iter(value)`` works (including ``str``), else :func:`of`
+    Dispatch rules:
+
+    - Existing :class:`~graphrefly.core.node.Node` → returned as-is.
+    - :class:`collections.abc.AsyncIterable` / async iterator → :func:`from_async_iter`.
+    - Awaitable / :class:`asyncio.Future` / coroutine → :func:`from_awaitable`.
+    - Otherwise tries ``iter(value)``; if that fails uses :func:`of`.
+
+    Args:
+        value: Any value to coerce.
+
+    Returns:
+        A :class:`~graphrefly.core.node.Node` wrapping *value*.
+
+    Example:
+        ```python
+        from graphrefly.extra.sources import from_any
+        n = from_any([1, 2, 3])
+        from graphrefly.extra.sources import to_list
+        assert to_list(n) == [1, 2, 3]
+        ```
     """
     if isinstance(value, Node):
         return value
@@ -325,11 +426,28 @@ def for_each(
     *,
     on_error: Callable[[BaseException], None] | None = None,
 ) -> Callable[[], None]:
-    """Subscribe to *source* and invoke ``fn(value)`` for each ``DATA``.
+    """Subscribe to *source* and invoke ``fn(value)`` for each ``DATA`` message.
 
-    Returns an unsubscribe callable. Prefer ``on_error`` for ``ERROR`` handling; the default
-    path raises the error from inside the sink and may not always propagate through
-    :meth:`~graphrefly.core.node.Node.subscribe` when ``thread_safe`` is enabled.
+    Args:
+        source: The node to subscribe to.
+        fn: Callback invoked with each ``DATA`` payload.
+        on_error: Optional callback invoked when an ``ERROR`` is received. If
+            omitted, the error is re-raised from inside the sink.
+
+    Returns:
+        An unsubscribe callable; call it to detach.
+
+    Example:
+        ```python
+        from graphrefly import state
+        from graphrefly.extra.sources import for_each
+        x = state(0)
+        log = []
+        unsub = for_each(x, log.append)
+        x.down([("DATA", 7)])
+        unsub()
+        assert log == [7]
+        ```
     """
 
     def sink(msgs: Messages) -> None:
@@ -358,10 +476,22 @@ def to_list(
     *,
     timeout: float | None = None,
 ) -> list[Any]:
-    """Block until ``COMPLETE`` or ``ERROR``, collecting ``DATA`` payloads in order.
+    """Block until ``COMPLETE`` or ``ERROR``, collecting all ``DATA`` payloads in order.
 
-    Uses an internal subscribe + :class:`threading.Event`. On ``ERROR``, raises the error
-    payload if it is a :class:`BaseException`, otherwise ``RuntimeError``.
+    Args:
+        source: The node to collect from.
+        timeout: Optional timeout in seconds; raises :exc:`TimeoutError` if
+            ``COMPLETE`` does not arrive in time.
+
+    Returns:
+        A list of ``DATA`` payloads in emission order.
+
+    Example:
+        ```python
+        from graphrefly.extra import of
+        from graphrefly.extra.sources import to_list
+        assert to_list(of(1, 2, 3)) == [1, 2, 3]
+        ```
     """
     out: list[Any] = []
     done = threading.Event()
@@ -401,10 +531,29 @@ def first_value_from(
     *,
     timeout: float | None = None,
 ) -> Any:
-    """The synchronous bridge: block until the first ``DATA`` or terminal ``ERROR``.
+    """Block until the first ``DATA`` value or a terminal ``ERROR`` arrives.
 
-    On ``COMPLETE`` without prior ``DATA``, raises :class:`StopIteration`. With *timeout*,
-    raises :class:`TimeoutError` if no terminal message arrives in time.
+    On ``COMPLETE`` without prior ``DATA``, raises :exc:`StopIteration`. With
+    *timeout*, raises :exc:`TimeoutError` if no terminal message arrives in time.
+
+    Args:
+        source: The node to await the first value from.
+        timeout: Optional timeout in seconds.
+
+    Returns:
+        The first ``DATA`` payload received.
+
+    Notes:
+        Python exposes this as a synchronous blocking call. The TypeScript equivalent
+        ``firstValueFrom`` returns a ``Promise``; both provide the same escape-hatch
+        semantics with implementation differences due to language concurrency models.
+
+    Example:
+        ```python
+        from graphrefly.extra import of
+        from graphrefly.extra.sources import first_value_from
+        assert first_value_from(of(42)) == 42
+        ```
     """
     got: list[Any | None] = [None]
     err_box: list[BaseException | Any | None] = [None]
@@ -450,7 +599,27 @@ def first_value_from(
 
 
 def share[T](source: Node[T]) -> Node[T]:
-    """Share one upstream subscription across all sinks of the returned node (ref-counted)."""
+    """Share one upstream subscription across all downstream sinks (ref-counted).
+
+    Args:
+        source: The upstream node to multicast.
+
+    Returns:
+        A new :class:`~graphrefly.core.node.Node` that connects to *source* once
+        and ref-counts downstream subscriptions.
+
+    Example:
+        ```python
+        from graphrefly import state
+        from graphrefly.extra.sources import share, for_each
+        x = state(0)
+        s = share(x)
+        log = []
+        unsub = for_each(s, log.append)
+        x.down([("DATA", 1)])
+        unsub()
+        ```
+    """
     return node([source], describe_kind="share", initial=source.get())
 
 
@@ -495,7 +664,30 @@ class _ReplayNode[T](Node[T]):
 
 
 def replay[T](source: Node[T], buffer_size: int = 1) -> Node[T]:
-    """Multicast with late-subscriber replay of last *buffer_size* DATA payloads."""
+    """Multicast with late-subscriber replay of the last *buffer_size* ``DATA`` payloads.
+
+    Args:
+        source: The upstream node to multicast.
+        buffer_size: Number of ``DATA`` payloads to buffer for late joiners (>= 1).
+
+    Returns:
+        A :class:`~graphrefly.core.node.Node` that replays buffered values to
+        each new subscriber before connecting the live stream.
+
+    Example:
+        ```python
+        from graphrefly import state
+        from graphrefly.extra.sources import replay, for_each
+        x = state(0)
+        r = replay(x, buffer_size=2)
+        x.down([("DATA", 1)])
+        x.down([("DATA", 2)])
+        received = []
+        unsub = for_each(r, received.append)
+        # received includes replayed values 1 and 2
+        unsub()
+        ```
+    """
     if buffer_size < 1:
         msg = "buffer_size must be >= 1"
         raise ValueError(msg)

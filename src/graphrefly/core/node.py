@@ -145,6 +145,22 @@ type NodeFn = Callable[[list[Any], NodeActions], Any]
 
 
 class SubscribeHints:
+    """Hints passed to :meth:`~graphrefly.core.node.NodeImpl.subscribe` to enable optimizations.
+
+    Args:
+        single_dep: When ``True``, the subscribing node has exactly one dependency,
+            enabling the single-dep fast path that skips redundant ``DIRTY`` messages.
+
+    Example:
+        ```python
+        from graphrefly import state
+        from graphrefly.core.node import SubscribeHints
+        x = state(1)
+        hints = SubscribeHints(single_dep=True)
+        unsub = x.subscribe(lambda msgs: None, hints)
+        ```
+    """
+
     __slots__ = ("single_dep",)
 
     def __init__(self, *, single_dep: bool = False) -> None:
@@ -816,7 +832,36 @@ def node(
     opts_arg: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> NodeImpl[Any]:
-    """Create a reactive node (graphrefly-ts ``node`` overloads)."""
+    """Create a reactive node (mirrors graphrefly-ts ``node`` overloads).
+
+    Accepts multiple call signatures::
+
+        node()                           # no-dep, no-fn source
+        node(fn)                         # producer (no deps)
+        node([dep1, dep2], fn)           # derived / operator
+        node([dep1], fn, {"name": ...})  # with options dict
+        node(name="x", initial=0)        # kwargs shorthand
+
+    Args:
+        deps_or_fn: Either a sequence of upstream :class:`NodeImpl` dependencies,
+            a bare compute function (producer), an options dict, or ``None``.
+        fn_or_opts: Compute function (when ``deps_or_fn`` is a dep list) or an
+            options dict.
+        opts_arg: Additional options dict when both deps and fn are provided
+            positionally.
+        **kwargs: Any option key accepted by :class:`NodeImpl` (e.g. ``name``,
+            ``initial``, ``equals``, ``guard``, ``thread_safe``).
+
+    Returns:
+        A new :class:`NodeImpl` instance.
+
+    Example:
+        ```python
+        from graphrefly import node, state
+        x = state(0)
+        doubled = node([x], lambda deps, _: deps[0] * 2, name="doubled")
+        ```
+    """
     opts: dict[str, Any] = {**kwargs}
     deps: list[NodeImpl[Any]] = []
     fn: NodeFn | None = None

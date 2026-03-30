@@ -14,6 +14,26 @@ if TYPE_CHECKING:
 
 @dataclass
 class CronSchedule:
+    """Parsed representation of a 5-field cron expression.
+
+    Produced by :func:`parse_cron`; consumed by :func:`matches_cron`.
+
+    Attributes:
+        minutes: Set of matching minute values (0–59).
+        hours: Set of matching hour values (0–23).
+        days_of_month: Set of matching day-of-month values (1–31).
+        months: Set of matching month values (1–12).
+        days_of_week: Set of matching day-of-week values (0–6, where 0 = Sunday).
+
+    Example:
+        ```python
+        from graphrefly.extra.cron import parse_cron
+        schedule = parse_cron("0 9 * * 1")
+        assert 0 in schedule.minutes
+        assert 9 in schedule.hours
+        ```
+    """
+
     minutes: set[int] = field(default_factory=set)
     hours: set[int] = field(default_factory=set)
     days_of_month: set[int] = field(default_factory=set)
@@ -50,7 +70,25 @@ def _parse_field(field_str: str, min_val: int, max_val: int) -> set[int]:
 
 
 def parse_cron(expr: str) -> CronSchedule:
-    """Parse a standard 5-field cron expression."""
+    """Parse a standard 5-field cron expression into a :class:`CronSchedule`.
+
+    Supports ``*``, ranges (``1-5``), steps (``*/2``), and comma-separated lists.
+    Fields are: minute hour day-of-month month day-of-week.
+
+    Args:
+        expr: A cron expression string with exactly 5 whitespace-separated fields.
+
+    Returns:
+        A :class:`CronSchedule` with the parsed field sets.
+
+    Example:
+        ```python
+        from graphrefly.extra.cron import parse_cron
+        s = parse_cron("0 9 * * 1-5")
+        assert 9 in s.hours
+        assert 0 not in s.days_of_week  # Sunday excluded
+        ```
+    """
     parts = expr.strip().split()
     if len(parts) != 5:  # noqa: PLR2004
         msg = f"Invalid cron: expected 5 fields, got {len(parts)}"
@@ -65,7 +103,24 @@ def parse_cron(expr: str) -> CronSchedule:
 
 
 def matches_cron(schedule: CronSchedule, dt: datetime) -> bool:
-    """True if dt matches every field of schedule."""
+    """Return True when *dt* satisfies every field of *schedule*.
+
+    Args:
+        schedule: A :class:`CronSchedule` produced by :func:`parse_cron`.
+        dt: A :class:`datetime.datetime` to test.
+
+    Returns:
+        ``True`` if minute, hour, day-of-month, month, and day-of-week all match.
+
+    Example:
+        ```python
+        from datetime import datetime
+        from graphrefly.extra.cron import parse_cron, matches_cron
+        s = parse_cron("30 8 * * *")
+        dt = datetime(2025, 1, 1, 8, 30)
+        assert matches_cron(s, dt)
+        ```
+    """
     return (
         dt.minute in schedule.minutes
         and dt.hour in schedule.hours

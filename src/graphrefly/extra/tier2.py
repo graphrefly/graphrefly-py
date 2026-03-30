@@ -129,6 +129,15 @@ def switch_map(
 
     Returns:
         A unary pipe operator ``(Node) -> Node``.
+
+    Example:
+        ```python
+        from graphrefly import state, pipe
+        from graphrefly.extra.tier2 import switch_map
+        from graphrefly.extra import of
+        src = state(1)
+        out = pipe(src, switch_map(lambda v: of(v * 10)))
+        ```
     """
 
     has_initial = initial is not _UNSET
@@ -212,7 +221,16 @@ def concat_map(
         max_buffer: Maximum queued outer keys (``0`` = unlimited).
 
     Returns:
-        A unary pipe operator.
+        A unary pipe operator ``(Node) -> Node``.
+
+    Example:
+        ```python
+        from graphrefly import state, pipe
+        from graphrefly.extra.tier2 import concat_map
+        from graphrefly.extra import of
+        src = state(1)
+        out = pipe(src, concat_map(lambda v: of(v, v + 1)))
+        ```
     """
 
     has_initial = initial is not _UNSET
@@ -310,7 +328,16 @@ def flat_map(
             complete.
 
     Returns:
-        A unary pipe operator.
+        A unary pipe operator ``(Node) -> Node``.
+
+    Example:
+        ```python
+        from graphrefly import state, pipe
+        from graphrefly.extra.tier2 import flat_map
+        from graphrefly.extra import of
+        src = state(1)
+        out = pipe(src, flat_map(lambda v: of(v * 2)))
+        ```
     """
 
     has_initial = initial is not _UNSET
@@ -412,7 +439,16 @@ def exhaust_map(fn: Callable[[Any], Any], *, initial: Any = _UNSET) -> PipeOpera
         initial: Optional initial ``get()`` value.
 
     Returns:
-        A unary pipe operator.
+        A unary pipe operator ``(Node) -> Node``.
+
+    Example:
+        ```python
+        from graphrefly import state, pipe
+        from graphrefly.extra.tier2 import exhaust_map
+        from graphrefly.extra import of
+        src = state(1)
+        out = pipe(src, exhaust_map(lambda v: of(v)))
+        ```
     """
 
     has_initial = initial is not _UNSET
@@ -488,6 +524,20 @@ def debounce(seconds: float) -> PipeOperator:
     """Emit the latest upstream ``DATA`` only after ``seconds`` of silence; flush on ``COMPLETE``.
 
     Timer is cancelled on upstream ``ERROR`` or unsubscribe.
+
+    Args:
+        seconds: Silence window in seconds; timer resets on each upstream ``DATA``.
+
+    Returns:
+        A unary pipe operator ``(Node) -> Node``.
+
+    Example:
+        ```python
+        from graphrefly import state, pipe
+        from graphrefly.extra.tier2 import debounce
+        src = state(0)
+        out = pipe(src, debounce(0.05))
+        ```
     """
 
     def _op(src: Node[Any]) -> Node[Any]:
@@ -554,12 +604,23 @@ def debounce(seconds: float) -> PipeOperator:
 
 
 def throttle(seconds: float, *, leading: bool = True, trailing: bool = False) -> PipeOperator:
-    """Rate-limit: at most one emit per ``seconds`` window.
+    """Rate-limit: emit at most one ``DATA`` per ``seconds`` window.
 
     Args:
         seconds: Window length in seconds.
-        leading: Whether to emit the first value at the start of each window (default ``True``).
-        trailing: Whether to emit the latest suppressed value when the window closes.
+        leading: Emit the first value at the window start (default ``True``).
+        trailing: Emit the latest suppressed value when the window closes.
+
+    Returns:
+        A unary pipe operator ``(Node) -> Node``.
+
+    Example:
+        ```python
+        from graphrefly import state, pipe
+        from graphrefly.extra.tier2 import throttle
+        src = state(0)
+        out = pipe(src, throttle(0.1))
+        ```
     """
 
     def _op(src: Node[Any]) -> Node[Any]:
@@ -630,11 +691,25 @@ def throttle(seconds: float, *, leading: bool = True, trailing: bool = False) ->
 
 
 def sample(notifier: Node[Any]) -> PipeOperator:
-    """Emit the primary's latest ``get()`` whenever ``notifier`` settles with ``DATA``.
+    """Emit the primary's latest value whenever ``notifier`` settles with ``DATA``.
 
-    Uses a two-dep node ``[source, notifier]`` with ``on_message`` — matches TS
-    ``sample`` architecture. Source messages (index 0) are swallowed; notifier
-    ``DATA`` (index 1) triggers ``src.get()`` emission.
+    Source messages are intercepted via ``on_message``; only notifier ``DATA``
+    (dep index 1) triggers ``src.get()`` emission. Matches TS ``sample`` architecture.
+
+    Args:
+        notifier: Node whose ``DATA`` triggers sampling of the primary's latest value.
+
+    Returns:
+        A unary pipe operator ``(Node) -> Node``.
+
+    Example:
+        ```python
+        from graphrefly import state, pipe
+        from graphrefly.extra.tier2 import sample
+        src = state(0)
+        tick = state(None)
+        out = pipe(src, sample(tick))
+        ```
     """
 
     def _op(src: Node[Any]) -> Node[Any]:
@@ -668,10 +743,24 @@ def sample(notifier: Node[Any]) -> PipeOperator:
 
 
 def audit(seconds: float) -> PipeOperator:
-    """Trailing-only window: after each ``DATA``, wait ``seconds``, then emit the latest value.
+    """Emit the latest upstream value after ``seconds`` of trailing silence (Rx ``auditTime``).
 
     Each ``DATA`` stores the latest value and restarts the timer. When the timer fires,
-    the stored value is emitted. No leading-edge emission (Rx ``auditTime`` semantics).
+    the stored value is emitted. No leading-edge emission.
+
+    Args:
+        seconds: Trailing window duration in seconds.
+
+    Returns:
+        A unary pipe operator ``(Node) -> Node``.
+
+    Example:
+        ```python
+        from graphrefly import state, pipe
+        from graphrefly.extra.tier2 import audit
+        src = state(0)
+        out = pipe(src, audit(0.05))
+        ```
     """
 
     def _op(src: Node[Any]) -> Node[Any]:
@@ -732,7 +821,22 @@ def audit(seconds: float) -> PipeOperator:
 
 
 def delay(seconds: float) -> PipeOperator:
-    """Delay each ``DATA`` by ``seconds`` (one timer per pending value, FIFO)."""
+    """Delay each ``DATA`` message by ``seconds`` (one timer per pending value, FIFO order).
+
+    Args:
+        seconds: Delay in seconds applied to each ``DATA`` message.
+
+    Returns:
+        A unary pipe operator ``(Node) -> Node``.
+
+    Example:
+        ```python
+        from graphrefly import state, pipe
+        from graphrefly.extra.tier2 import delay
+        src = state(0)
+        out = pipe(src, delay(0.01))
+        ```
+    """
 
     def _op(src: Node[Any]) -> Node[Any]:
         def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
@@ -783,9 +887,28 @@ def delay(seconds: float) -> PipeOperator:
 
 
 def timeout(seconds: float, *, error: BaseException | None = None) -> PipeOperator:
-    """Emit ``ERROR`` if no ``DATA`` within ``seconds`` after subscribe or last ``DATA``.
+    """Emit ``ERROR`` if no ``DATA`` arrives within ``seconds`` after subscribe or last ``DATA``.
 
     Timer resets on each ``DATA``; unsubscribe cancels the watchdog.
+
+    Args:
+        seconds: Timeout window in seconds.
+        error: Exception to send as the ``ERROR`` payload (default: :exc:`TimeoutError`).
+
+    Returns:
+        A unary pipe operator ``(Node) -> Node``.
+
+    Example:
+        ```python
+        from graphrefly.extra.tier2 import timeout
+        from graphrefly.extra import never
+        from graphrefly.extra.sources import first_value_from
+        n = timeout(0.001)(never())
+        try:
+            first_value_from(n)
+        except Exception:
+            pass
+        ```
     """
 
     err = error if error is not None else TimeoutError("timeout")
@@ -853,7 +976,23 @@ def timeout(seconds: float, *, error: BaseException | None = None) -> PipeOperat
 
 
 def buffer(notifier: Node[Any]) -> PipeOperator:
-    """Collect ``DATA`` values in a list; emit that list when ``notifier`` emits ``DATA``."""
+    """Collect ``DATA`` values in a buffer; emit the list when ``notifier`` emits ``DATA``.
+
+    Args:
+        notifier: Node whose ``DATA`` flushes the accumulated buffer.
+
+    Returns:
+        A unary pipe operator ``(Node) -> Node[list]``.
+
+    Example:
+        ```python
+        from graphrefly import state, pipe
+        from graphrefly.extra.tier2 import buffer
+        src = state(0)
+        flush = state(None)
+        out = pipe(src, buffer(flush))
+        ```
+    """
 
     def _op(src: Node[Any]) -> Node[Any]:
         def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
@@ -911,7 +1050,23 @@ def buffer(notifier: Node[Any]) -> PipeOperator:
 
 
 def buffer_count(n: int) -> PipeOperator:
-    """Emit a list of every ``n`` consecutive ``DATA`` values."""
+    """Emit a list of every ``n`` consecutive ``DATA`` values as a single emission.
+
+    Args:
+        n: Number of ``DATA`` values to collect per emitted list.
+
+    Returns:
+        A unary pipe operator ``(Node) -> Node[list]``.
+
+    Example:
+        ```python
+        from graphrefly.extra import of
+        from graphrefly.extra.tier2 import buffer_count
+        from graphrefly.extra.sources import first_value_from
+        out = buffer_count(3)(of(1, 2, 3, 4))
+        assert first_value_from(out) == [1, 2, 3]
+        ```
+    """
 
     if n <= 0:
         msg = "buffer_count expects n > 0"
@@ -962,7 +1117,22 @@ def buffer_count(n: int) -> PipeOperator:
 
 
 def buffer_time(seconds: float) -> PipeOperator:
-    """Emit a list of ``DATA`` values collected over each wall-clock window of ``seconds``."""
+    """Emit a list of ``DATA`` values collected over each timed window of ``seconds``.
+
+    Args:
+        seconds: Window duration in seconds.
+
+    Returns:
+        A unary pipe operator ``(Node) -> Node[list]``.
+
+    Example:
+        ```python
+        from graphrefly import state, pipe
+        from graphrefly.extra.tier2 import buffer_time
+        src = state(0)
+        out = pipe(src, buffer_time(0.1))
+        ```
+    """
 
     def _op(src: Node[Any]) -> Node[Any]:
         def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
@@ -1030,7 +1200,22 @@ def buffer_time(seconds: float) -> PipeOperator:
 
 
 def interval(seconds: float) -> Node[Any]:
-    """Producer that emits ``0, 1, 2, …`` on a fixed timer interval."""
+    """Create a producer that emits ``0, 1, 2, …`` at a fixed timer interval.
+
+    Args:
+        seconds: Interval between emissions in seconds.
+
+    Returns:
+        A :class:`~graphrefly.core.node.Node` that emits on a recurring timer thread.
+
+    Example:
+        ```python
+        from graphrefly.extra.tier2 import interval
+        from graphrefly.extra.sources import first_value_from
+        n = interval(0.001)
+        assert first_value_from(n) == 0
+        ```
+    """
 
     def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
         n = 0
@@ -1071,10 +1256,24 @@ def interval(seconds: float) -> Node[Any]:
 
 
 def repeat(times: int) -> PipeOperator:
-    """Play the source to ``COMPLETE``, then re-subscribe, ``times`` times total.
+    """Play the source to ``COMPLETE``, then re-subscribe, repeating ``times`` passes total.
 
-    Each pass ends when the source emits ``COMPLETE``; the operator then subscribes again
-    until ``times`` passes have finished.
+    Each pass ends when the source emits ``COMPLETE``; the operator then
+    subscribes again until all passes have finished.
+
+    Args:
+        times: Total number of source passes to play through.
+
+    Returns:
+        A unary pipe operator ``(Node) -> Node``.
+
+    Example:
+        ```python
+        from graphrefly.extra import of
+        from graphrefly.extra.tier2 import repeat
+        from graphrefly.extra.sources import to_list
+        assert to_list(repeat(3)(of(1))) == [1, 1, 1]
+        ```
     """
 
     if times <= 0:
@@ -1136,8 +1335,23 @@ def repeat(times: int) -> PipeOperator:
 def gate(control: Node[Any]) -> PipeOperator:
     """Forward ``DATA`` only when ``control`` is truthy; otherwise emit ``RESOLVED``.
 
-    This is a value-level gate (boolean control signal).  See :func:`pausable` for
-    a protocol-level ``PAUSE``/``RESUME`` buffer.
+    This is a value-level gate using a boolean control signal. See :func:`pausable`
+    for protocol-level ``PAUSE``/``RESUME`` buffering.
+
+    Args:
+        control: Boolean-valued node; ``True`` lets values through, ``False`` suppresses them.
+
+    Returns:
+        A unary pipe operator ``(Node) -> Node``.
+
+    Example:
+        ```python
+        from graphrefly import state, pipe
+        from graphrefly.extra.tier2 import gate
+        src = state(1)
+        ctrl = state(True)
+        out = pipe(src, gate(ctrl))
+        ```
     """
 
     def _op(src: Node[Any]) -> Node[Any]:
@@ -1157,6 +1371,20 @@ def pausable() -> PipeOperator:
 
     Protocol-level pause/resume using ``PAUSE``/``RESUME`` message types. Matches
     TypeScript ``pausable`` semantics.
+
+    Returns:
+        A unary pipe operator ``(Node) -> Node``.
+
+    Example:
+        ```python
+        from graphrefly import state, pipe
+        from graphrefly.extra.tier2 import pausable
+        from graphrefly.core.protocol import MessageType
+        src = state(0)
+        out = pipe(src, pausable())
+        out.down([(MessageType.PAUSE,)])
+        out.down([(MessageType.RESUME,)])
+        ```
     """
 
     def _op(src: Node[Any]) -> Node[Any]:
@@ -1200,7 +1428,23 @@ def pausable() -> PipeOperator:
 
 
 def rescue(recover: Callable[[BaseException], Any]) -> PipeOperator:
-    """Turn upstream ``ERROR`` into a normal ``DATA`` from ``recover(exc)``."""
+    """Turn upstream ``ERROR`` into a ``DATA`` value produced by ``recover(exc)``.
+
+    Args:
+        recover: Callable ``(exception) -> value`` whose return is emitted as ``DATA``.
+
+    Returns:
+        A unary pipe operator ``(Node) -> Node``.
+
+    Example:
+        ```python
+        from graphrefly.extra import throw_error
+        from graphrefly.extra.tier2 import rescue
+        from graphrefly.extra.sources import first_value_from
+        n = rescue(lambda e: -1)(throw_error(ValueError("oops")))
+        assert first_value_from(n) == -1
+        ```
+    """
 
     def _op(src: Node[Any]) -> Node[Any]:
         def compute(deps: list[Any], _actions: NodeActions) -> Any:
@@ -1230,10 +1474,25 @@ def rescue(recover: Callable[[BaseException], Any]) -> PipeOperator:
 
 
 def window(notifier: Node[Any]) -> PipeOperator:
-    """Split source ``DATA`` into sub-node windows; new window on each notifier ``DATA``.
+    """Split source ``DATA`` into sub-node windows; open a new window on each notifier ``DATA``.
 
-    Each emitted value is a :class:`~graphrefly.core.node.Node` that receives
-    the values belonging to that window.
+    Each emitted value is a :class:`~graphrefly.core.node.Node` receiving the
+    ``DATA`` values belonging to that window.
+
+    Args:
+        notifier: Node whose ``DATA`` opens a new window.
+
+    Returns:
+        A unary pipe operator ``(Node) -> Node[Node]``.
+
+    Example:
+        ```python
+        from graphrefly import state, pipe
+        from graphrefly.extra.tier2 import window
+        src = state(0)
+        tick = state(None)
+        out = pipe(src, window(tick))
+        ```
     """
 
     def _op(src: Node[Any]) -> Node[Any]:
@@ -1309,7 +1568,22 @@ def window(notifier: Node[Any]) -> PipeOperator:
 
 
 def window_count(n: int) -> PipeOperator:
-    """Split source ``DATA`` into sub-node windows of ``n`` items each."""
+    """Split source ``DATA`` into sub-node windows of ``n`` items each.
+
+    Args:
+        n: Number of ``DATA`` values per sub-node window.
+
+    Returns:
+        A unary pipe operator ``(Node) -> Node[Node]``.
+
+    Example:
+        ```python
+        from graphrefly import state, pipe
+        from graphrefly.extra.tier2 import window_count
+        src = state(0)
+        out = pipe(src, window_count(3))
+        ```
+    """
 
     if n <= 0:
         msg = "window_count expects n > 0"
@@ -1385,7 +1659,25 @@ def window_count(n: int) -> PipeOperator:
 
 
 def window_time(seconds: float) -> PipeOperator:
-    """Split source ``DATA`` into sub-node windows, each lasting ``seconds``."""
+    """Split source ``DATA`` into sub-node windows, each lasting ``seconds``.
+
+    Each emitted value is a :class:`~graphrefly.core.node.Node` receiving values
+    collected during that time window.
+
+    Args:
+        seconds: Duration of each window in seconds.
+
+    Returns:
+        A unary pipe operator ``(Node) -> Node[Node]``.
+
+    Example:
+        ```python
+        from graphrefly import state, pipe
+        from graphrefly.extra.tier2 import window_time
+        src = state(0)
+        out = pipe(src, window_time(0.1))
+        ```
+    """
 
     def _op(src: Node[Any]) -> Node[Any]:
         def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:

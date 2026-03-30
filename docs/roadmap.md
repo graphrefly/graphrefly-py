@@ -311,7 +311,7 @@ Composition layer over 3.2 (`reactive_log`), 4.1 (sagas), 4.2 (event bus), 4.3 (
 
 ## Phase 7: Polish & Launch
 
-- [ ] README
+- [x] README
 - [ ] `llms.txt` for AI agent discovery
 - [ ] PyPI publish: `graphrefly-py`
 - [ ] Docs site

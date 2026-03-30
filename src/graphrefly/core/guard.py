@@ -91,18 +91,29 @@ def policy(
         Any,
     ],
 ) -> GuardFn:
-    """Build a guard from declarative allow/deny rules.
+    """Build a guard function from declarative allow/deny rules.
 
-    **Precedence (C):** For a fixed ``(actor, action)``, if **any** matching **deny**
-    rule applies, the result is ``False``. Otherwise, if **any** matching **allow**
-    applies, the result is ``True``. If no rule matches, the result is ``False``.
+    Precedence: for a given ``(actor, action)``, any matching ``deny`` wins
+    (returns ``False``). Otherwise, any matching ``allow`` returns ``True``.
+    If no rule matches, the result is ``False``.
 
-    Usage::
+    Args:
+        build: Callable invoked with ``(allow, deny)`` accumulators. Each accumulator
+            accepts an ``action`` (str or list of str, supports ``"*"`` wildcard) and
+            an optional ``where`` predicate ``(actor) -> bool``.
 
+    Returns:
+        A :data:`GuardFn` ``(actor, action) -> bool``.
+
+    Example:
+        ```python
+        from graphrefly import state, policy
         g = policy(lambda allow, deny: [
             allow("write", where=lambda a: a.get("role") == "admin"),
             deny("write", where=lambda a: a.get("type") == "llm"),
         ])
+        x = state(0, guard=g)
+        ```
     """
     Rule = tuple[Literal["allow", "deny"], frozenset[str], Callable[[Actor], bool] | None]
     rules: list[Rule] = []
@@ -148,7 +159,24 @@ def policy(
 
 
 def compose_guards(*guards: GuardFn | None) -> GuardFn:
-    """AND-composition; ``None`` entries are skipped."""
+    """Compose multiple guard functions with AND logic; ``None`` entries are skipped.
+
+    Args:
+        *guards: Any number of :data:`GuardFn` callables or ``None``. ``None`` values
+            are silently filtered out.
+
+    Returns:
+        A :data:`GuardFn` that returns ``True`` only when every non-None guard
+        approves the ``(actor, action)`` pair.
+
+    Example:
+        ```python
+        from graphrefly.core.guard import compose_guards, policy
+        g1 = policy(lambda allow, _: allow("write"))
+        g2 = policy(lambda allow, _: allow("observe"))
+        combined = compose_guards(g1, g2)
+        ```
+    """
     gs = [g for g in guards if g is not None]
 
     def composed(actor: Actor, action: GuardAction) -> bool:

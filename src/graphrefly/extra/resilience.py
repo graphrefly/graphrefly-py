@@ -59,14 +59,30 @@ def retry(
     *,
     backoff: BackoffStrategy | BackoffPreset | None = None,
 ) -> Node[Any]:
-    """Retry upstream after ``ERROR`` with optional backoff (threading timer between attempts).
+    """Retry upstream after ``ERROR`` with optional backoff between attempts.
 
-    Unsubscribes from the source after each terminal ``ERROR``, waits (possibly zero), then
-    resubscribes. Successful ``DATA`` resets the attempt counter.
+    Unsubscribes from the source after each terminal ``ERROR``, waits (possibly
+    zero), then resubscribes. Successful ``DATA`` resets the attempt counter.
+    For a useful retry, the source should use ``resubscribable=True`` so a new
+    subscription can deliver again after a terminal error.
 
-    For a useful retry after upstream ``ERROR``, the source should be
-    :func:`~graphrefly.core.node.node` with ``resubscribable=True`` so a new subscription can
-    deliver again after a terminal error.
+    Args:
+        source: The upstream :class:`~graphrefly.core.node.Node` to retry.
+        count: Maximum retry attempts (``None`` = unlimited when *backoff* is set,
+            0 otherwise).
+        backoff: Optional :data:`~graphrefly.extra.backoff.BackoffStrategy` or
+            :data:`~graphrefly.extra.backoff.BackoffPreset` name for delay between
+            retries.
+
+    Returns:
+        A new :class:`~graphrefly.core.node.Node` wrapping the retry logic.
+
+    Example:
+        ```python
+        from graphrefly.extra.resilience import retry
+        from graphrefly.extra import of
+        n = retry(of(1), count=3)
+        ```
     """
     max_retries = count if count is not None else (0 if backoff is None else 2_147_483_647)
     if max_retries < 0:
@@ -175,6 +191,21 @@ CircuitState = Literal["closed", "open", "half-open"]
 
 
 class CircuitOpenError(RuntimeError):
+    """Raised when :func:`with_breaker` is configured with ``on_open="error"`` and the circuit is open.
+
+    Example:
+        ```python
+        from graphrefly.extra.resilience import CircuitOpenError, circuit_breaker, with_breaker
+        from graphrefly import state
+        from graphrefly.extra.sources import first_value_from
+        breaker = circuit_breaker(failure_threshold=1)
+        breaker.record_failure()  # open the circuit
+        src = state(1)
+        bundle = with_breaker(breaker, on_open="error")(src)
+        # next DATA from src will raise CircuitOpenError
+        ```
+    """
+
     def __init__(self) -> None:
         super().__init__("Circuit breaker is open")
 
@@ -332,13 +363,30 @@ def with_breaker(
     *,
     on_open: Literal["skip", "error"] = "skip",
 ) -> Callable[[Node[Any]], WithBreakerBundle]:
-    """Guard a source with a :class:`CircuitBreaker`.
+    """Guard a source node with a :class:`CircuitBreaker`.
 
-    On each upstream ``DATA``, if the breaker refuses work, either emit ``RESOLVED`` (*skip*)
-    or ``ERROR`` (:exc:`CircuitOpenError`) (*error*). ``COMPLETE`` records success; ``ERROR``
-    records failure and is forwarded.
+    On each upstream ``DATA``, if the breaker refuses work, either emit
+    ``RESOLVED`` (``on_open="skip"``) or ``ERROR`` with :exc:`CircuitOpenError`
+    (``on_open="error"``). ``COMPLETE`` records success; ``ERROR`` records
+    failure and is forwarded. The ``breaker_state`` companion is wired into
+    ``node.meta`` so it appears in ``describe()``.
 
-    Companion ``breaker_state`` is wired into ``node.meta`` so it appears in ``describe()``.
+    Args:
+        breaker: A :class:`CircuitBreaker` instance (see :func:`circuit_breaker`).
+        on_open: ``"skip"`` (emit ``RESOLVED``) or ``"error"`` (emit
+            :exc:`CircuitOpenError`) when the circuit is open.
+
+    Returns:
+        A unary operator ``(Node) -> WithBreakerBundle``.
+
+    Example:
+        ```python
+        from graphrefly import state
+        from graphrefly.extra.resilience import circuit_breaker, with_breaker
+        breaker = circuit_breaker(failure_threshold=3)
+        src = state(1)
+        bundle = with_breaker(breaker)(src)
+        ```
     """
 
     def _op(src: Node[Any]) -> WithBreakerBundle:
@@ -454,15 +502,47 @@ def token_bucket(capacity: float, refill_per_second: float) -> TokenBucket:
 
 
 def token_tracker(capacity: float, refill_per_second: float) -> TokenBucket:
-    """Alias for :func:`token_bucket` (backward compat)."""
+    """Create a token bucket (alias for :func:`token_bucket`, kept for backward compat).
+
+    Args:
+        capacity: Maximum number of tokens.
+        refill_per_second: Tokens restored per second (``0`` = no refill).
+
+    Returns:
+        A :class:`TokenBucket` instance.
+
+    Example:
+        ```python
+        from graphrefly.extra.resilience import token_tracker
+        tb = token_tracker(10, 2.0)
+        assert tb.try_consume(1)
+        ```
+    """
     return token_bucket(capacity, refill_per_second)
 
 
 def rate_limiter(source: Node[Any], max_events: int, window_seconds: float) -> Node[Any]:
-    """Sliding-window limit: at most *max_events* ``DATA`` emissions per *window_seconds*.
+    """Limit upstream ``DATA`` to at most *max_events* per *window_seconds* (sliding window).
 
-    Values that exceed the window budget are queued (FIFO) and emitted as slots free.
-    ``DIRTY`` / ``RESOLVED`` still track the primary when not blocked.
+    Values exceeding the budget are queued (FIFO) and emitted as slots free.
+    ``DIRTY`` and ``RESOLVED`` still propagate immediately when not blocked.
+
+    Args:
+        source: The upstream :class:`~graphrefly.core.node.Node` to rate-limit.
+        max_events: Maximum ``DATA`` emissions allowed per window.
+        window_seconds: Window duration in seconds.
+
+    Returns:
+        A new :class:`~graphrefly.core.node.Node` with rate-limiting applied.
+
+    Example:
+        ```python
+        from graphrefly import state
+        from graphrefly.extra.resilience import rate_limiter
+        from graphrefly.extra.sources import to_list
+        from graphrefly.extra import of
+        n = rate_limiter(of(1, 2, 3), max_events=2, window_seconds=60)
+        ```
     """
     if max_events <= 0:
         msg = "max_events must be > 0"
@@ -577,11 +657,28 @@ def with_status(
 ) -> WithStatusBundle:
     """Mirror *src* with ``status`` and ``error`` companion state nodes.
 
-    ``status`` moves ``pending`` → ``active`` on ``DATA``, ``completed`` on ``COMPLETE``, and
-    ``errored`` on ``ERROR`` (``error`` holds the exception). After ``errored``, the next
-    ``DATA`` clears ``error`` and sets ``active`` inside :func:`~graphrefly.core.protocol.batch`.
+    ``status`` moves ``pending`` → ``active`` on ``DATA``, ``completed`` on
+    ``COMPLETE``, and ``errored`` on ``ERROR`` (``error`` holds the exception).
+    After ``errored``, the next ``DATA`` clears ``error`` and sets ``active``
+    inside :func:`~graphrefly.core.protocol.batch`. Both companions are wired
+    into ``node.meta`` so they appear in ``describe()``.
 
-    Companions are wired into ``node.meta`` so they appear in ``describe()``.
+    Args:
+        src: The upstream :class:`~graphrefly.core.node.Node` to track.
+        initial_status: Initial value of the ``status`` companion (default
+            ``"pending"``).
+
+    Returns:
+        A :class:`WithStatusBundle` with ``node``, ``status``, and ``error`` fields.
+
+    Example:
+        ```python
+        from graphrefly import state
+        from graphrefly.extra.resilience import with_status
+        src = state(None)
+        bundle = with_status(src)
+        assert bundle.status.get() == "pending"
+        ```
     """
 
     def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:

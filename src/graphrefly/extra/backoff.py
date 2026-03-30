@@ -39,7 +39,22 @@ def _apply_jitter(delay: float, jitter: JitterMode) -> float:
 
 
 def constant(delay: float) -> BackoffStrategy:
-    """Always yield the same delay (seconds)."""
+    """Create a backoff strategy that always returns the same delay.
+
+    Args:
+        delay: Fixed delay in seconds (clamped to 0 if negative).
+
+    Returns:
+        A :data:`BackoffStrategy` callable.
+
+    Example:
+        ```python
+        from graphrefly.extra.backoff import constant
+        s = constant(2.0)
+        assert s(0, None, None) == 2.0
+        assert s(5, None, None) == 2.0
+        ```
+    """
     safe = _clamp_non_negative(delay)
 
     def _strategy(
@@ -53,7 +68,25 @@ def constant(delay: float) -> BackoffStrategy:
 
 
 def linear(base: float, step: float | None = None) -> BackoffStrategy:
-    """Linear delay: ``base + step * attempt`` (``step`` defaults to ``base``)."""
+    """Create a backoff strategy with linearly increasing delay.
+
+    Delay is ``base + step * attempt`` where *step* defaults to *base*.
+
+    Args:
+        base: Starting delay in seconds.
+        step: Increment per attempt (defaults to *base*).
+
+    Returns:
+        A :data:`BackoffStrategy` callable.
+
+    Example:
+        ```python
+        from graphrefly.extra.backoff import linear
+        s = linear(1.0)
+        assert s(0, None, None) == 1.0
+        assert s(2, None, None) == 3.0
+        ```
+    """
     safe_base = _clamp_non_negative(base)
     safe_step = safe_base if step is None else _clamp_non_negative(step)
 
@@ -74,7 +107,25 @@ def exponential(
     max_delay: float = 30.0,
     jitter: JitterMode = "none",
 ) -> BackoffStrategy:
-    """Exponential delay capped by ``max_delay`` (optional jitter)."""
+    """Create an exponential backoff strategy capped at ``max_delay``.
+
+    Args:
+        base: Initial delay in seconds (default ``0.1``).
+        factor: Multiplicative growth factor >= 1.0 (default ``2.0``).
+        max_delay: Upper bound on delay in seconds (default ``30.0``).
+        jitter: Jitter mode: ``"none"`` (default), ``"full"``, or ``"equal"``.
+
+    Returns:
+        A :data:`BackoffStrategy` callable.
+
+    Example:
+        ```python
+        from graphrefly.extra.backoff import exponential
+        s = exponential(base=0.1, factor=2.0, max_delay=30.0)
+        assert s(0, None, None) == 0.1
+        assert s(1, None, None) == 0.2
+        ```
+    """
     safe_base = _clamp_non_negative(base)
     safe_factor = 1.0 if factor < 1.0 else factor
     safe_max = _clamp_non_negative(max_delay)
@@ -106,7 +157,26 @@ def exponential(
 
 
 def fibonacci(base: float = 0.1, *, max_delay: float = 30.0) -> BackoffStrategy:
-    """Fibonacci-scaled delay: ``1, 2, 3, 5, … × base`` per attempt, capped at ``max_delay``."""
+    """Create a backoff strategy with Fibonacci-scaled delays.
+
+    Delays follow the sequence ``1, 2, 3, 5, 8, … × base``, capped at
+    ``max_delay``.
+
+    Args:
+        base: Multiplier in seconds (default ``0.1``).
+        max_delay: Upper bound in seconds (default ``30.0``).
+
+    Returns:
+        A :data:`BackoffStrategy` callable.
+
+    Example:
+        ```python
+        from graphrefly.extra.backoff import fibonacci
+        s = fibonacci(1.0)
+        assert s(0, None, None) == 1.0  # 1 × 1.0
+        assert s(1, None, None) == 2.0  # 2 × 1.0
+        ```
+    """
     safe_base = _clamp_non_negative(base)
     safe_max = _clamp_non_negative(max_delay)
 
@@ -178,7 +248,22 @@ def with_max_attempts(strategy: BackoffStrategy, max_attempts: int) -> BackoffSt
 
 
 def resolve_backoff_preset(name: BackoffPreset) -> BackoffStrategy:
-    """Resolve a preset name to a strategy with default parameters."""
+    """Resolve a preset name string to a :data:`BackoffStrategy` with default parameters.
+
+    Args:
+        name: One of ``"constant"``, ``"linear"``, ``"exponential"``,
+            ``"fibonacci"``, or ``"decorrelated_jitter"``.
+
+    Returns:
+        A :data:`BackoffStrategy` configured with default parameters.
+
+    Example:
+        ```python
+        from graphrefly.extra.backoff import resolve_backoff_preset
+        s = resolve_backoff_preset("exponential")
+        assert s(0, None, None) == 0.1
+        ```
+    """
     if name == "constant":
         return constant(1.0)
     if name == "linear":

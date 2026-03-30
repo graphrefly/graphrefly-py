@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from graphrefly.core import Messages, MessageType, node, state
+from graphrefly.core.protocol import batch
 from graphrefly.core.sugar import pipe
 from graphrefly.extra.tier2 import (
     audit,
@@ -48,6 +49,23 @@ def _has_complete(sink: list[Messages]) -> bool:
 
 def _has_error(sink: list[Messages]) -> bool:
     return any(m[0] is MessageType.ERROR for batch in sink for m in batch)
+
+
+def _flatten_types(sink: list[Messages]) -> list[MessageType]:
+    return [m[0] for b in sink for m in b]
+
+
+def _global_dirty_before_phase2(sink: list[Messages]) -> bool:
+    flat = _flatten_types(sink)
+    try:
+        dirty_idx = flat.index(MessageType.DIRTY)
+    except ValueError:
+        return False
+    phase2_idx = next(
+        (i for i, t in enumerate(flat) if t in (MessageType.DATA, MessageType.RESOLVED)),
+        -1,
+    )
+    return phase2_idx >= 0 and dirty_idx < phase2_idx
 
 
 def _make_deferred_producer() -> tuple[Any, list[Any]]:
@@ -433,3 +451,260 @@ def test_buffer_time_flushes() -> None:
     time.sleep(0.12)
     vals = _values(sink)
     assert any(isinstance(v, list) and 1 in v and 2 in v for v in vals)
+
+
+# ---------------------------------------------------------------------------
+# Tier 2 teardown and reconnect freshness
+# ---------------------------------------------------------------------------
+
+
+def test_switch_map_reconnect_fresh_inner() -> None:
+    """After teardown + resubscribe + new outer DATA, switch_map creates a fresh inner
+    subscription with no state from the previous one.
+
+    switch_map stores inner-subscription state in a closure. After teardown, the inner
+    is cleared (via the cleanup returned from compute). A new outer DATA after reconnect
+    must produce a new inner subscription, not reference the old one.
+    """
+    outer = state(0)
+    inner_a = state("a")
+    inner_b = state("b")
+    call_count = [0]
+    inners = [inner_a, inner_b]
+
+    def project(_v: Any) -> Any:
+        i = min(call_count[0], 1)
+        call_count[0] += 1
+        return inners[i]
+
+    out = pipe(outer, switch_map(project))
+    sink1: list[Messages] = []
+    unsub1 = out.subscribe(sink1.append)
+    # First inner (inner_a) is subscribed on initial compute
+    inner_a.down([(MessageType.DATA, "first")])
+    assert "first" in _values(sink1)
+
+    # Teardown
+    unsub1()
+    out.unsubscribe()
+    sink1.clear()
+
+    # Reconnect
+    sink2: list[Messages] = []
+    unsub2 = out.subscribe(sink2.append)
+    # A new DATA on outer triggers attach() → project() → inner_b is the new inner
+    outer.down([(MessageType.DATA, 1)])
+    inner_b.down([(MessageType.DATA, "second")])
+    assert "second" in _values(sink2), "new inner subscription should receive fresh values"
+    # Stale inner_a should NOT reach the new subscription
+    inner_a.down([(MessageType.DATA, "stale")])
+    assert "stale" not in _values(sink2), "stale inner should not reach new subscription"
+    unsub2()
+
+
+def test_debounce_teardown_cancels_timer() -> None:
+    """After unsubscribe, advancing time does not produce stale emissions from debounce."""
+    s = state(0)
+    sink: list[Messages] = []
+    out = pipe(s, debounce(0.1))
+    unsub = out.subscribe(sink.append)
+    s.down([(MessageType.DATA, 99)])
+    # Unsubscribe before timer fires
+    unsub()
+    out.unsubscribe()
+    # Wait longer than debounce window
+    time.sleep(0.25)
+    # No further data should appear (subscription was torn down)
+    vals = _values(sink)
+    assert 99 not in vals, "stale debounce emission after teardown: " + str(vals)
+
+
+def test_concat_map_reconnect_fresh_queue() -> None:
+    """After teardown + resubscribe, concat_map continues processing in queue order.
+
+    concat_map uses a closure-level queue that is not erased on unsubscribe (the same
+    node instance retains its state). After reconnect, any queued outer values from
+    before teardown are processed before newly enqueued ones. This test verifies that
+    reconnect does not cause a crash and that values flow correctly from existing queue
+    state through the new subscription.
+    """
+    outer = state(0)
+    results: list[tuple[int, list[Any]]] = []
+
+    def make_inner(v: int) -> Any:
+        _p, holder = _make_deferred_producer()
+        results.append((v, holder))
+        return _p
+
+    out = pipe(outer, concat_map(make_inner))
+
+    # First subscription: subscribe and let inner for 0 activate
+    sink1: list[Messages] = []
+    unsub1 = out.subscribe(sink1.append)
+    # Complete the initial inner (value 0) so queue drains cleanly
+    assert len(results) >= 1
+    _, h0 = results[0]
+    h0[0].down([(MessageType.DATA, "zero")])
+    h0[0].down([(MessageType.COMPLETE,)])
+    unsub1()
+    out.unsubscribe()
+
+    # Second subscription — reconnect then push a new value
+    sink2: list[Messages] = []
+    unsub2 = out.subscribe(sink2.append)
+    outer.down([(MessageType.DATA, 42)])
+    # After reconnect + new DATA, a new inner should be created for value 42
+    inners_42 = [(v, h) for v, h in results if v == 42]
+    assert inners_42, "concat_map should create a new inner for value 42 after reconnect"
+    _, h42 = inners_42[-1]
+    h42[0].down([(MessageType.DATA, "fresh")])
+    assert "fresh" in _values(sink2), "reconnected concat_map should deliver value from new inner"
+    h42[0].down([(MessageType.COMPLETE,)])
+    unsub2()
+
+
+def test_switch_map_derived_inner_initial_data_not_duplicated() -> None:
+    """Regression: session parity fix #4 (_forward_inner emitted flag)."""
+    outer = state(0)
+    base = state(10)
+    derived = node([base], lambda d, _m: d[0] + 1)
+    sink: list[Messages] = []
+    out = pipe(outer, switch_map(lambda _v: derived))
+    out.subscribe(sink.append)
+    vals = _values(sink)
+    assert vals.count(11) == 1
+
+
+def test_switch_map_global_dirty_before_phase2() -> None:
+    outer, holder = _make_deferred_producer()
+    inner = state(10)
+    sink: list[Messages] = []
+    out = pipe(outer, switch_map(lambda _v: inner))
+    out.subscribe(sink.append)
+    holder[0].down([(MessageType.DIRTY,), (MessageType.DATA, 1)])
+    sink.clear()
+    inner.down([(MessageType.DIRTY,), (MessageType.DATA, 99)])
+    assert _global_dirty_before_phase2(sink)
+
+
+def test_concat_map_global_dirty_before_phase2() -> None:
+    outer, holder = _make_deferred_producer()
+    inner = state(10)
+    sink: list[Messages] = []
+    out = pipe(outer, concat_map(lambda _v: inner))
+    out.subscribe(sink.append)
+    holder[0].down([(MessageType.DIRTY,), (MessageType.DATA, 1)])
+    sink.clear()
+    inner.down([(MessageType.DIRTY,), (MessageType.DATA, 77)])
+    assert _global_dirty_before_phase2(sink)
+
+
+def test_flat_map_global_dirty_before_phase2() -> None:
+    outer, holder = _make_deferred_producer()
+    inner = state(10)
+    sink: list[Messages] = []
+    out = pipe(outer, flat_map(lambda _v: inner))
+    out.subscribe(sink.append)
+    holder[0].down([(MessageType.DIRTY,), (MessageType.DATA, 1)])
+    sink.clear()
+    inner.down([(MessageType.DIRTY,), (MessageType.DATA, 55)])
+    assert _global_dirty_before_phase2(sink)
+
+
+def test_exhaust_map_global_dirty_before_phase2() -> None:
+    outer, holder = _make_deferred_producer()
+    inner = state(10)
+    sink: list[Messages] = []
+    out = pipe(outer, exhaust_map(lambda _v: inner))
+    out.subscribe(sink.append)
+    holder[0].down([(MessageType.DIRTY,), (MessageType.DATA, 1)])
+    sink.clear()
+    inner.down([(MessageType.DIRTY,), (MessageType.DATA, 66)])
+    assert _global_dirty_before_phase2(sink)
+
+
+def test_concat_map_void_inner_data_before_complete() -> None:
+    outer = state(0)
+    sink: list[Messages] = []
+
+    def void_once() -> Any:
+        return node(
+            lambda _d, a: a.down([(MessageType.DATA, None), (MessageType.COMPLETE,)]),
+            describe_kind="void_once",
+        )
+
+    out = pipe(outer, concat_map(lambda _v: void_once()))
+    out.subscribe(sink.append)
+    outer.down([(MessageType.DATA, 1)])
+    types = _flatten_types(sink)
+    assert MessageType.DATA in types
+    if MessageType.COMPLETE in types:
+        assert types.index(MessageType.DATA) < types.index(MessageType.COMPLETE)
+
+
+def test_flat_map_void_inner_data_before_complete() -> None:
+    outer = state(0)
+    sink: list[Messages] = []
+
+    def void_once() -> Any:
+        return node(
+            lambda _d, a: a.down([(MessageType.DATA, None), (MessageType.COMPLETE,)]),
+            describe_kind="void_once",
+        )
+
+    out = pipe(outer, flat_map(lambda _v: void_once()))
+    out.subscribe(sink.append)
+    outer.down([(MessageType.DATA, 1)])
+    types = _flatten_types(sink)
+    assert MessageType.DATA in types
+    if MessageType.COMPLETE in types:
+        assert types.index(MessageType.DATA) < types.index(MessageType.COMPLETE)
+
+
+def test_exhaust_map_void_inner_data_before_complete() -> None:
+    outer = state(0)
+    sink: list[Messages] = []
+
+    def void_once() -> Any:
+        return node(
+            lambda _d, a: a.down([(MessageType.DATA, None), (MessageType.COMPLETE,)]),
+            describe_kind="void_once",
+        )
+
+    out = pipe(outer, exhaust_map(lambda _v: void_once()))
+    out.subscribe(sink.append)
+    outer.down([(MessageType.DATA, 1)])
+    types = _flatten_types(sink)
+    assert MessageType.DATA in types
+    if MessageType.COMPLETE in types:
+        assert types.index(MessageType.DATA) < types.index(MessageType.COMPLETE)
+
+
+def test_rescue_wraps_switch_map_inner_error() -> None:
+    outer = state(0)
+    sink: list[Messages] = []
+
+    def failing_inner(_v: Any) -> Any:
+        return node(
+            lambda _d, a: a.down([(MessageType.ERROR, ValueError("inner")), (MessageType.COMPLETE,)]),
+            describe_kind="failing_inner",
+        )
+
+    out = pipe(outer, switch_map(failing_inner), rescue(lambda _e: 123))
+    out.subscribe(sink.append)
+    outer.down([(MessageType.DATA, 1)])
+    assert 123 in _values(sink)
+    assert not _has_error(sink)
+
+
+def test_debounce_does_not_fire_inside_batch() -> None:
+    s = state(0)
+    sink: list[Messages] = []
+    out = pipe(s, debounce(0.03))
+    out.subscribe(sink.append)
+    with batch():
+        s.down([(MessageType.DATA, 7)])
+        time.sleep(0.06)
+        assert 7 not in _values(sink)
+    time.sleep(0.04)
+    assert 7 in _values(sink)

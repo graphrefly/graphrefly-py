@@ -270,33 +270,35 @@ class Graph:
     """Named registry of nodes with explicit edges (pure wires, no transforms).
 
     Qualified paths use ``::`` as the segment separator
-    (e.g. ``"parent::child::node"``).
+    (e.g. ``"parent::child::node"``). Registry mutations are serialized on an
+    :class:`threading.RLock` when ``thread_safe`` is ``True`` (default).
 
-    When ``thread_safe`` is true (default), registry mutations serialize on an
-    :class:`threading.RLock`. :meth:`remove` pops under that lock, then sends
-    ``[[TEARDOWN]]`` outside the lock to avoid deadlocking against per-node
-    subgraph write locks.
+    :meth:`connect` is idempotent; :meth:`disconnect` raises :exc:`ValueError`
+    if the edge was never registered. Neither method mutates ``NodeImpl``
+    dependency lists.
 
-    :meth:`connect` is idempotent if the edge is already registered.
-    :meth:`disconnect` removes a registered edge and raises :exc:`ValueError`
-    if that edge was never recorded. It does not mutate ``NodeImpl`` dependency
-    lists (see ``docs/optimizations.md``).
+    :meth:`mount` embeds a child graph (GRAPHREFLY-SPEC §3.4–3.5).
+    :meth:`signal` broadcasts to every registered node, its meta companions, and
+    all mounted subgraphs. :meth:`describe` returns Appendix-B-shaped JSON;
+    :meth:`observe` exposes a live message stream.
 
-    **Composition (§3.4–3.5):** :meth:`mount` embeds a child graph; paths use
-    ``::`` segments (e.g. ``parent::child::node``). :meth:`resolve` returns the
-    node for a path.
+    Args:
+        name: Registry name used in ``describe()`` output and diagnostics.
+        opts: Optional dict with keys ``thread_safe`` (bool, default ``True``)
+            and ``trace_size`` (int ring-buffer size for :meth:`annotate`).
 
-    :meth:`signal` delivers messages to every registered node, each node's meta
-    companions (see :data:`GRAPH_META_SEGMENT`), and mounted subgraphs.
-
-    **Introspection (§3.6):** :meth:`describe` returns Appendix B-shaped JSON;
-    :meth:`observe` exposes a live message stream. Meta fields are addressed as
-    ``parent::__meta__::<key>`` (nested meta repeats the segment).
-
-    **Lifecycle & persistence (§3.7–3.8):** :meth:`destroy` broadcasts teardown and
-    clears registries; :meth:`snapshot` / :meth:`to_json`, :meth:`restore`, and
-    :meth:`from_snapshot` support deterministic JSON (see method docs for
-    ``from_snapshot`` limits on derived graphs).
+    Example:
+        ```python
+        from graphrefly import Graph, state
+        g = Graph("demo")
+        x = state(0, name="x")
+        y = state(0, name="y")
+        g.add("x", x)
+        g.add("y", y)
+        g.connect("x", "y")
+        g.set("x", 1)
+        assert g.get("y") == 1
+        ```
     """
 
     inspector_enabled: ClassVar[bool] = os.environ.get("NODE_ENV") != "production"
@@ -344,7 +346,22 @@ class Graph:
             yield
 
     def add(self, node_name: str, n: NodeImpl[Any]) -> None:
-        """Register ``n`` under ``node_name``; sets ``n``'s graph name if unset."""
+        """Register a node under the given name in this graph.
+
+        Sets ``n``'s internal name to ``node_name`` when the node has no name set.
+        Raises :exc:`ValueError` if ``node_name`` is already registered.
+
+        Args:
+            node_name: Local name (no ``::`` separators).
+            n: The :class:`~graphrefly.core.node.NodeImpl` to register.
+
+        Example:
+            ```python
+            from graphrefly import Graph, state
+            g = Graph("g")
+            g.add("x", state(0))
+            ```
+        """
         if not node_name:
             raise ValueError("node name must be non-empty")
         if node_name == GRAPH_META_SEGMENT:
@@ -366,10 +383,24 @@ class Graph:
             self._nodes[node_name] = n
 
     def mount(self, mount_name: str, child: Graph) -> None:
-        """Embed ``child`` under ``mount_name`` (GRAPHREFLY-SPEC §3.4).
+        """Embed a child graph under ``mount_name`` (GRAPHREFLY-SPEC §3.4).
 
-        Child nodes are addressable as ``f"{mount_name}::{local}"`` from this graph.
-        Mount and top-level node names must not collide.
+        Child nodes become addressable as ``"mount_name::local_name"`` from this
+        graph. Mount and top-level node names must not collide.
+
+        Args:
+            mount_name: Local name for the mount point (no ``::`` separators).
+            child: The :class:`Graph` to embed.
+
+        Example:
+            ```python
+            from graphrefly import Graph, state
+            parent = Graph("parent")
+            child = Graph("child")
+            child.add("v", state(1))
+            parent.mount("sub", child)
+            assert parent.get("sub::v") == 1
+            ```
         """
         if not mount_name:
             raise ValueError("mount name must be non-empty")
@@ -394,7 +425,22 @@ class Graph:
             self._mounts[mount_name] = child
 
     def remove(self, node_name: str) -> None:
-        """Unregister a node or unmount a subgraph; send ``[[TEARDOWN]]`` to affected nodes."""
+        """Unregister a node or unmount a subgraph and send ``[[TEARDOWN]]`` to it.
+
+        Removes the name from the internal registry and sends teardown outside the
+        lock to avoid deadlocking against per-node subgraph write locks.
+
+        Args:
+            node_name: Local name of a registered node or mount point.
+
+        Example:
+            ```python
+            from graphrefly import Graph, state
+            g = Graph("g")
+            g.add("x", state(0))
+            g.remove("x")
+            ```
+        """
         if PATH_SEP in node_name:
             msg = "remove() expects a single segment (local node or mount name on this graph)"
             raise ValueError(msg)
@@ -421,10 +467,25 @@ class Graph:
         return f == mount_name or t == mount_name or f.startswith(prefix) or t.startswith(prefix)
 
     def resolve(self, path: str) -> NodeImpl[Any]:
-        """Return the node for a ``::`` qualified path (GRAPHREFLY-SPEC §3.5).
+        """Return the node at a ``::``-qualified path (GRAPHREFLY-SPEC §3.5).
 
-        If the first segment equals this graph's :attr:`name`, it is stripped
-        (so ``root.resolve("app::a")`` works when ``root.name == "app"``).
+        Traverses mounts as needed; handles ``__meta__`` segments for companion
+        nodes. If the first segment matches this graph's name it is stripped.
+        Raises :exc:`KeyError` for unknown path segments.
+
+        Args:
+            path: Fully-qualified path (e.g. ``"parent::child::node"``).
+
+        Returns:
+            The :class:`~graphrefly.core.node.NodeImpl` at that path.
+
+        Example:
+            ```python
+            from graphrefly import Graph, state
+            g = Graph("g")
+            g.add("x", state(42))
+            assert g.resolve("x").get() == 42
+            ```
         """
         parts = path.split(PATH_SEP)
         if not parts or any(not p for p in parts):
@@ -498,15 +559,39 @@ class Graph:
         actor: Any | None = None,
         internal: bool = False,
     ) -> None:
-        """Deliver ``messages`` to every node, meta companions, and mounted subgraphs.
+        """Deliver messages to every registered node, meta companion, and mounted subgraph.
 
-        When a node has a ``guard``, it is checked with action ``"signal"`` (see roadmap 1.5).
+        When a node has a guard, it is checked with action ``"signal"``; nodes that
+        reject it are silently skipped.
+
+        Args:
+            messages: The :class:`~graphrefly.core.protocol.Messages` to broadcast.
+            actor: Optional actor context checked against each node's guard.
+
+        Example:
+            ```python
+            from graphrefly import Graph, state
+            from graphrefly.core.protocol import MessageType
+            g = Graph("g")
+            g.add("x", state(0))
+            g.signal([(MessageType.INVALIDATE,)])
+            ```
         """
         _signal_graph(self, messages, set(), normalize_actor(actor), "", internal=internal)
 
     def destroy(self) -> None:
-        """Send ``[[TEARDOWN]]`` to every node (same visitation as :meth:`signal`), then clear
-        this graph's registry and all mounted subgraphs (GRAPHREFLY-SPEC §3.7).
+        """Teardown all nodes and clear every registry in this graph and its mounts.
+
+        Sends ``[[TEARDOWN]]`` to every node in the same visitation order as
+        :meth:`signal` (GRAPHREFLY-SPEC §3.7), then recursively clears mounted subgraphs.
+
+        Example:
+            ```python
+            from graphrefly import Graph, state
+            g = Graph("g")
+            g.add("x", state(0))
+            g.destroy()
+            ```
         """
         _signal_graph(
             self,
@@ -519,10 +604,24 @@ class Graph:
         _clear_graph_registry(self)
 
     def snapshot(self) -> dict[str, Any]:
-        """Serialize structure and current values to a JSON-friendly dict (§3.8).
+        """Serialize graph structure and current node values to a JSON-friendly dict (§3.8).
 
-        Wraps :meth:`describe` with a version envelope and canonical key ordering so
-        :meth:`to_json` is stable for the same logical state.
+        Wraps :meth:`describe` output in a versioned envelope required by
+        :meth:`restore` / :meth:`from_snapshot`. The format is stable for
+        :meth:`to_json` determinism.
+
+        Returns:
+            A ``dict`` with keys ``version``, ``name``, ``nodes``, ``edges``,
+            and ``subgraphs``.
+
+        Example:
+            ```python
+            from graphrefly import Graph, state
+            g = Graph("g")
+            g.add("x", state(42))
+            snap = g.snapshot()
+            assert snap["version"] == 1
+            ```
         """
         body = self.describe()
         nodes_sorted = dict(sorted(body["nodes"].items()))
@@ -536,10 +635,22 @@ class Graph:
         }
 
     def to_json(self) -> str:
-        """Deterministic JSON text for the current :meth:`snapshot` (§3.8).
+        """Return deterministic JSON text for the current :meth:`snapshot` (§3.8).
 
-        Returns compact JSON with a trailing newline (git-versionable).
-        Raises :exc:`TypeError` if any node value or meta value is not JSON-serializable.
+        Produces compact, sorted-key JSON with a trailing newline (suitable for
+        version control). Raises :exc:`TypeError` when a node value is not
+        JSON-serializable.
+
+        Returns:
+            A compact JSON ``str`` ending with a newline.
+
+        Example:
+            ```python
+            from graphrefly import Graph, state
+            g = Graph("g")
+            g.add("x", state(0))
+            assert g.to_json().startswith("{")
+            ```
         """
         return (
             json.dumps(
@@ -555,10 +666,23 @@ class Graph:
         """Apply ``value`` fields from a prior :meth:`snapshot` onto this graph (§3.8).
 
         Only ``state`` and ``producer`` entries with a ``value`` key are written;
-        ``derived`` / ``operator`` / ``effect`` are skipped so deps drive recomputation.
-        Unknown paths are silently ignored. Does not add or remove nodes.
+        derived/operator nodes recompute from the restored sources.
+        Raises :exc:`ValueError` on snapshot version mismatch.
 
-        :raises ValueError: If ``data["name"]`` does not match this graph's name.
+        Args:
+            data: A snapshot dict previously produced by :meth:`snapshot`.
+
+        Example:
+            ```python
+            from graphrefly import Graph, state
+            g = Graph("g")
+            x = state(0)
+            g.add("x", x)
+            snap = g.snapshot()
+            x.down([("DATA", 99)])
+            g.restore(snap)
+            assert g.get("x") == 0
+            ```
         """
         _parse_snapshot_envelope(data)
         if data["name"] != self._name:
@@ -585,16 +709,26 @@ class Graph:
     ) -> Graph:
         """Build a new graph from :meth:`snapshot` data (§3.8).
 
-        When *build* is provided it is called with the empty graph before
-        :meth:`restore`, letting callers register nodes with compute functions
-        so that ``restore`` can write state values while derived nodes recompute.
+        When *build* is provided it is called with the empty graph first, letting
+        callers register derived nodes before :meth:`restore` is applied. State
+        nodes not pre-registered are created automatically.
 
-        Without *build*, only snapshots whose ``nodes`` are entirely
-        ``type: "state"`` and whose ``edges`` list is empty are supported
-        (dependency functions cannot be serialized).
+        Args:
+            data: A snapshot dict produced by :meth:`snapshot`.
+            build: Optional callable ``(graph) -> None`` to pre-register derived nodes.
 
-        For graphs with derived wiring, pass a *build* callback or construct
-        the graph in code and use :meth:`restore` to apply values.
+        Returns:
+            A new :class:`Graph` with state nodes restored from ``data``.
+
+        Example:
+            ```python
+            from graphrefly import Graph, state
+            g = Graph("g")
+            g.add("x", state(42))
+            snap = g.snapshot()
+            g2 = Graph.from_snapshot(snap)
+            assert g2.get("x") == 42
+            ```
         """
         _parse_snapshot_envelope(data)
         root = cls(data["name"])
@@ -903,10 +1037,33 @@ class Graph:
         causal: bool = False,
         derived: bool = False,
     ) -> SpyHandle:
-        """Convenience live debugger over :meth:`observe`.
+        """Attach a live debugger that logs protocol events as they arrive.
 
-        Logs protocol events as they flow. Supports one-path and graph-wide modes,
-        event filtering, JSON/pretty rendering, and built-in themes (``ansi`` / ``none``).
+        Wraps :meth:`observe` and emits each formatted event via ``output``
+        (default ``print``). Supports one-node and graph-wide modes, event
+        filtering, and ANSI color themes. Returns a :class:`SpyHandle` with the
+        accumulated :class:`ObserveResult` and a ``dispose()`` method.
+
+        Args:
+            path: Node path to observe (``None`` = entire graph).
+            output: Callable receiving each formatted log line (default ``print``).
+            theme: ANSI color theme: ``"ansi"`` (default), ``"none"``, or a custom
+                ``dict`` of ANSI codes keyed by event type.
+            filter: Set of message type labels to include (``None`` = all types).
+            actor: Optional actor context for guarded nodes.
+
+        Returns:
+            A :class:`SpyHandle` wrapping the live :class:`ObserveResult`.
+
+        Example:
+            ```python
+            from graphrefly import Graph, state
+            g = Graph("g")
+            g.add("x", state(0))
+            handle = g.spy("x")
+            g.set("x", 1)
+            handle.dispose()
+            ```
         """
         include = set(include_types) if include_types is not None else None
         exclude = set(exclude_types or [])
@@ -1085,7 +1242,24 @@ class Graph:
         include_subgraphs: bool = True,
         logger: Callable[[str], None] | None = None,
     ) -> str:
-        """CLI/debug-friendly graph dump built on :meth:`describe`."""
+        """Return a CLI/debug-friendly text dump of the graph topology.
+
+        Built on :meth:`describe`; formats node names, types, statuses, and edges.
+
+        Args:
+            actor: Optional actor context for scoping guarded nodes.
+
+        Returns:
+            A multi-line ``str`` summary of the graph.
+
+        Example:
+            ```python
+            from graphrefly import Graph, state
+            g = Graph("g")
+            g.add("x", state(1))
+            print(g.dump_graph())
+            ```
+        """
         described = self.describe(actor=actor, filter=filter)
         if format == "json":
             payload = {
@@ -1120,7 +1294,22 @@ class Graph:
         return text
 
     def node(self, path: str) -> NodeImpl[Any]:
-        """Return the node for a local name or a ``::`` qualified path."""
+        """Return the node for a local name or a ``::``-qualified path.
+
+        Args:
+            path: Local name or fully-qualified path.
+
+        Returns:
+            The :class:`~graphrefly.core.node.NodeImpl` at that path.
+
+        Example:
+            ```python
+            from graphrefly import Graph, state
+            g = Graph("g")
+            g.add("x", state(0))
+            assert g.node("x").get() == 0
+            ```
+        """
         if PATH_SEP in path:
             return self.resolve(path)
         with self._locked():
@@ -1130,7 +1319,24 @@ class Graph:
                 raise KeyError(path) from e
 
     def get(self, node_name: str) -> Any:
-        """Shorthand for ``graph.node(name).get()`` — accepts ``::`` qualified paths."""
+        """Return the current cached value of the node at ``node_name``.
+
+        Shorthand for ``graph.node(node_name).get()``. Accepts ``::``-qualified paths.
+
+        Args:
+            node_name: Local name or qualified path.
+
+        Returns:
+            The node's last settled value, or ``None`` if not yet settled.
+
+        Example:
+            ```python
+            from graphrefly import Graph, state
+            g = Graph("g")
+            g.add("x", state(7))
+            assert g.get("x") == 7
+            ```
+        """
         return self.node(node_name).get()
 
     def set(
@@ -1141,9 +1347,24 @@ class Graph:
         actor: Any | None = None,
         internal: bool = False,
     ) -> None:
-        """Shorthand for ``graph.node(name).down([[DATA, value]], ...)``.
+        """Set the value of a node by pushing a ``DATA`` message.
 
-        ``node_name`` accepts ``::`` qualified paths.
+        Shorthand for ``graph.node(node_name).down([(DATA, value)], actor=actor)``.
+        Accepts ``::``-qualified paths.
+
+        Args:
+            node_name: Local name or qualified path.
+            value: New value to push as ``DATA``.
+            actor: Optional actor context checked against the node's guard.
+
+        Example:
+            ```python
+            from graphrefly import Graph, state
+            g = Graph("g")
+            g.add("x", state(0))
+            g.set("x", 42)
+            assert g.get("x") == 42
+            ```
         """
         try:
             self.node(node_name).down(
@@ -1156,10 +1377,25 @@ class Graph:
             raise GuardDenied(e.actor, node_name, e.action) from e
 
     def connect(self, from_path: str, to_path: str) -> None:
-        """Record a pure wire; ``to`` must already list ``from`` as a constructor dependency.
+        """Record a pure graph wire from ``from_path`` to ``to_path``.
 
-        ``from_path`` and ``to_path`` are relative to this graph (local names or
-        ``mount::...`` qualified paths).
+        ``to`` must already list ``from`` as a constructor dependency. This is an
+        idempotent bookkeeping operation; it does not change ``NodeImpl`` dep lists.
+        Both paths accept local names or ``mount::...`` qualified paths.
+
+        Args:
+            from_path: Path of the upstream (source) node.
+            to_path: Path of the downstream (sink) node.
+
+        Example:
+            ```python
+            from graphrefly import Graph, state, node
+            g = Graph("g")
+            x = state(1)
+            y = node([x], lambda deps, _: deps[0])
+            g.add("x", x); g.add("y", y)
+            g.connect("x", "y")
+            ```
         """
         if not from_path or not to_path:
             msg = "connect/disconnect paths must be non-empty"
@@ -1205,7 +1441,26 @@ class Graph:
             self._edges.add(key)
 
     def disconnect(self, from_path: str, to_path: str) -> None:
-        """Remove a registered edge (bookkeeping only; see class docstring)."""
+        """Remove a registered edge between two nodes (bookkeeping only).
+
+        Does not alter ``NodeImpl`` dependency lists. Raises :exc:`ValueError` if
+        the edge was never registered. Both paths accept ``::``-qualified formats.
+
+        Args:
+            from_path: Path of the upstream node.
+            to_path: Path of the downstream node.
+
+        Example:
+            ```python
+            from graphrefly import Graph, state, node
+            g = Graph("g")
+            x = state(0)
+            y = node([x], lambda deps, _: deps[0])
+            g.add("x", x); g.add("y", y)
+            g.connect("x", "y")
+            g.disconnect("x", "y")
+            ```
+        """
         if not from_path or not to_path:
             msg = "connect/disconnect paths must be non-empty"
             raise ValueError(msg)
@@ -1230,7 +1485,21 @@ class Graph:
             self._edges.discard(key)
 
     def edges(self) -> frozenset[tuple[str, str]]:
-        """Registered ``(from_name, to_name)`` pairs (read-only)."""
+        """Return all registered ``(from_name, to_name)`` edge pairs (read-only).
+
+        Returns:
+            A ``frozenset`` of ``(from_name, to_name)`` string tuples.
+
+        Example:
+            ```python
+            from graphrefly import Graph, state, node
+            g = Graph("g")
+            x = state(0); y = node([x], lambda d, _: d[0])
+            g.add("x", x); g.add("y", y)
+            g.connect("x", "y")
+            assert ("x", "y") in g.edges()
+            ```
+        """
         with self._locked():
             return frozenset(self._edges)
 
@@ -1398,20 +1667,34 @@ def reachable(
     *,
     max_depth: int | None = None,
 ) -> list[str]:
-    """Reachability query over a :meth:`Graph.describe` snapshot.
+    """Perform a reachability query over a :meth:`Graph.describe` snapshot.
 
-    Traversal combines dependency links (``deps``) and explicit graph edges (``edges``):
-    - ``"upstream"``: follows ``deps`` plus incoming edges.
-    - ``"downstream"``: follows reverse-``deps`` plus outgoing edges.
+    Traversal combines dependency links (``deps``) and explicit graph edges
+    (``edges``):
+
+    - ``"upstream"``: follows ``deps`` and incoming edges.
+    - ``"downstream"``: follows reverse-``deps`` and outgoing edges.
 
     Args:
-        described: ``graph.describe()`` output.
+        described: Output of ``graph.describe()``.
         from_path: Start path (qualified node path).
         direction: Either ``"upstream"`` or ``"downstream"``.
-        max_depth: Optional hop limit. ``0`` returns ``[]``.
+        max_depth: Optional hop limit; ``0`` returns an empty list.
 
     Returns:
-        Sorted reachable paths, excluding ``from_path``.
+        Sorted list of reachable paths, excluding ``from_path``.
+
+    Example:
+        ```python
+        from graphrefly import Graph, state, node, reachable
+        g = Graph("g")
+        x = state(0)
+        y = node([x], lambda deps, _: deps[0])
+        g.add("x", x); g.add("y", y)
+        g.connect("x", "y")
+        desc = g.describe()
+        assert "x" in reachable(desc, "y", "upstream")
+        ```
     """
     if not from_path:
         return []

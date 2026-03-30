@@ -135,6 +135,14 @@ class ReactiveMapBundle:
         (nanoseconds). Expired keys remain in the internal store until the
         next mutation or :meth:`prune`. LRU order is updated on
         ``set``, not on dict reads from ``data``.
+
+    Example:
+        ```python
+        from graphrefly.extra import reactive_map
+        m = reactive_map(max_size=10)
+        m.set("a", 1)
+        assert m.data.get().value["a"] == 1
+        ```
     """
 
     _state: Node[_MapState]
@@ -213,12 +221,13 @@ def reactive_map(
         A :class:`ReactiveMapBundle` with imperative ``set`` / ``delete`` / ``clear`` /
         ``prune`` and a ``data`` node exposing the live snapshot.
 
-    Examples:
-        >>> from graphrefly.extra import reactive_map
-        >>> m = reactive_map(default_ttl=60.0, max_size=100)
-        >>> m.set("x", 1)
-        >>> m.data.get().value["x"]
-        1
+    Example:
+        ```python
+        from graphrefly.extra import reactive_map
+        m = reactive_map(default_ttl=60.0, max_size=100)
+        m.set("x", 1)
+        assert m.data.get().value["x"] == 1
+        ```
     """
 
     if max_size is not None and max_size < 1:
@@ -243,10 +252,19 @@ def reactive_map(
 
 @dataclass(frozen=True, slots=True)
 class ReactiveLogBundle:
-    """Append-only log of values stored as an immutable tuple.
+    """Append-only log of values stored as an immutable versioned tuple.
 
     Attributes:
-        entries: Node whose value is a :class:`Versioned` wrapping a ``tuple`` of all entries.
+        entries: Node whose value is a :class:`Versioned` wrapping a ``tuple``
+            of all log entries.
+
+    Example:
+        ```python
+        from graphrefly.extra import reactive_log
+        lg = reactive_log()
+        lg.append("event1")
+        assert lg.entries.get().value == ("event1",)
+        ```
     """
 
     _state: Node[Versioned]
@@ -330,12 +348,13 @@ def reactive_log(
         A :class:`ReactiveLogBundle` with ``append`` / ``append_many`` /
         ``trim_head`` / ``clear`` and :meth:`~ReactiveLogBundle.tail`.
 
-    Examples:
-        >>> from graphrefly.extra import reactive_log
-        >>> lg = reactive_log([1, 2])
-        >>> lg.append(3)
-        >>> lg.entries.get().value
-        (1, 2, 3)
+    Example:
+        ```python
+        from graphrefly.extra import reactive_log
+        lg = reactive_log([1, 2])
+        lg.append(3)
+        assert lg.entries.get().value == (1, 2, 3)
+        ```
     """
     if max_size is not None and max_size < 1:
         msg = "max_size must be >= 1"
@@ -370,7 +389,20 @@ def _row_key(row: _IndexRow[Any]) -> tuple[Any, Any]:
 
 @dataclass(frozen=True, slots=True)
 class ReactiveIndexBundle[K]:
-    """Unique primary key; rows sorted by ``(secondary, primary)`` for ordered scans."""
+    """Dual-key index: unique primary key with rows sorted by ``(secondary, primary)``.
+
+    Attributes:
+        by_primary: Derived node mapping ``primary -> value``.
+        ordered: Derived node with all rows as a sorted tuple.
+
+    Example:
+        ```python
+        from graphrefly.extra import reactive_index
+        idx = reactive_index()
+        idx.upsert("alice", score=90, value={"name": "Alice"})
+        assert "alice" in idx.by_primary.get()
+        ```
+    """
 
     _state: Node[Versioned]
     by_primary: Node[dict[K, Any]]
@@ -438,7 +470,20 @@ def reactive_index(*, name: str | None = None) -> ReactiveIndexBundle[Any]:
 
 @dataclass(frozen=True, slots=True)
 class ReactiveListBundle:
-    """Positional list as an immutable tuple snapshot (versioned)."""
+    """Positional list backed by an immutable versioned tuple snapshot.
+
+    Attributes:
+        items: Node whose value is a :class:`Versioned` wrapping the current
+            item tuple.
+
+    Example:
+        ```python
+        from graphrefly.extra import reactive_list
+        lst = reactive_list([1, 2])
+        lst.append(3)
+        assert lst.items.get().value == (1, 2, 3)
+        ```
+    """
 
     _state: Node[Versioned]
     items: Node[Versioned]
@@ -507,10 +552,23 @@ def reactive_list(
 
 
 class PubSubHub:
-    """Lazy per-topic :func:`~graphrefly.core.sugar.state` nodes (created on first access).
+    """Lazy per-topic source node registry for pub/sub messaging.
 
-    Thread-safe topic registry. Each topic is an independent manual source node; use
-    :meth:`publish` to push values with two-phase ``DIRTY`` then ``DATA``.
+    Topics are created on first access as independent manual source nodes.
+    Use :meth:`publish` to push values via the two-phase ``DIRTY`` then ``DATA``
+    protocol. Thread-safe.
+
+    Example:
+        ```python
+        from graphrefly.extra import pubsub
+        from graphrefly.extra.sources import for_each
+        hub = pubsub()
+        log = []
+        unsub = for_each(hub.topic("events"), log.append)
+        hub.publish("events", "hello")
+        unsub()
+        assert log == ["hello"]
+        ```
     """
 
     __slots__ = ("_lock", "_topics")
@@ -544,7 +602,19 @@ class PubSubHub:
 
 
 def pubsub() -> PubSubHub:
-    """Returns a new :class:`PubSubHub` (empty topic registry)."""
+    """Create a new :class:`PubSubHub` with an empty topic registry.
+
+    Returns:
+        A fresh :class:`PubSubHub` instance.
+
+    Example:
+        ```python
+        from graphrefly.extra import pubsub
+        hub = pubsub()
+        hub.publish("topic", 1)
+        assert hub.topic("topic").get() == 1
+        ```
+    """
     return PubSubHub()
 
 
