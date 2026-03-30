@@ -22,6 +22,13 @@ from graphrefly.extra.checkpoint import (
     restore_graph_checkpoint,
     save_graph_checkpoint,
 )
+from graphrefly.extra.composite import (
+    DistillBundle,
+    Extraction,
+    VerifiableBundle,
+    distill,
+    verifiable,
+)
 from graphrefly.extra.data_structures import (
     PubSubHub,
     ReactiveIndexBundle,
@@ -233,5 +240,10 @@ __all__ = [
     "with_breaker",
     "with_latest_from",
     "with_status",
+    "DistillBundle",
+    "Extraction",
+    "VerifiableBundle",
+    "distill",
+    "verifiable",
     "zip",
 ]

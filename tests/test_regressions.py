@@ -6,14 +6,11 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 from graphrefly import Graph, state
-from graphrefly.core import MessageType, derived, node
+from graphrefly.core import MessageType, derived
 from graphrefly.core.sugar import pipe
-from graphrefly.extra.tier1 import combine, map
+from graphrefly.extra.tier1 import map
 from graphrefly.extra.tier2 import switch_map
-
 
 # ---------------------------------------------------------------------------
 # 1. RESOLVED transitive skip — downstream fn must not rerun
