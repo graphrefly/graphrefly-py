@@ -8,12 +8,10 @@ from __future__ import annotations
 import time
 from typing import Any
 
-import pytest
-
 from graphrefly.core import Messages, MessageType, state
 from graphrefly.core.protocol import batch
 from graphrefly.core.sugar import derived, pipe
-from graphrefly.extra.tier1 import combine, concat, filter, map, merge
+from graphrefly.extra.tier1 import combine, concat, map, merge
 from graphrefly.extra.tier2 import (
     concat_map,
     debounce,

@@ -191,6 +191,7 @@ class NodeImpl[T]:
         "_terminal",
         "_thread_safe",
         "_upstream_unsubs",
+        "_inspector_hook",
     )
 
     def __init__(
@@ -244,6 +245,7 @@ class NodeImpl[T]:
         self._single_dep_sink_count = 0
         self._single_dep_sinks: set[Callable[[Messages], None]] = set()
         self._upstream_unsubs: list[Callable[[], None]] = []
+        self._inspector_hook: Callable[[dict[str, Any]], None] | None = None
 
         self._meta: dict[str, NodeImpl[Any]] = {}
         for k, v in (opts.get("meta") or {}).items():
@@ -269,6 +271,19 @@ class NodeImpl[T]:
             emit=lambda v: self._manual_emit(v),
             up=lambda msgs: self.up(msgs, internal=True),
         )
+
+    def _set_inspector_hook(
+        self, hook: Callable[[dict[str, Any]], None] | None
+    ) -> Callable[[], None]:
+        """Internal inspector hook attach/detach for graph observability."""
+        prev = self._inspector_hook
+        self._inspector_hook = hook
+
+        def dispose() -> None:
+            if self._inspector_hook is hook:
+                self._inspector_hook = prev
+
+        return dispose
 
     # --- Private methods (promoted from closures) ---
 
@@ -400,6 +415,8 @@ class NodeImpl[T]:
                 cb()
             self._manual_emit_used = False
             self._last_dep_values = dep_values
+            if self._inspector_hook is not None:
+                self._inspector_hook({"kind": "run", "dep_values": dep_values})
             out = self._fn(dep_values, self._actions)  # type: ignore[misc]
             if _is_cleanup_fn(out):
                 self._cleanup = out
@@ -450,6 +467,8 @@ class NodeImpl[T]:
 
     def _handle_dep_messages(self, index: int, messages: Messages) -> None:
         for msg in messages:
+            if self._inspector_hook is not None:
+                self._inspector_hook({"kind": "dep_message", "dep_index": index, "message": msg})
             t = msg[0]
             # User-defined message handler gets first look (spec §2.6).
             if self._on_message is not None:

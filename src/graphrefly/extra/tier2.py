@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from graphrefly.core.node import Node, NodeActions, node
 from graphrefly.core.protocol import Messages, MessageType
+from graphrefly.extra.sources import from_any
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -27,6 +28,11 @@ def _msg_val(m: tuple[Any, ...]) -> Any:
     """Payload for a ``DATA`` / ``ERROR`` tuple (GraphReFly messages are at least two elements)."""
     assert len(m) >= 2
     return m[1]
+
+
+def _as_node(value: Any) -> Node[Any]:
+    """Coerce mapper outputs to Node via ``from_any`` (roadmap §3.1b)."""
+    return from_any(value)
 
 
 # --- dynamic inner subscription (switch / concat / flat / exhaust) ------------
@@ -48,7 +54,15 @@ def _forward_inner(
     Matches TS ``forwardInner``.
     """
     unsub: Callable[[], None] | None = None
+    finished = False
     emitted = False
+
+    def finish() -> None:
+        nonlocal finished
+        if finished:
+            return
+        finished = True
+        on_inner_complete()
 
     def inner_sink(msgs: Messages) -> None:
         nonlocal emitted
@@ -67,7 +81,7 @@ def _forward_inner(
         if out:
             actions.down(out)
         if saw_error or saw_complete:
-            on_inner_complete()
+            finish()
 
     unsub = inner.subscribe(inner_sink)
 
@@ -76,8 +90,15 @@ def _forward_inner(
     # is already settled. Derived nodes that compute during subscribe will
     # have set emitted=True via inner_sink, so we skip the manual emit.
     # None is a valid DATA payload (Node[None] / void sources).
-    if unsub is not None and not emitted:
+    if (
+        unsub is not None
+        and not emitted
+        and inner.status in ("settled", "resolved")
+    ):
         actions.down([(MessageType.DATA, inner.get())])
+
+    if inner.status in ("completed", "errored"):
+        finish()
 
     def stop() -> None:
         nonlocal unsub
@@ -89,7 +110,7 @@ def _forward_inner(
 
 
 def switch_map(
-    fn: Callable[[Any], Node[Any]],
+    fn: Callable[[Any], Any],
     *,
     initial: Any = _UNSET,
 ) -> PipeOperator:
@@ -100,7 +121,9 @@ def switch_map(
     the output only if the outer has already completed.
 
     Args:
-        fn: ``outer_value -> Node`` for the active inner.
+        fn: ``outer_value -> source`` for the active inner. Return ``Node``, scalar,
+            awaitable, iterable, or async iterable (coerced via
+            :func:`graphrefly.extra.sources.from_any`).
         initial: Optional seed for :meth:`~graphrefly.core.node.Node.get` before the first inner
             emission.
 
@@ -125,10 +148,12 @@ def switch_map(
             nonlocal attached, inner_unsub
             attached = True
             clear_inner()
-            inner_unsub = _forward_inner(fn(v), a, lambda: (
-                clear_inner(),
-                a.down([(MessageType.COMPLETE,)]) if source_done else None,
-            ))
+            def _on_inner_complete() -> None:
+                clear_inner()
+                if source_done:
+                    a.down([(MessageType.COMPLETE,)])
+
+            inner_unsub = _forward_inner(_as_node(fn(v)), a, _on_inner_complete)
 
         def compute(deps: list[Any], a: NodeActions) -> Any:
             if not attached:
@@ -171,7 +196,7 @@ def switch_map(
 
 
 def concat_map(
-    fn: Callable[[Any], Node[Any]],
+    fn: Callable[[Any], Any],
     *,
     initial: Any = _UNSET,
     max_buffer: int = 0,
@@ -182,7 +207,7 @@ def concat_map(
     oldest queued value when the queue would exceed that length.
 
     Args:
-        fn: ``outer_value -> Node``.
+        fn: ``outer_value -> source`` (coerced via :func:`graphrefly.extra.sources.from_any`).
         initial: Optional initial ``get()`` value.
         max_buffer: Maximum queued outer keys (``0`` = unlimited).
 
@@ -213,10 +238,11 @@ def concat_map(
                     a.down([(MessageType.COMPLETE,)])
                 return
             v = queue.popleft()
-            inner_unsub = _forward_inner(fn(v), a, lambda: (
-                clear_inner(),
-                try_pump(a),
-            ))
+            def _on_inner_complete() -> None:
+                clear_inner()
+                try_pump(a)
+
+            inner_unsub = _forward_inner(_as_node(fn(v)), a, _on_inner_complete)
 
         def enqueue(v: Any, a: NodeActions) -> None:
             nonlocal attached
@@ -267,7 +293,7 @@ def concat_map(
 
 
 def flat_map(
-    fn: Callable[[Any], Node[Any]],
+    fn: Callable[[Any], Any],
     *,
     initial: Any = _UNSET,
     concurrent: int | None = None,
@@ -277,7 +303,7 @@ def flat_map(
     Completes when the outer has completed and every inner subscription has ended.
 
     Args:
-        fn: ``outer_value -> Node``.
+        fn: ``outer_value -> source`` (coerced via :func:`graphrefly.extra.sources.from_any`).
         initial: Optional initial ``get()`` value.
         concurrent: When set, limit the number of concurrently active inner subscriptions.
             Outer values beyond this limit are buffered and drained as inner subscriptions
@@ -316,7 +342,7 @@ def flat_map(
                 drain_buffer(a)
                 try_complete(a)
 
-            stop = _forward_inner(fn(v), a, on_done)
+            stop = _forward_inner(_as_node(fn(v)), a, on_done)
             inner_stops.append(stop)
 
         def drain_buffer(a: NodeActions) -> None:
@@ -378,11 +404,11 @@ def flat_map(
     return _op
 
 
-def exhaust_map(fn: Callable[[Any], Node[Any]], *, initial: Any = _UNSET) -> PipeOperator:
+def exhaust_map(fn: Callable[[Any], Any], *, initial: Any = _UNSET) -> PipeOperator:
     """Like :func:`switch_map`, but ignores new outer ``DATA`` while the current inner is active.
 
     Args:
-        fn: ``outer_value -> Node``.
+        fn: ``outer_value -> source`` (coerced via :func:`graphrefly.extra.sources.from_any`).
         initial: Optional initial ``get()`` value.
 
     Returns:
@@ -405,10 +431,12 @@ def exhaust_map(fn: Callable[[Any], Node[Any]], *, initial: Any = _UNSET) -> Pip
         def attach(v: Any, a: NodeActions) -> None:
             nonlocal attached, inner_unsub
             attached = True
-            inner_unsub = _forward_inner(fn(v), a, lambda: (
-                clear_inner(),
-                a.down([(MessageType.COMPLETE,)]) if source_done else None,
-            ))
+            def _on_inner_complete() -> None:
+                clear_inner()
+                if source_done:
+                    a.down([(MessageType.COMPLETE,)])
+
+            inner_unsub = _forward_inner(_as_node(fn(v)), a, _on_inner_complete)
 
         def compute(deps: list[Any], a: NodeActions) -> Any:
             if not attached and inner_unsub is None:

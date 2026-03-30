@@ -13,7 +13,7 @@ from collections.abc import Callable, Mapping
 from types import MappingProxyType
 from typing import Any
 
-from graphrefly.core.protocol import MessageType, Messages, emit_with_batch
+from graphrefly.core.protocol import Messages, MessageType, emit_with_batch
 
 # ---------------------------------------------------------------------------
 # Public types
@@ -175,7 +175,8 @@ class DynamicNodeImpl[T]:
         elif callable(self._sinks) and not isinstance(self._sinks, set):
             self._sinks = {self._sinks, sink}
         else:
-            self._sinks.add(sink)  # type: ignore[union-attr]
+            assert isinstance(self._sinks, set)
+            self._sinks.add(sink)
 
         if not self._connected:
             self._connect()
@@ -247,7 +248,7 @@ class DynamicNodeImpl[T]:
         for m in messages:
             t = m[0]
             if t is MessageType.DATA:
-                self._cached = m[1]
+                self._cached = m[1] if len(m) > 1 else None
             if t is MessageType.INVALIDATE:
                 self._cached = None
             if t is MessageType.DATA or t is MessageType.RESOLVED:
@@ -351,7 +352,9 @@ class DynamicNodeImpl[T]:
                 else:
                     # New dep — subscribe
                     idx = i
-                    unsub = dep.subscribe(lambda msgs, _idx=idx: self._handle_dep_messages(_idx, msgs))
+                    unsub = dep.subscribe(
+                        lambda msgs, _idx=idx: self._handle_dep_messages(_idx, msgs)
+                    )
                     new_unsubs.append(unsub)
 
             # Disconnect removed deps

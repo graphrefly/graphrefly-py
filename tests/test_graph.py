@@ -12,6 +12,7 @@ from graphrefly import (
     PATH_SEP,
     Graph,
     MessageType,
+    batch,
     derived,
     node,
     state,
@@ -453,6 +454,24 @@ def test_describe_includes_nodes_edges_subgraphs_and_meta_paths() -> None:
     assert f"sub{PATH_SEP}x" in d["nodes"]
 
 
+def test_describe_filter_supports_deps_includes_meta_has_and_path_predicate() -> None:
+    g = Graph("g")
+    a = state(1, meta={"label": "input"})
+    b = derived([a], lambda deps, _: deps[0] + 1)
+    g.add("a", a)
+    g.add("b", b)
+    g.connect("a", "b")
+
+    by_deps = g.describe(filter={"deps_includes": "a"})
+    assert list(by_deps["nodes"].keys()) == ["b"]
+
+    by_meta = g.describe(filter={"meta_has": "label"})
+    assert "a" in by_meta["nodes"]
+
+    by_path = g.describe(filter=lambda p, d: p.startswith("a") and d["type"] == "state")
+    assert "a" in by_path["nodes"]
+
+
 def test_observe_single_vs_all() -> None:
     g = Graph("g")
     a = node(initial=0)
@@ -470,6 +489,71 @@ def test_observe_single_vs_all() -> None:
     b.down([(MessageType.DATA, 3)])
     unsub_all()
     assert ("b", MessageType.DATA) in all_rows
+
+
+def test_observe_timeline_includes_timestamp_and_batch_context() -> None:
+    g = Graph("g")
+    a = state(0)
+    b = derived([a], lambda deps, _: deps[0] + 1)
+    g.add("a", a)
+    g.add("b", b)
+    g.connect("a", "b")
+    obs = g.observe("b", timeline=True)
+    with batch():
+        g.set("a", 2)
+    obs.dispose()
+    assert any("timestamp_ns" in e for e in obs.events)
+    assert any(e.get("in_batch") is True for e in obs.events)
+
+
+def test_observe_causal_and_derived_capture_trigger_and_dep_values() -> None:
+    g = Graph("g")
+    a = state(0)
+    b = derived([a], lambda deps, _: deps[0] + 1)
+    g.add("a", a)
+    g.add("b", b)
+    g.connect("a", "b")
+    obs = g.observe("b", causal=True, derived=True, timeline=True)
+    g.set("a", 5)
+    obs.dispose()
+    derived_events = [e for e in obs.events if e.get("type") == "derived"]
+    derived_event = derived_events[-1] if derived_events else None
+    assert derived_event is not None
+    assert derived_event.get("dep_values") == [5]
+    data_events = [e for e in obs.events if e.get("type") == "data"]
+    data_event = data_events[-1] if data_events else None
+    assert data_event is not None
+    assert data_event.get("trigger_dep_index") == 0
+    assert data_event.get("trigger_dep_name") == "a"
+    assert data_event.get("dep_values") == [5]
+
+
+def test_observe_derived_includes_initial_run_without_trigger_dep_index() -> None:
+    g = Graph("g")
+    a = state(0)
+    b = derived([a], lambda deps, _: deps[0] + 1)
+    g.add("a", a)
+    g.add("b", b)
+    g.connect("a", "b")
+    obs = g.observe("b", causal=True, derived=True, timeline=True)
+    g.set("a", 3)
+    obs.dispose()
+    derived_events = [e for e in obs.events if e.get("type") == "derived"]
+    assert len(derived_events) >= 2
+    assert any(e.get("dep_values") == [0] for e in derived_events)
+    assert any(e.get("dep_values") == [3] for e in derived_events)
+
+
+def test_observe_error_does_not_mark_completed_cleanly() -> None:
+    g = Graph("g")
+    a = node(initial=0)
+    g.add("a", a)
+    obs = g.observe("a", timeline=True)
+    a.down([(MessageType.ERROR, RuntimeError("boom"))])
+    a.down([(MessageType.COMPLETE,)])
+    obs.dispose()
+    assert obs.errored is True
+    assert obs.completed_cleanly is False
 
 
 def test_destroy_teardowns_and_clears_registry() -> None:

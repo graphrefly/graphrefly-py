@@ -124,6 +124,22 @@ def test_from_any_scalar() -> None:
     assert to_list(from_any(42)) == [42]
 
 
+def test_from_any_none_scalar() -> None:
+    sink: list[Any] = []
+    n = from_any(None)
+    n.subscribe(sink.append)
+    assert not any(m[0] is MessageType.DATA for batch in sink for m in batch)
+    assert any(m[0] is MessageType.COMPLETE for batch in sink for m in batch)
+    assert not any(m[0] is MessageType.ERROR for batch in sink for m in batch)
+
+
+def test_from_any_awaitable() -> None:
+    async def make() -> int:
+        return 77
+
+    assert to_list(from_any(make())) == [77]
+
+
 def test_first_value_from_and_empty() -> None:
     assert first_value_from(of(8)) == 8
     with pytest.raises(StopIteration):

@@ -92,6 +92,29 @@ def test_switch_map_initial() -> None:
     assert out.get() == "init"
 
 
+def test_switch_map_coerces_scalar_project_return() -> None:
+    outer, ho = _make_deferred_producer()
+    sink: list[Messages] = []
+    out = pipe(outer, switch_map(lambda v: (0 if v is None else v) + 100))
+    out.subscribe(sink.append)
+    ho[0].down([(MessageType.DATA, 2)])
+    assert 102 in _values(sink)
+
+
+def test_switch_map_coerces_awaitable_project_return() -> None:
+    outer, ho = _make_deferred_producer()
+    sink: list[Messages] = []
+
+    async def plus5(v: int) -> int:
+        return v + 5
+
+    out = pipe(outer, switch_map(lambda v: plus5(v)))
+    out.subscribe(sink.append)
+    ho[0].down([(MessageType.DATA, 3)])
+    time.sleep(0.1)
+    assert 8 in _values(sink)
+
+
 def test_concat_map_sequential() -> None:
     outer = state(0)
     results: list[tuple[int, list[Any]]] = []
@@ -143,6 +166,16 @@ def test_concat_map_max_buffer() -> None:
     assert inners[1][0] == 3
 
 
+def test_concat_map_coerces_iterable_project_return() -> None:
+    outer = state(4)
+    sink: list[Messages] = []
+    out = pipe(outer, concat_map(lambda v: [v * 2, v * 3]))
+    out.subscribe(sink.append)
+    vals = _values(sink)
+    assert 8 in vals
+    assert 12 in vals
+
+
 def test_flat_map_concurrent() -> None:
     outer = state(0)
     p1, h1 = _make_deferred_producer()
@@ -179,6 +212,22 @@ def test_flat_map_completes_when_all_done() -> None:
     assert not _has_complete(sink)
     hi[0].down([(MessageType.COMPLETE,)])
     assert _has_complete(sink)
+
+
+def test_flat_map_coerces_async_iterable_project_return() -> None:
+    outer = state(10)
+    sink: list[Messages] = []
+
+    async def gen(v: int) -> object:
+        yield v + 1
+        yield v + 2
+
+    out = pipe(outer, flat_map(lambda v: gen(v)))
+    out.subscribe(sink.append)
+    time.sleep(0.1)
+    vals = _values(sink)
+    assert 11 in vals
+    assert 12 in vals
 
 
 def test_exhaust_map_drops_while_busy() -> None:

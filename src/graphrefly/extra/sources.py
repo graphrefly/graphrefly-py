@@ -12,7 +12,7 @@ import threading
 from collections.abc import AsyncIterable, Awaitable, Callable, Iterable
 from contextlib import suppress
 from datetime import datetime
-from typing import Any, cast
+from typing import Any
 
 from graphrefly.core.node import Node, NodeActions, node
 from graphrefly.core.protocol import Messages, MessageType
@@ -306,10 +306,10 @@ def from_any(value: Any) -> Node[Any]:
     """
     if isinstance(value, Node):
         return value
-    if asyncio.isfuture(value) or asyncio.iscoroutine(value):
-        return from_awaitable(cast("Awaitable[Any]", value))
     if isinstance(value, AsyncIterable):
         return from_async_iter(value)
+    if isinstance(value, Awaitable) or asyncio.isfuture(value) or asyncio.iscoroutine(value):
+        return from_awaitable(value)
     try:
         it = iter(value)
     except TypeError:

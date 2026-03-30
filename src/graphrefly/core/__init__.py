@@ -1,5 +1,6 @@
 """Core node primitives and protocol types for graphrefly."""
 
+from graphrefly.core.dynamic_node import DynamicNodeImpl, dynamic_node
 from graphrefly.core.guard import (
     Actor,
     GuardAction,
@@ -12,7 +13,6 @@ from graphrefly.core.guard import (
     record_mutation,
     system_actor,
 )
-from graphrefly.core.dynamic_node import DynamicNodeImpl, dynamic_node
 from graphrefly.core.meta import describe_node, meta_snapshot
 from graphrefly.core.node import (
     Node,

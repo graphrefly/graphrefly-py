@@ -186,6 +186,15 @@ Port proven operators from callbag-recharge-py + new ones from TS.
 - [x] `with_status` — `WithStatusBundle` (companion state nodes)
 - [x] `checkpoint` + adapters — `save_graph_checkpoint` / `restore_graph_checkpoint`, memory / dict / file / SQLite adapters
 
+### 3.1b — Reactive output consistency (no Promise/Future in public APIs)
+
+Design invariant: every public function returns `Node[T]`, `Graph`, `None`, or a plain synchronous value — never `Awaitable` / `Future` for library-surface reactive coordination.
+
+- [x] Public APIs avoid `async def` / `Awaitable` return types; async boundaries are wrapped as reactive sources (`from_awaitable`, `from_async_iter`, `from_any`)
+- [x] Higher-order callback parameters accept sync scalar, `Node`, `Awaitable`, `Iterable`, and `AsyncIterable` via `from_any` coercion
+- [x] `first_value_from` remains an end-user sync escape hatch only (not used internally in production code)
+- [x] Checkpoint adapters are synchronous (`save -> None`, `load -> dict | None`)
+
 ### 3.2 — Data structures
 
 - [x] `reactive_map` (KV with TTL, eviction) — `graphrefly.extra.reactive_map` / `ReactiveMapBundle`
@@ -193,6 +202,15 @@ Port proven operators from callbag-recharge-py + new ones from TS.
 - [x] `reactive_index` (dual-key sorted index) — `reactive_index` / `ReactiveIndexBundle`
 - [x] `reactive_list` (positional operations) — `reactive_list` / `ReactiveListBundle`
 - [x] `pubsub` (lazy topic stores) — `pubsub` / `PubSubHub`
+
+### 3.2b — Composite data patterns
+
+Higher-order patterns composing Phase 0–3.2 primitives. No new core concepts — these wire `state`, `derived`, `effect`, `switch_map`, `reactive_map`, `dynamic_node`, and `from_any` into reusable shapes.
+
+Design reference: `archive/docs/SKETCH-reactive-tracker-factory.md` (TS repo — canonical design)
+
+- [ ] `verifiable(source, verify_fn, opts?)` — value node + verification companion; fully reactive (no imperative trigger). `source: NodeInput[T]`, `verify_fn: (value: T) -> NodeInput[VerifyResult]`, trigger via `opts.trigger: NodeInput[Any]` or `opts.auto_verify`. Uses `switch_map` internally to cancel stale verifications.
+- [ ] `distill(source, extract_fn, opts)` — budget-constrained reactive memory store. Watches source stream, extracts via `extract_fn: (raw, existing) -> NodeInput[Extraction[TMem]]`, stores in `reactive_map`, evicts stale entries (reactive eviction via `dynamic_node`), optional consolidation, produces budgeted compact view ranked by caller-provided `score`/`cost` functions. LLM-agnostic — extraction and consolidation functions are pluggable.
 
 ---
 

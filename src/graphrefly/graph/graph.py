@@ -13,13 +13,12 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from graphrefly.core.guard import GuardDenied, normalize_actor
 from graphrefly.core.meta import describe_node
-from graphrefly.core.protocol import Messages, MessageType
+from graphrefly.core.node import NodeImpl
+from graphrefly.core.protocol import Messages, MessageType, is_batching
 from graphrefly.core.sugar import state
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
-
-    from graphrefly.core.node import NodeImpl
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,7 +41,7 @@ class ObserveResult:
     values: dict[str, Any] = field(default_factory=dict)
     dirty_count: int = 0
     resolved_count: int = 0
-    events: list[tuple[str, Any]] = field(default_factory=list)
+    events: list[dict[str, Any]] = field(default_factory=list)
     completed_cleanly: bool = False
     errored: bool = False
     _dispose_fn: Callable[[], None] | None = field(default=None, repr=False)
@@ -590,7 +589,20 @@ class Graph:
                 nodes_map = {p: d for p, d in raw["nodes"].items() if filter(p, d)}
             elif isinstance(filter, dict):
                 def _match(desc: dict[str, Any]) -> bool:
-                    return all(desc.get(k) == v for k, v in filter.items())
+                    for k, v in filter.items():
+                        if k in ("deps_includes", "depsIncludes"):
+                            deps = desc.get("deps")
+                            if not isinstance(deps, list) or str(v) not in deps:
+                                return False
+                            continue
+                        if k in ("meta_has", "metaHas"):
+                            meta = desc.get("meta")
+                            if not isinstance(meta, dict) or str(v) not in meta:
+                                return False
+                            continue
+                        if desc.get(k) != v:
+                            return False
+                    return True
 
                 nodes_map = {p: d for p, d in raw["nodes"].items() if _match(d)}
             visible_after_filter = set(nodes_map.keys())
@@ -616,6 +628,9 @@ class Graph:
         *,
         actor: Any | None = None,
         structured: bool = False,
+        timeline: bool = False,
+        causal: bool = False,
+        derived: bool = False,
     ) -> GraphObserveSource | ObserveResult:
         """Live message stream for one node (and its path) or the whole graph (§3.6).
 
@@ -625,7 +640,8 @@ class Graph:
         Nodes with a ``guard`` require ``actor`` such that ``guard(actor, "observe")`` is
         true (default actor is system — :func:`~graphrefly.core.guard.system_actor`).
 
-        When ``structured=True``, returns an :class:`ObserveResult` that accumulates
+        When ``structured=True`` (or ``timeline`` / ``causal`` / ``derived``),
+        returns an :class:`ObserveResult` that accumulates
         events, tracks counts, and provides a ``dispose()`` method.
 
         Args:
@@ -633,11 +649,56 @@ class Graph:
             actor: Optional actor for guard checking.
             structured: If ``True``, return an :class:`ObserveResult` instead of
                 a raw :class:`GraphObserveSource`.
+            timeline: Include ``timestamp_ns`` and ``in_batch`` on events.
+            causal: Include trigger dep info (single-path derived/compute nodes).
+            derived: Include per-evaluation dep snapshots (single-path derived/compute nodes).
         """
         source = GraphObserveSource(self, path, actor)
-        if not structured:
+        wants_structured = structured or timeline or causal or derived
+        if not wants_structured or not self.inspector_enabled:
             return source
         result = ObserveResult()
+        last_trigger_dep_index: int | None = None
+        last_run_dep_values: list[Any] | None = None
+        detach_hook: Callable[[], None] | None = None
+
+        def _base_event(
+            evt_type: str, *, data: Any = None, event_path: str | None = None
+        ) -> dict[str, Any]:
+            entry: dict[str, Any] = {"type": evt_type}
+            if event_path is not None:
+                entry["path"] = event_path
+            if data is not None:
+                entry["data"] = data
+            if timeline:
+                entry["timestamp_ns"] = time.time_ns()
+                entry["in_batch"] = is_batching()
+            return entry
+
+        if (causal or derived) and path is not None:
+            n = self.node(path)
+            if isinstance(n, NodeImpl):
+                def _hook(event: dict[str, Any]) -> None:
+                    nonlocal last_trigger_dep_index, last_run_dep_values
+                    kind = event.get("kind")
+                    if kind == "dep_message":
+                        idx = event.get("dep_index")
+                        last_trigger_dep_index = int(idx) if isinstance(idx, int) else None
+                        return
+                    if kind == "run":
+                        dep_vals_raw = event.get("dep_values")
+                        dep_vals = (
+                            list(dep_vals_raw)
+                            if isinstance(dep_vals_raw, list)
+                            else list(dep_vals_raw or [])
+                        )
+                        last_run_dep_values = dep_vals
+                        if derived:
+                            de = _base_event("derived")
+                            de["dep_values"] = dep_vals
+                            result.events.append(de)
+
+                detach_hook = n._set_inspector_hook(_hook)
 
         if path is not None:
             def _sink(msgs: Messages) -> None:
@@ -645,20 +706,45 @@ class Graph:
                     t = m[0]
                     if t is MessageType.DATA:
                         val = m[1] if len(m) > 1 else None
-                        result.values[path] = val  # type: ignore[index]
-                        result.events.append((path, m))  # type: ignore[arg-type]
+                        result.values[path] = val
+                        event = _base_event("data", data=val)
+                        if causal and last_run_dep_values is not None:
+                            event["trigger_dep_index"] = last_trigger_dep_index
+                            if (
+                                isinstance(last_trigger_dep_index, int)
+                                and last_trigger_dep_index >= 0
+                                and isinstance(n, NodeImpl)
+                                and last_trigger_dep_index < len(n._deps)
+                            ):
+                                event["trigger_dep_name"] = n._deps[last_trigger_dep_index].name
+                            event["dep_values"] = list(last_run_dep_values)
+                        result.events.append(event)
                     elif t is MessageType.DIRTY:
                         result.dirty_count += 1
-                        result.events.append((path, m))  # type: ignore[arg-type]
+                        result.events.append(_base_event("dirty"))
                     elif t is MessageType.RESOLVED:
                         result.resolved_count += 1
-                        result.events.append((path, m))  # type: ignore[arg-type]
+                        event = _base_event("resolved")
+                        if causal and last_run_dep_values is not None:
+                            event["trigger_dep_index"] = last_trigger_dep_index
+                            if (
+                                isinstance(last_trigger_dep_index, int)
+                                and last_trigger_dep_index >= 0
+                                and isinstance(n, NodeImpl)
+                                and last_trigger_dep_index < len(n._deps)
+                            ):
+                                event["trigger_dep_name"] = n._deps[last_trigger_dep_index].name
+                            event["dep_values"] = list(last_run_dep_values)
+                        result.events.append(event)
                     elif t is MessageType.COMPLETE:
-                        result.completed_cleanly = True
-                        result.events.append((path, m))  # type: ignore[arg-type]
+                        if not result.errored:
+                            result.completed_cleanly = True
+                        result.events.append(_base_event("complete"))
                     elif t is MessageType.ERROR:
                         result.errored = True
-                        result.events.append((path, m))  # type: ignore[arg-type]
+                        result.events.append(
+                            _base_event("error", data=m[1] if len(m) > 1 else None)
+                        )
 
             unsub = source.subscribe(_sink)
         else:
@@ -668,23 +754,35 @@ class Graph:
                     if t is MessageType.DATA:
                         val = m[1] if len(m) > 1 else None
                         result.values[qpath] = val
-                        result.events.append((qpath, m))
+                        result.events.append(_base_event("data", data=val, event_path=qpath))
                     elif t is MessageType.DIRTY:
                         result.dirty_count += 1
-                        result.events.append((qpath, m))
+                        result.events.append(_base_event("dirty", event_path=qpath))
                     elif t is MessageType.RESOLVED:
                         result.resolved_count += 1
-                        result.events.append((qpath, m))
+                        result.events.append(_base_event("resolved", event_path=qpath))
                     elif t is MessageType.COMPLETE:
-                        result.completed_cleanly = True
-                        result.events.append((qpath, m))
+                        if not result.errored:
+                            result.completed_cleanly = True
+                        result.events.append(_base_event("complete", event_path=qpath))
                     elif t is MessageType.ERROR:
                         result.errored = True
-                        result.events.append((qpath, m))
+                        result.events.append(
+                            _base_event(
+                                "error",
+                                data=m[1] if len(m) > 1 else None,
+                                event_path=qpath,
+                            )
+                        )
 
             unsub = source.subscribe(_graph_sink)
 
-        result._dispose_fn = unsub
+        def _dispose() -> None:
+            unsub()
+            if detach_hook is not None:
+                detach_hook()
+
+        result._dispose_fn = _dispose
         return result
 
     def node(self, path: str) -> NodeImpl[Any]:
