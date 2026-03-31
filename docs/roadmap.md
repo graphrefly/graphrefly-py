@@ -221,10 +221,10 @@ Each returns a `Graph` — uniform introspection, lifecycle, persistence.
 
 ### 4.1 — Orchestration
 
-- [ ] `pipeline()` → Graph
-- [ ] `task()`, `branch()`, `gate()`, `approval()`
-- [ ] `for_each()`, `join()`, `loop()`, `sub_pipeline()`
-- [ ] `sensor()`, `wait()`, `on_failure()`
+- [x] `pipeline()` → Graph
+- [x] `task()`, `branch()`, `gate()`, `approval()`
+- [x] `for_each()`, `join()`, `loop()`, `sub_pipeline()`
+- [x] `sensor()`, `wait()`, `on_failure()`
 - [x] Mermaid/D2 diagram export
 
 ### 4.2 — Messaging

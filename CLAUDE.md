@@ -27,6 +27,13 @@ install dependencies.
 - `docs/test-guidance.md` — testing conventions and organization
 - `archive/docs/SESSION-graphrefly-spec-design.md` — design lineage and rationale vs callbag-recharge
 
+## Time utility rule
+
+- Use `src/graphrefly/core/clock.py` utilities for all timestamps.
+- Internal/event-order durations must use `monotonic_ns()`.
+- Wall-clock attribution payloads must use `wall_clock_ns()`.
+- Do not call `time.time_ns()` / `time.monotonic_ns()` directly outside `core/clock.py`.
+
 ## Predecessor repo (reference)
 
 For **implementation help**, **test patterns**, **concurrency** (e.g. subgraph locks), and
