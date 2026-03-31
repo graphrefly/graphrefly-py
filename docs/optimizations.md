@@ -674,6 +674,18 @@ Applies to `src/extra/operators.ts` and `graphrefly.extra.tier2`. **Keep the tab
 1. eager terminal teardown + idempotent close behavior, and
 2. explicit sink error contract (propagate, swallow, or map to a structured callback/error channel).
 
+### Filesystem watch adapter contract (`from_fs_watch` / `fromFSWatch`)
+
+**Resolved (2026-03-31):** Cross-language adapter contract for filesystem watch sources now standardizes on:
+
+1. **Debounce-only, no polling fallback** (event-driven watcher backends only),
+2. **Dual-path glob matching** against both absolute path and watch-root-relative path,
+3. **Expanded payload shape** with `path`, `root`, `relative_path`, `timestamp_ns`,
+4. **Rename-aware payloads** (TS classifies `fs.watch` rename notifications with best-effort `create`/`delete` and preserves `rename` fallback; Py preserves move/rename semantics and includes `src_path`/`dest_path` when available),
+5. **Watcher error handling via protocol** (`[[ERROR, err]]`) with teardown-latched cleanup.
+
+**Rationale:** Prevent silent filter mismatches, preserve rename semantics, and keep lifecycle/error behavior inside GraphReFly message protocol without violating the no-polling invariant.
+
 ### Adapter behavior contract scope (`from_webhook` / `from_websocket` / `to_websocket`)
 
 **Open decision:** Should we lock and document a shared cross-language contract for adapter behavior beyond core tuple mapping?

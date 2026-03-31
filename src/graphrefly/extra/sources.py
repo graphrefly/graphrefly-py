@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import re
 import threading
 import urllib.error
 import urllib.request
@@ -872,6 +874,236 @@ def from_event_emitter(
     return node(start, describe_kind="from_event_emitter", complete_when_deps_complete=False)
 
 
+def _glob_to_regex(pattern: str) -> re.Pattern[str]:
+    out: list[str] = ["^"]
+    i = 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "*":
+            if i + 1 < len(pattern) and pattern[i + 1] == "*":
+                out.append(".*")
+                i += 2
+                continue
+            out.append("[^/]*")
+            i += 1
+            continue
+        out.append(re.escape(ch))
+        i += 1
+    out.append("$")
+    return re.compile("".join(out))
+
+
+def _matches_any(path: str, patterns: list[re.Pattern[str]]) -> bool:
+    return any(p.search(path) is not None for p in patterns)
+
+
+def _build_watchdog_backend(
+    paths: list[str],
+    recursive: bool,
+    on_event: Callable[[str, str, str, str | None, str | None], None],
+    on_error: Callable[[BaseException], None],
+) -> tuple[list[Any], Callable[[], None]]:
+    try:
+        from watchdog.events import FileSystemEventHandler  # type: ignore[import-not-found]
+        from watchdog.observers import Observer  # type: ignore[import-not-found]
+    except Exception as err:  # pragma: no cover - exercised via monkeypatch in tests
+        msg = (
+            "from_fs_watch requires watchdog (no polling fallback by design). "
+            "Install with `uv add watchdog`."
+        )
+        raise RuntimeError(msg) from err
+
+    class _Handler(FileSystemEventHandler):  # type: ignore[misc]
+        def __init__(self, root: str) -> None:
+            super().__init__()
+            self._root = root
+
+        def on_any_event(self, event: Any) -> None:
+            if getattr(event, "is_directory", False):
+                return
+            try:
+                event_type = str(getattr(event, "event_type", "change"))
+                src_path = getattr(event, "src_path", None)
+                dest_path = getattr(event, "dest_path", None)
+                path = str(dest_path or src_path or getattr(event, "path", ""))
+                if path:
+                    on_event(
+                        event_type,
+                        path,
+                        self._root,
+                        str(src_path) if src_path else None,
+                        str(dest_path) if dest_path else None,
+                    )
+            except BaseException as err:  # pragma: no cover - defensive callback path
+                on_error(err)
+
+    observers: list[Any] = []
+    try:
+        for p in paths:
+            observer = Observer()
+            observer.schedule(_Handler(str(os.path.abspath(p))), p, recursive=recursive)
+            observer.daemon = True
+            observer.start()
+            observers.append(observer)
+    except Exception:
+        for observer in observers:
+            with suppress(Exception):
+                observer.stop()
+        for observer in observers:
+            with suppress(Exception):
+                observer.join(timeout=1.0)
+        raise
+
+    def stop() -> None:
+        for observer in observers:
+            observer.stop()
+        for observer in observers:
+            observer.join(timeout=1.0)
+
+    return observers, stop
+
+
+def from_fs_watch(
+    paths: str | list[str],
+    *,
+    recursive: bool = True,
+    debounce: float = 0.1,
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
+    **kwargs: Any,
+) -> Node[Any]:
+    """Watch filesystem changes and emit debounced events.
+
+    This source intentionally uses event-driven OS watchers only (no polling fallback).
+    """
+    path_list = [paths] if isinstance(paths, str) else list(paths)
+    if len(path_list) == 0:
+        msg = "from_fs_watch expects at least one path"
+        raise ValueError(msg)
+    include_patterns = [_glob_to_regex(p) for p in (include or [])]
+    exclude_patterns = [
+        _glob_to_regex(p) for p in (exclude or ["**/node_modules/**", "**/.git/**", "**/dist/**"])
+    ]
+
+    def normalize_type(event_type: str) -> str:
+        low = event_type.lower()
+        if low in {"modified", "change", "changed"}:
+            return "change"
+        if low in {"created", "create"}:
+            return "create"
+        if low in {"deleted", "delete"}:
+            return "delete"
+        if low in {"moved", "rename", "renamed"}:
+            return "rename"
+        return "change"
+
+    def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
+        lock = threading.Lock()
+        pending: dict[str, dict[str, Any]] = {}
+        timer: list[threading.Timer | None] = [None]
+        active = [True]
+        generation = [0]
+        def _noop_stop_backend() -> None:
+            return
+        stop_backend_ref: list[Callable[[], None]] = [_noop_stop_backend]
+
+        def flush(token: int) -> None:
+            batch_msgs: Messages = []
+            with lock:
+                timer[0] = None
+                if not active[0] or not pending:
+                    return
+                if token != generation[0]:
+                    pending.clear()
+                    return
+                batch_msgs = [(MessageType.DATA, evt.copy()) for evt in pending.values()]
+                pending.clear()
+            with lock:
+                if not active[0] or token != generation[0]:
+                    return
+            actions.down(batch_msgs)
+
+        def queue_event(
+            event_type: str,
+            raw_path: str,
+            root: str,
+            src_path: str | None,
+            dest_path: str | None,
+        ) -> None:
+            normalized_path = os.path.abspath(raw_path).replace("\\", "/")
+            normalized_root = os.path.abspath(root).replace("\\", "/")
+            rel_path = os.path.relpath(normalized_path, normalized_root).replace("\\", "/")
+            included = (
+                len(include_patterns) == 0
+                or _matches_any(normalized_path, include_patterns)
+                or _matches_any(rel_path, include_patterns)
+            )
+            if not included:
+                return
+            excluded = _matches_any(normalized_path, exclude_patterns) or _matches_any(
+                rel_path, exclude_patterns
+            )
+            if excluded:
+                return
+            event = {
+                "type": normalize_type(event_type),
+                "path": normalized_path,
+                "root": normalized_root,
+                "relative_path": rel_path,
+                "timestamp_ns": wall_clock_ns(),
+            }
+            if src_path is not None:
+                event["src_path"] = os.path.abspath(src_path).replace("\\", "/")
+            if dest_path is not None:
+                event["dest_path"] = os.path.abspath(dest_path).replace("\\", "/")
+            with lock:
+                if not active[0]:
+                    return
+                pending[normalized_path] = event
+                if timer[0] is not None:
+                    timer[0].cancel()
+                token = generation[0]
+                t = threading.Timer(debounce, lambda: flush(token))
+                t.daemon = True
+                t.start()
+                timer[0] = t
+
+        def emit_error(err: BaseException) -> None:
+            with lock:
+                if not active[0]:
+                    return
+                active[0] = False
+                generation[0] += 1
+                if timer[0] is not None:
+                    timer[0].cancel()
+                    timer[0] = None
+                pending.clear()
+            stop_backend_ref[0]()
+            actions.down([(MessageType.ERROR, err)])
+
+        _observers, stop_backend = _build_watchdog_backend(
+            path_list,
+            recursive,
+            queue_event,
+            emit_error,
+        )
+        stop_backend_ref[0] = stop_backend
+
+        def cleanup() -> None:
+            with lock:
+                active[0] = False
+                generation[0] += 1
+                if timer[0] is not None:
+                    timer[0].cancel()
+                    timer[0] = None
+                pending.clear()
+            stop_backend()
+
+        return cleanup
+
+    return node(start, describe_kind="from_fs_watch", complete_when_deps_complete=False, **kwargs)
+
+
 def from_webhook(
     register: Callable[
         [
@@ -1367,6 +1599,7 @@ __all__ = [
     "from_awaitable",
     "from_cron",
     "from_event_emitter",
+    "from_fs_watch",
     "from_websocket",
     "from_webhook",
     "from_http",

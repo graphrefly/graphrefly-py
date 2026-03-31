@@ -25,6 +25,7 @@ from graphrefly.extra.sources import (
     from_awaitable,
     from_cron,
     from_event_emitter,
+    from_fs_watch,
     from_iter,
     from_timer,
     from_webhook,
@@ -352,6 +353,98 @@ def test_from_event_emitter() -> None:
     time.sleep(0.05)
     unsub()
     assert out == ["hello", "world"]
+
+
+def test_from_fs_watch_debounce_without_polling(monkeypatch: pytest.MonkeyPatch) -> None:
+    callbacks: list[Callable[[str, str, str, str | None, str | None], None]] = []
+
+    def fake_backend(
+        paths: list[str],
+        recursive: bool,
+        on_event: Callable[[str, str, str, str | None, str | None], None],
+        on_error: Callable[[BaseException], None],
+    ) -> tuple[list[Any], Callable[[], None]]:
+        _ = (paths, recursive)
+        callbacks.append(on_event)
+        _ = on_error
+        return [], lambda: None
+
+    monkeypatch.setattr("graphrefly.extra.sources._build_watchdog_backend", fake_backend)
+    sink: list[Any] = []
+    node = from_fs_watch(
+        "/tmp/project",
+        debounce=0.03,
+        include=["**/*.py"],
+        exclude=["**/ignored/**"],
+    )
+    unsub = node.subscribe(sink.append)
+    cb = callbacks[0]
+    cb("modified", "/tmp/project/main.py", "/tmp/project", None, None)
+    cb("modified", "/tmp/project/main.py", "/tmp/project", None, None)
+    cb("modified", "/tmp/project/ignored/nope.py", "/tmp/project", None, None)
+    time.sleep(0.1)
+    unsub()
+    events = [m[1] for batch in sink for m in batch if m[0] is MessageType.DATA]
+    assert len(events) == 1
+    assert events[0]["path"].endswith("/main.py")
+    assert events[0]["relative_path"] == "main.py"
+    assert events[0]["root"] == "/tmp/project"
+    assert isinstance(events[0]["timestamp_ns"], int)
+
+
+def test_from_fs_watch_runtime_backend_error_emits_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    error_callbacks: list[Callable[[BaseException], None]] = []
+
+    def fake_backend(
+        paths: list[str],
+        recursive: bool,
+        on_event: Callable[[str, str, str, str | None, str | None], None],
+        on_error: Callable[[BaseException], None],
+    ) -> tuple[list[Any], Callable[[], None]]:
+        _ = (paths, recursive, on_event)
+        error_callbacks.append(on_error)
+        return [], lambda: None
+
+    monkeypatch.setattr("graphrefly.extra.sources._build_watchdog_backend", fake_backend)
+    sink: list[Any] = []
+    node = from_fs_watch("/tmp/project", debounce=0.03)
+    unsub = node.subscribe(sink.append)
+    error_callbacks[0](RuntimeError("watch-failed"))
+    time.sleep(0.05)
+    unsub()
+    assert any(
+        m[0] is MessageType.ERROR and isinstance(m[1], RuntimeError) and str(m[1]) == "watch-failed"
+        for batch in sink
+        for m in batch
+    )
+
+
+def test_from_fs_watch_setup_failure_emits_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_backend(
+        paths: list[str],
+        recursive: bool,
+        on_event: Callable[[str, str, str, str | None, str | None], None],
+        on_error: Callable[[BaseException], None],
+    ) -> tuple[list[Any], Callable[[], None]]:
+        _ = (paths, recursive, on_event, on_error)
+        raise RuntimeError("setup-failed")
+
+    monkeypatch.setattr("graphrefly.extra.sources._build_watchdog_backend", fake_backend)
+    sink: list[Any] = []
+    node = from_fs_watch("/tmp/project", debounce=0.03)
+    unsub = node.subscribe(sink.append)
+    time.sleep(0.05)
+    unsub()
+    assert any(
+        m[0] is MessageType.ERROR and isinstance(m[1], RuntimeError) and str(m[1]) == "setup-failed"
+        for batch in sink
+        for m in batch
+    )
+
+
+def test_from_fs_watch_rejects_empty_paths() -> None:
+    with pytest.raises(ValueError, match="at least one path"):
+        from_fs_watch([])
 
 
 def test_from_webhook_emits_and_cleans_up() -> None:
