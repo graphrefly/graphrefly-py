@@ -61,6 +61,7 @@ from graphrefly.graph import (
     TraceEntry,
     reachable,
 )
+from graphrefly import patterns
 
 __version__ = "0.1.0"
 
@@ -76,6 +77,7 @@ __all__ = [
     "SpyHandle",
     "TraceEntry",
     "reachable",
+    "patterns",
     "Actor",
     "DeferWhen",
     "DynamicNodeImpl",

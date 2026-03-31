@@ -525,6 +525,14 @@ These are tracked primarily in `graphrefly-ts/docs/optimizations.md`; listed her
 
 **Rationale:** Better ergonomics and stronger parity with AI-generated integration code while preserving the single reactive output model.
 
+### F. Phase 4.1 orchestration API shape (`pipeline` + step naming collisions)
+
+**Resolved (Option B):** Orchestration primitives ship under a grouped namespace (`patterns.orchestration.*`), not as colliding top-level exports. This keeps Phase 2 `extra` names (`for_each`, `gate`) intact while exposing solution-level workflow APIs as domain constructs.
+
+**Current contract:** `patterns.orchestration.gate` / `approval` / `branch` / `task` are workflow-step builders over `Graph` topology and lifecycle, not aliases of stream-only `extra` operators/sinks.
+
+**Parity note:** `describe()["nodes"][*]["meta"]` uses canonical key `orchestration_type` in both ports for orchestration step metadata.
+
 ---
 
 ## Deferred follow-ups (QA)
