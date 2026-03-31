@@ -250,11 +250,11 @@ Pulsar-inspired messaging features for topic retention, cursor consumers, and qu
 
 ### 4.3 — Memory
 
-- [ ] `collection()` → Graph
-- [ ] `light_collection()` (FIFO/LRU)
-- [ ] `vector_index()` (HNSW)
-- [ ] `knowledge_graph()` → Graph
-- [ ] `decay()` scoring
+- [x] `collection()` → Graph
+- [x] `light_collection()` (FIFO/LRU)
+- [x] `vector_index()` (HNSW)
+- [x] `knowledge_graph()` → Graph
+- [x] `decay()` scoring
 
 ### 4.4 — AI surface
 
