@@ -1,10 +1,10 @@
 # Optimizations and Open Decisions
 
-## Open design decisions
+## Resolved design decisions (compat adapters)
 
-- Compat adapter write semantics: decide whether framework adapter setters should forward `DATA` when payload is `None`/`undefined`-equivalent (for optional payload nodes) instead of dropping the write.
-- Compat adapter lifecycle semantics: decide whether subscriptions should auto-dispose on terminal messages (`COMPLETE`/`ERROR`) while the UI scope remains mounted, or remain mounted until framework teardown.
-- Compat adapter record-sync semantics: decide whether keyed record subscriptions should ignore phase-1 `DIRTY` waves and only resubscribe on settled phase-2 key updates (`DATA`/`RESOLVED`).
+- **Compat adapter write semantics (resolved 2026-03-31):** Framework adapter setters **must forward** `DATA` when payload is `None`/`undefined`-equivalent (for optional payload nodes). `None` is a valid `T`; dropping writes silently loses data.
+- **Compat adapter lifecycle semantics (resolved 2026-03-31):** Subscriptions **remain mounted until framework teardown**, not auto-disposed on terminal messages (`COMPLETE`/`ERROR`). The framework owns lifecycle, not the protocol.
+- **Compat adapter record-sync semantics (resolved 2026-03-31):** Keyed record subscriptions **ignore phase-1 `DIRTY` waves** and only resubscribe on settled phase-2 key updates (`DATA`/`RESOLVED`). `DIRTY` is transient; acting on it causes unnecessary churn.
 # Optimizations
 
 `graphrefly-py` prioritizes protocol correctness and parity with `graphrefly-ts`, with Python-specific encoding (e.g. `StrEnum` message tags, unlimited `int` bitmasks). This document tracks built-in optimizations and cross-language notes in a format aligned with `graphrefly-ts/docs/optimizations.md`.
@@ -168,7 +168,7 @@ Both ports treat “`fn` returned a callable” as a **cleanup** (TS: `typeof ou
 | | |
 |--|--|
 | **Shared** | `connect` validates that the target node’s dependency list includes the source node (**reference identity**). Edges are **pure wires** (no transforms). `connect` is **idempotent** for the same `(from, to)` pair. |
-| **disconnect** | Both ports **throw** if the edge was not registered. Dropping an edge does **not** remove constructor-time deps on the node (registry / future `describe()`). **See Open design decisions §C** (QA 1d #2). |
+| **disconnect** | Both ports **throw** if the edge was not registered. Dropping an edge does **not** remove constructor-time deps on the node (registry / future `describe()`). **See Resolved design decisions §C** (QA 1d #2). |
 | **remove** | Unregisters the node, drops incident edges, sends **`[[TEARDOWN]]`** to that node. |
 | **Python** | `Graph(..., {"thread_safe": True})` (default): registry uses an `RLock`; **`down([[TEARDOWN]])` runs after the lock is released** on `remove`. |
 | **TypeScript** | No graph-level lock (single-threaded spec). |
@@ -263,7 +263,7 @@ Cross-language: `graphrefly-ts/docs/optimizations.md` §15. **Python (shipped):*
 | Node internals | Class-based `NodeImpl`, all methods on class | Class-based `NodeImpl`, V8 hidden class optimization, prototype methods |
 | Dep-value identity check | Before cleanup (skip cleanup+fn on no-op) | Before cleanup (skip cleanup+fn on no-op) |
 | `INVALIDATE` (§1.2) | Cleanup + clear `_cached` + `_last_dep_values`; terminal passthrough (§9); no auto recompute | Same |
-| `Graph` Phase 1.1 | `thread_safe` + `RLock`; TEARDOWN after unlock on `remove`; `disconnect` vs `_deps` → §C | Registry only; `connect` / `disconnect` errors aligned; see §C |
+| `Graph` Phase 1.1 | `thread_safe` + `RLock`; TEARDOWN after unlock on `remove`; `disconnect` registry-only (§C resolved) | Registry only; `connect` / `disconnect` errors aligned; §C resolved |
 | `Graph` Phase 1.2 | Aligned: `::` path separator, mount `remove` + subtree TEARDOWN, qualified paths, `edges()`, signal mounts-first, `resolve` strips leading name, `:` in names OK; see §14 | Same; see §14 |
 | `Graph` Phase 1.3 | `describe`, `observe`, `GRAPH_META_SEGMENT`, `signal`→meta, `describe_kind` on sugar; see §15 | TS: `describe()`, `observe()`, `GRAPH_META_SEGMENT`, `describeKind` on sugar; see graphrefly-ts §15 | `observe()` order: TS full-path `localeCompare` vs Py per-level sort (§15) |
 | `Graph` Phase 1.4 | `destroy`, `snapshot` (flat `version: 1`), `restore` (name check + type filter + silent catch), `from_snapshot(data, build=)`, `to_json()` → str + `\n`; see §16 | `destroy`, `snapshot`, `restore`, `fromSnapshot(data, build?)`, `toJSON()` → object, `toJSONString()` → str + `\n`; see §16 |
@@ -449,9 +449,9 @@ Both ports now align on the following:
 - **Extraction contract is strict**: `upsert` is required by contract; malformed payloads are ignored by internal sink wiring (no imperative exception leakage to caller).
 - **Eviction contract is explicit**: `evict` accepts `bool | Node[bool]` on both sides.
 
-### Open design items (low priority)
+### Resolved design items (low priority)
 
-1. **`_is_cleanup_fn` / `isCleanupFn` treats any callable return as cleanup.** Both languages use `callable(value)` / `typeof value === "function"`. A compute function cannot emit a callable as a data value — it will be silently swallowed as cleanup. Fix: accept `{ cleanup: fn }` wrapper or add an opt-out flag. Low priority because the pattern is well-documented and rarely needed.
+1. **`_is_cleanup_fn` / `isCleanupFn` treats any callable return as cleanup (resolved 2026-03-31 — document limitation).** Both languages use `callable(value)` / `typeof value === "function"`. A compute function cannot emit a callable as a data value — it will be silently swallowed as cleanup. **Decision:** Document this as a known limitation in docstrings on `node()` and in API docs. No wrapper or opt-out flag — the pattern is well-documented, extremely rare in practice, and adding `{ cleanup: fn }` would add API surface for a near-zero use case.
 
 2. **Describe `type` before first run (operator vs derived).** Both ports: `describe_kind` / `describeKind` on node options and sugar (`effect`, `producer`, `derived`); operators that only use `down()`/`emit()` still infer via `_manual_emit_used` after a run unless `describe_kind="operator"` is set.
 
@@ -545,17 +545,15 @@ Both ports now align on the following:
 
 ---
 
-## Open design decisions (needs product/spec call)
+## Design decisions (QA review)
 
-These are tracked primarily in `graphrefly-ts/docs/optimizations.md`; listed here for cross-language visibility.
+These came out of QA review. Most are now **resolved** (2026-03-31); remaining items are deferred with rationale. Tracked in both `graphrefly-ts/docs/optimizations.md` and here for cross-language visibility.
 
 ### A. `COMPLETE` when all dependencies complete
 
-**Current behavior:** A node with dependencies and a compute `fn` may emit `[[COMPLETE]]` when **every** upstream dependency has emitted `COMPLETE`.
+**Resolved (2026-03-31, Option A3):** Auto-completion is controlled via `complete_when_deps_complete` (Python) / `completeWhenDepsComplete` (TS). Both ports already expose this option. Defaults: **`True`** for effect and operator nodes (matches spec §1.3.5 — effects complete when all deps complete), **`False`** for derived nodes (derived nodes should stay alive for future `INVALIDATE` / resubscription). Most operators already set `complete_when_deps_complete=False` explicitly.
 
-**Spec note:** `~/src/graphrefly/GRAPHREFLY-SPEC.md` §1.3.5 states that **effect** nodes complete when all deps complete — it does not necessarily require the same rule for derived/operator-style nodes.
-
-**Decision needed:** Should auto-completion apply only to side-effect nodes (`fn` returns nothing), always, never, or behind an explicit option (e.g. `complete_when_deps_complete`)? TypeScript already exposes `completeWhenDepsComplete` as a node option (default `true`).
+**Rationale:** The spec mandates effect-node completion; derived nodes benefit from staying alive for invalidation and Graph lifecycle. The existing opt-in flag gives maximum flexibility.
 
 ### B. More than 31 dependencies
 
@@ -563,17 +561,17 @@ These are tracked primarily in `graphrefly-ts/docs/optimizations.md`; listed her
 
 ### C. `graph.disconnect` vs `NodeImpl` dependency lists (QA 1d #2)
 
-**Current behavior:** Phase 1.1 `Graph.disconnect(from, to)` removes the `(from, to)` pair from the graph’s **edge registry** only. It does **not** mutate the target node’s constructor-time dependency list (`NodeImpl._deps` in Python; the fixed deps array inside `NodeImpl` in TypeScript). Upstream/downstream **message wiring** tied to those deps is unchanged.
+**Resolved (2026-03-31, Option C1 — registry-only):** `Graph.disconnect(from, to)` removes the `(from, to)` pair from the graph’s **edge registry** only. It does **not** mutate the target node’s constructor-time dependency list, bitmasks, or upstream subscriptions. This is the **long-term contract**.
 
-**Why:** Dependencies are fixed when the node is created. True single-edge removal would require core APIs (partial upstream unsubscribe, bitmask width and diamond invariants, thread-safety on the Python side, etc.).
+**Why registry-only is correct:** Dependencies are fixed at node construction. True single-edge removal would require partial upstream unsubscribe, bitmask width resizing, diamond invariant recalculation, and thread-safety rework in Python — enormous complexity for a niche use case. For runtime dep rewiring, use `dynamic_node` (Phase 0.3b), which handles full dep-diff, bitmask rebuild, and subscription lifecycle.
 
-**Decision needed:** Is registry-only `disconnect` the long-term contract (documentation + `describe()` as source of truth), or should a later phase add **dynamic topology** so `disconnect` (or a new API) actually detaches one dep? Align with `~/src/graphrefly/GRAPHREFLY-SPEC.md` §3.3 when the spec is tightened.
+**Contract:** `disconnect` is a registry/bookkeeping operation. `describe()` and `edges()` are the source of truth for registered topology. Message flow follows constructor-time deps, not the edge registry. Document this clearly in docstrings and API docs.
 
 ### D. Tier-2 time operators — `asyncio` vs wall-clock timers
 
-**Current Python design (intentional):** `graphrefly.extra.tier2` uses wall-clock **`threading.Timer`**. Callbacks emit via **`Node.down(..., internal=True)`**, which takes the **subgraph write lock** when **`thread_safe`** is true (default), so timer threads stay consistent with synchronous graph work **without** requiring a running **`asyncio`** loop.
+**Resolved (2026-03-31 — keep `threading.Timer` as default, defer `asyncio`):** `graphrefly.extra.tier2` uses wall-clock **`threading.Timer`**. Callbacks emit via **`Node.down(..., internal=True)`**, which takes the **subgraph write lock** when **`thread_safe`** is true (default), so timer threads stay consistent with synchronous graph work **without** requiring a running **`asyncio`** loop.
 
-**Open decision:** Whether to add optional **`asyncio`**-based scheduling later (e.g. **`loop.call_soon_threadsafe`** and loop-backed delays) so time-based operators integrate cleanly with apps that already own a **running event loop**, while keeping **`threading.Timer`** as the default portable baseline.
+**Rationale:** The current design is correct and portable. Optional **`asyncio`**-based scheduling (e.g. **`loop.call_soon_threadsafe`**) can be added later only when a concrete user reports integration friction with an existing event loop, while keeping **`threading.Timer`** as the default baseline.
 
 **TypeScript (parity note):** The same product split applies on the JS side: tighter integration with the host’s **event loop / task queue** vs timer primitives that do not assume a specific runtime; align cross-language when either port adds loop-integrated scheduling.
 
@@ -644,35 +642,28 @@ Applies to `graphrefly-ts` `src/extra/operators.ts` and `graphrefly.extra.tier1`
 
 Applies to `src/extra/operators.ts` and `graphrefly.extra.tier2`. **Keep the table below identical in both repos’ `docs/optimizations.md`.**
 
-| Item | Notes |
-|------|-------|
-| **`sample` + `undefined` as `T`** | Sampling uses the primary dep’s cached value (`get()`). If `T` allows `undefined`, a cache of `undefined` is indistinguishable from “no snapshot yet”; TypeScript currently emits `RESOLVED` instead of `DATA` in that case (JSDoc `@remarks`). Decide whether both ports should adopt an explicit optional/sentinel, or document the limitation only. |
-| **`mergeMap` / `merge_map` + `ERROR`** | When the outer stream or one inner emits `ERROR`, other inner subscriptions may keep running until they complete or unsubscribe. Rx-style “first error cancels all sibling inners” is **not** specified or implemented; align if product wants fail-fast teardown across active inners. |
+| Item | Status | Notes |
+|------|--------|-------|
+| **`sample` + `undefined` as `T`** | Documented limitation (2026-03-31) | Sampling uses the primary dep’s cached value (`get()`). If `T` allows `undefined`, a cache of `undefined` is indistinguishable from “no snapshot yet”; TypeScript currently emits `RESOLVED` instead of `DATA` in that case (JSDoc `@remarks`). This is a known TS-specific edge case (Python does not have the `undefined` ambiguity). Document in JSDoc; no sentinel needed. |
+| **`mergeMap` / `merge_map` + `ERROR`** | Documented limitation (2026-03-31) | When the outer stream or one inner emits `ERROR`, other inner subscriptions may keep running until they complete or unsubscribe. Rx-style “first error cancels all sibling inners” is **not** specified or implemented. Current behavior (inner errors don’t cascade) is arguably more useful for parallel work — no change needed. Document in JSDoc/docstrings. |
 
 ### TC39 compat read/subscribe terminal semantics (`Signal.get` / `Signal.sub`)
 
-**Open decision:** How should compat signals expose terminal/error state while staying aligned with GraphReFly core guarantees?
+**Resolved (2026-03-31, Option I1 — strict data-only):** Both ports standardize on **strict data-only** compat APIs:
 
-**Context:** The shared spec states `get()` never throws and returns last good value when status is `errored`; current TS compat pull patterns can throw on `ERROR` and rely on subscribe/unsubscribe for disconnected reads. `Signal.sub` currently forwards only `DATA`, which mirrors ergonomic watcher APIs but hides terminal tuples at the compat boundary.
+- `get()` **never throws** and returns the last good value when status is `errored`.
+- `Signal.sub` forwards **only `DATA`** — terminal/error tuples remain in the core/node API layer.
 
-**Decision needed:** For cross-language parity, should both ports standardize on:
-
-1. strict data-only compat APIs (`get` never throws; terminal handling remains in core/node APIs), or
-2. extended compat subscription hooks that optionally surface terminal/error events while preserving current shorthand.
+**Rationale:** The compat layer should be the simplest possible bridge to framework APIs. Users who need terminal observability should use the core `subscribe` / `node` APIs directly. This matches the spec's `get()` contract and keeps the compat surface minimal.
 
 ### WebSocket adapter lifecycle and error-policy seams (`from_websocket` / `to_websocket`)
 
-**Open decision:** Which lifecycle and sink error semantics should be guaranteed as cross-language parity behavior?
+**Resolved (2026-03-31, Option J1 — eager teardown + propagate):** Both ports standardize on:
 
-**Context:** Current adapters focus on ergonomic wiring, but two policy seams remain:
+1. **Eager terminal teardown:** Listeners are detached immediately on first terminal message (`COMPLETE`/`ERROR`). Close is idempotent — repeated terminal calls are no-ops.
+2. **Propagate sink errors:** `send`/`close` transport exceptions are surfaced as protocol-level `[[ERROR, err]]` to callers, not swallowed.
 
-1. terminal handling/teardown timing (whether listeners are detached immediately on first terminal vs deferred to unsubscribe), and
-2. sink-side transport failures (whether `send`/`close` exceptions are surfaced to callers or converted to protocol-level error handling).
-
-**Decision needed:** For parity, standardize both ports on:
-
-1. eager terminal teardown + idempotent close behavior, and
-2. explicit sink error contract (propagate, swallow, or map to a structured callback/error channel).
+**Rationale:** Keep it simple and predictable. Resources are freed immediately; errors are visible. Users who need reconnect behavior can layer `retry` on top — that's what the resilience operators are for.
 
 ### Filesystem watch adapter contract (`from_fs_watch` / `fromFSWatch`)
 
@@ -688,15 +679,13 @@ Applies to `src/extra/operators.ts` and `graphrefly.extra.tier2`. **Keep the tab
 
 ### Adapter behavior contract scope (`from_webhook` / `from_websocket` / `to_websocket`)
 
-**Open decision:** Should we lock and document a shared cross-language contract for adapter behavior beyond core tuple mapping?
+**Resolved (2026-03-31, Option K1 — define canonical contract now):** A shared cross-language adapter contract covers:
 
-**Context:** Current parity work aligned major seams, but we still need an explicit contract checklist for:
+1. **Register callback expectations:** `register` must return a cleanup callable. Registration is atomic — the cleanup callable is valid immediately. Errors raised during registration are forwarded as `[[ERROR, err]]`.
+2. **Terminal-time ordering:** Cleanup runs **before** terminal tuple emission. Listeners are detached before `COMPLETE`/`ERROR` propagates downstream.
+3. **Sink transport failure handling:** Transport exceptions (`send`/`close` failures) surface as `[[ERROR, err]]` — never swallowed, never raised to caller (see §J). Callback payloads are structured and non-raising by contract.
+4. **Idempotency:** Repeated terminal input (multiple `COMPLETE`/`ERROR`) is idempotent — first terminal wins, subsequent are no-ops. Malformed input is ignored (no crash).
 
-1. register callback expectations (atomicity, required cleanup callable, error forwarding),
-2. terminal-time ordering guarantees (cleanup-before-terminal vs terminal-before-cleanup),
-3. sink transport failure handling (structured callback payload shape and non-throwing expectations),
-4. idempotency guarantees under malformed/repeated terminal input.
-
-**Decision needed:** Define one canonical adapter contract and enforce it with mirrored tests in both repos before marking this seam fully closed.
+**Action:** Define `ADAPTER-CONTRACT.md` in both repos (or a shared spec section) and enforce with mirrored integration tests.
 
 ---

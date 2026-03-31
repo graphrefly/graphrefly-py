@@ -1589,6 +1589,213 @@ def to_sse(
 
 share_replay = replay
 
+
+# --- MCP & Git adapters (roadmap §5.2) ----------------------------------------
+
+
+def from_mcp(
+    client: Any,
+    *,
+    method: str = "notifications/message",
+    on_disconnect: Callable[[Callable[[Any], None]], None] | None = None,
+    **kwargs: Any,
+) -> Node[Any]:
+    """Wrap an MCP client's server-push notifications as a reactive source.
+
+    The caller owns the ``Client`` connection (``connect`` / ``close``).  ``from_mcp``
+    only registers a notification handler for the chosen *method* and emits each
+    notification payload as ``DATA``.
+
+    **Disconnect detection:** MCP SDK does not expose a built-in disconnect event.
+    Pass ``on_disconnect`` to wire an external signal (e.g. transport ``close`` event)
+    so the source can emit ``ERROR`` and tear down reactively.
+
+    Args:
+        client: Any object with a ``set_notification_handler(method, handler)`` method
+            (duck-typed — no SDK dependency).
+        method: MCP notification method to subscribe to.  Default ``"notifications/message"``.
+        on_disconnect: Optional callback ``(cb) -> None`` — call ``cb(err)`` when the
+            transport disconnects.
+
+    Returns:
+        A :class:`~graphrefly.core.node.Node` emitting one ``DATA`` per server notification.
+
+    Example:
+        ```python
+        from graphrefly.extra import from_mcp
+        tools = from_mcp(client, method="notifications/tools/list_changed")
+        ```
+    """
+
+    def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
+        active = [True]
+
+        def handler(notification: Any) -> None:
+            if active[0]:
+                actions.emit(notification)
+
+        client.set_notification_handler(method, handler)
+
+        if on_disconnect is not None:
+
+            def _on_dc(err: Any = None) -> None:
+                if not active[0]:
+                    return
+                active[0] = False
+                error_value = err if err is not None else Exception("MCP client disconnected")
+                actions.down(
+                    [(MessageType.ERROR, error_value)]
+                )
+
+            on_disconnect(_on_dc)
+
+        def cleanup() -> None:
+            active[0] = False
+            client.set_notification_handler(method, lambda _n: None)
+
+        return cleanup
+
+    return node(start, describe_kind="producer", **kwargs)
+
+
+def from_git_hook(
+    repo_path: str,
+    *,
+    poll_ms: int = 5000,
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
+    **kwargs: Any,
+) -> Node[Any]:
+    """Git change detection as a reactive source.
+
+    Polls for new commits on an interval and emits a structured ``GitEvent`` dict
+    whenever HEAD advances.  Zero filesystem side effects — no hook script installation.
+
+    **Limitations:** Polling cannot distinguish commit vs merge vs rebase — ``hook``
+    is always ``"post-commit"``.  When multiple commits land between polls, files are
+    aggregated but ``message``/``author`` reflect only the latest commit.
+
+    The emitted dict has keys: ``hook``, ``commit``, ``files``, ``message``, ``author``,
+    ``timestamp_ns``.
+
+    Cross-repo usage::
+
+        merge([from_git_hook(ts_repo), from_git_hook(py_repo)])
+
+    Args:
+        repo_path: Absolute path to the git repository root.
+        poll_ms: Polling interval in milliseconds.  Default ``5000``.
+        include: Glob patterns — only include matching changed files.
+        exclude: Glob patterns — exclude matching changed files.
+
+    Returns:
+        A :class:`~graphrefly.core.node.Node` emitting one ``DATA`` per new commit.
+    """
+    import subprocess
+
+    include_patterns = [_glob_to_regex(p) for p in (include or [])]
+    exclude_patterns = [_glob_to_regex(p) for p in (exclude or [])]
+
+    def _git(cmd: list[str]) -> str:
+        result = subprocess.run(  # noqa: S603
+            cmd,
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout.strip()
+
+    def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
+        active = [True]
+        timer: list[threading.Timer | None] = [None]
+
+        # P4: Seed with current HEAD; route errors through the protocol.
+        try:
+            last_seen = [_git(["git", "rev-parse", "HEAD"])]
+        except Exception as err:
+            actions.down([(MessageType.ERROR, err)])
+            return lambda: None
+
+        def check() -> None:
+            # P7: Top-level guard — any unexpected exception tears down cleanly.
+            try:
+                _check_inner()
+            except Exception as err:
+                if active[0]:
+                    actions.down([(MessageType.ERROR, err)])
+                    cleanup()
+
+        def _check_inner() -> None:
+            if not active[0]:
+                return
+            try:
+                head = _git(["git", "rev-parse", "HEAD"])
+            except Exception as err:
+                if active[0]:
+                    actions.down([(MessageType.ERROR, err)])
+                    cleanup()
+                return
+
+            if not active[0] or head == last_seen[0]:
+                schedule()
+                return
+
+            try:
+                files_raw = _git(["git", "diff", "--name-only", f"{last_seen[0]}..{head}"])
+                files = [f for f in files_raw.split("\n") if f]
+
+                if include_patterns:
+                    files = [f for f in files if _matches_any(f, include_patterns)]
+                if exclude_patterns:
+                    files = [f for f in files if not _matches_any(f, exclude_patterns)]
+
+                # P2: Target captured head SHA, not implicit HEAD.
+                message = _git(["git", "log", "-1", "--format=%s", head])
+                author = _git(["git", "log", "-1", "--format=%an", head])
+            except Exception as err:
+                if active[0]:
+                    actions.down([(MessageType.ERROR, err)])
+                    cleanup()
+                return
+
+            if not active[0]:
+                return
+            # P5: Emit before advancing last_seen.
+            actions.emit(
+                {
+                    "hook": "post-commit",
+                    "commit": head,
+                    "files": files,
+                    "message": message,
+                    "author": author,
+                    "timestamp_ns": wall_clock_ns(),
+                }
+            )
+            last_seen[0] = head
+            schedule()
+
+        def schedule() -> None:
+            if not active[0]:
+                return
+            t = threading.Timer(poll_ms / 1000.0, check)
+            t.daemon = True
+            timer[0] = t
+            t.start()
+
+        def cleanup() -> None:
+            active[0] = False
+            t = timer[0]
+            if t is not None:
+                t.cancel()
+            timer[0] = None
+
+        schedule()
+        return cleanup
+
+    return node(start, describe_kind="producer", **kwargs)
+
+
 __all__ = [
     "cached",
     "empty",
@@ -1600,6 +1807,8 @@ __all__ = [
     "from_cron",
     "from_event_emitter",
     "from_fs_watch",
+    "from_git_hook",
+    "from_mcp",
     "from_websocket",
     "from_webhook",
     "from_http",

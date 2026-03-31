@@ -299,10 +299,10 @@ Composition layer over 3.2 (`reactive_log`), 4.1 (sagas), 4.2 (event bus), 4.3 (
 ### 5.3 — Adapters
 
 - [x] `from_http`, `from_websocket` / `to_websocket`
-- [ ] `from_webhook`, `to_sse`
-- [ ] `from_mcp` (Model Context Protocol)
+- [x] `from_webhook`, `to_sse`
+- [x] `from_mcp` (Model Context Protocol)
 - [x] `from_fs_watch(paths, opts?)` — file system watcher as reactive source; debounced, glob include/exclude, recursive. Uses `watchdog`. Cleanup closes watchers on unsubscribe.
-- [ ] `from_git_hook(repo_path, opts?)` — git change detection as reactive source; emits structured `GitEvent` (commit, files, message, author). Default: polling via `git log --since`; opt-in hook script installation.
+- [x] `from_git_hook(repo_path, opts?)` — git change detection as reactive source; emits structured `GitEvent` (commit, files, message, author). Default: polling via `git log --since`; opt-in hook script installation.
 
 ### 5.4 — LLM tool integration
 

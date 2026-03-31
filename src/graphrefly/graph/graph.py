@@ -1599,10 +1599,16 @@ class Graph:
             self._edges.add(key)
 
     def disconnect(self, from_path: str, to_path: str) -> None:
-        """Remove a registered edge between two nodes (bookkeeping only).
+        """Remove a registered edge between two nodes.
 
-        Does not alter ``NodeImpl`` dependency lists. Raises :exc:`ValueError` if
-        the edge was never registered. Both paths accept ``::``-qualified formats.
+        **Registry-only (§C resolved):** This drops the edge from the graph's edge
+        registry only. It does **not** mutate the target node's constructor-time
+        dependency list, bitmasks, or upstream subscriptions. Message flow follows
+        constructor-time deps, not the edge registry. For runtime dep rewiring, use
+        :func:`~graphrefly.core.dynamic_node.dynamic_node`.
+
+        Raises :exc:`ValueError` if the edge was never registered. Both paths
+        accept ``::``-qualified formats.
 
         Args:
             from_path: Path of the upstream node.

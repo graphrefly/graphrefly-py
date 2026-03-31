@@ -26,7 +26,9 @@ from graphrefly.extra.sources import (
     from_cron,
     from_event_emitter,
     from_fs_watch,
+    from_git_hook,
     from_iter,
+    from_mcp,
     from_timer,
     from_webhook,
     from_websocket,
@@ -901,3 +903,250 @@ def test_to_sse_can_include_dirty_and_resolved() -> None:
 def test_to_sse_preserves_trailing_newline_lines() -> None:
     text = "".join(to_sse(of("a\n")))
     assert "event: data\ndata: a\ndata: \n\n" in text
+
+
+# --- fromMCP ---
+
+
+class _FakeMCPClient:
+    def __init__(self) -> None:
+        self._handlers: dict[str, Callable[..., None]] = {}
+
+    def set_notification_handler(self, method: str, handler: Callable[..., None]) -> None:
+        self._handlers[method] = handler
+
+    def push(self, method: str, payload: Any) -> None:
+        h = self._handlers.get(method)
+        if h is not None:
+            h(payload)
+
+
+def _collect_data(values: list[Any]) -> Callable[[Any], None]:
+    return lambda msgs: [values.append(m[1]) for m in msgs if m[0] == MessageType.DATA]
+
+
+def _collect_errors(values: list[Any]) -> Callable[[Any], None]:
+    return lambda msgs: [values.append(m[1]) for m in msgs if m[0] == MessageType.ERROR]
+
+
+def test_from_mcp_emits_data() -> None:
+    client = _FakeMCPClient()
+    n = from_mcp(client, method="notifications/tools/list_changed")
+    values: list[Any] = []
+    unsub = n.subscribe(_collect_data(values))
+
+    client.push("notifications/tools/list_changed", {"tools": ["a"]})
+    client.push("notifications/tools/list_changed", {"tools": ["a", "b"]})
+
+    assert len(values) == 2
+    assert values[0] == {"tools": ["a"]}
+    assert values[1] == {"tools": ["a", "b"]}
+    unsub()
+
+
+def test_from_mcp_defaults_to_notifications_message() -> None:
+    client = _FakeMCPClient()
+    n = from_mcp(client)
+    values: list[Any] = []
+    unsub = n.subscribe(_collect_data(values))
+
+    client.push("notifications/message", "hello")
+    assert values == ["hello"]
+    unsub()
+
+
+def test_from_mcp_suppresses_after_teardown() -> None:
+    client = _FakeMCPClient()
+    n = from_mcp(client)
+    values: list[Any] = []
+    unsub = n.subscribe(_collect_data(values))
+
+    client.push("notifications/message", "before")
+    count = len(values)
+    unsub()
+    client.push("notifications/message", "after")
+    assert len(values) == count
+
+
+def test_from_mcp_cleanup_sets_noop_handler() -> None:
+    client = _FakeMCPClient()
+    n = from_mcp(client)
+    unsub = n.subscribe(lambda _msgs: None)
+
+    before = client._handlers["notifications/message"]
+    unsub()
+    after = client._handlers["notifications/message"]
+
+    assert before is not after
+    # no-op after teardown should not raise or emit
+    after({"ignored": True})
+
+
+def test_from_mcp_on_disconnect_emits_error() -> None:
+    client = _FakeMCPClient()
+    dc_cb: list[Any] = []
+
+    def on_disconnect(cb: Any) -> None:
+        dc_cb.append(cb)
+
+    n = from_mcp(client, on_disconnect=on_disconnect)
+    errors: list[Any] = []
+    unsub = n.subscribe(_collect_errors(errors))
+
+    assert len(dc_cb) == 1
+    dc_cb[0](Exception("transport closed"))
+
+    assert len(errors) == 1
+    assert str(errors[0]) == "transport closed"
+    unsub()
+
+
+# --- fromGitHook ---
+
+
+def test_from_git_hook_emits_on_head_change(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    call_count = [0]
+    sha1 = "aaa111"
+    sha2 = "bbb222"
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> Any:
+        cmd_str = " ".join(cmd)
+        if "rev-parse HEAD" in cmd_str:
+            call_count[0] += 1
+            return type("R", (), {"stdout": sha1 if call_count[0] <= 1 else sha2})()
+        if "diff --name-only" in cmd_str:
+            return type("R", (), {"stdout": "src/foo.py\nsrc/bar.py\n"})()
+        if "--format=%s" in cmd_str:
+            return type("R", (), {"stdout": "fix: something"})()
+        if "--format=%an" in cmd_str:
+            return type("R", (), {"stdout": "Alice"})()
+        return type("R", (), {"stdout": ""})()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    n = from_git_hook("/fake/repo", poll_ms=50)
+    events: list[Any] = []
+    unsub = n.subscribe(_collect_data(events))
+
+    # Wait for at least one poll
+    time.sleep(0.15)
+
+    unsub()
+
+    assert len(events) >= 1
+    evt = events[0]
+    assert evt["commit"] == sha2
+    assert evt["files"] == ["src/foo.py", "src/bar.py"]
+    assert evt["message"] == "fix: something"
+    assert evt["author"] == "Alice"
+    assert evt["timestamp_ns"] > 0
+
+
+def test_from_git_hook_no_emit_when_head_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> Any:
+        return type("R", (), {"stdout": "aaa111"})()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    n = from_git_hook("/fake/repo", poll_ms=50)
+    events: list[Any] = []
+    unsub = n.subscribe(_collect_data(events))
+
+    time.sleep(0.15)
+    unsub()
+
+    assert len(events) == 0
+
+
+def test_from_git_hook_filters_files(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    call_count = [0]
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> Any:
+        cmd_str = " ".join(cmd)
+        if "rev-parse HEAD" in cmd_str:
+            call_count[0] += 1
+            return type("R", (), {"stdout": "aaa" if call_count[0] <= 1 else "bbb"})()
+        if "diff --name-only" in cmd_str:
+            return type("R", (), {"stdout": "src/foo.py\ndocs/readme.md\ntest/bar.py\n"})()
+        if "--format=%s" in cmd_str:
+            return type("R", (), {"stdout": "update"})()
+        if "--format=%an" in cmd_str:
+            return type("R", (), {"stdout": "Bob"})()
+        return type("R", (), {"stdout": ""})()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    n = from_git_hook("/fake/repo", poll_ms=50, include=["src/**"], exclude=["**/*.md"])
+    events: list[Any] = []
+    unsub = n.subscribe(_collect_data(events))
+
+    time.sleep(0.15)
+    unsub()
+
+    assert len(events) >= 1
+    assert events[0]["files"] == ["src/foo.py"]
+
+
+def test_from_git_hook_emits_error_when_git_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    call_count = [0]
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> Any:
+        cmd_str = " ".join(cmd)
+        if "rev-parse HEAD" in cmd_str:
+            call_count[0] += 1
+            if call_count[0] <= 1:
+                return type("R", (), {"stdout": "aaa111"})()
+            raise subprocess.CalledProcessError(returncode=1, cmd=cmd, stderr="git failed")
+        return type("R", (), {"stdout": ""})()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    n = from_git_hook("/fake/repo", poll_ms=50)
+    errors: list[Any] = []
+    unsub = n.subscribe(_collect_errors(errors))
+
+    time.sleep(0.15)
+    unsub()
+
+    assert len(errors) == 1
+    assert isinstance(errors[0], subprocess.CalledProcessError)
+
+
+def test_from_git_hook_no_emissions_after_teardown(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    call_count = [0]
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> Any:
+        cmd_str = " ".join(cmd)
+        if "rev-parse HEAD" in cmd_str:
+            call_count[0] += 1
+            return type("R", (), {"stdout": "aaa111" if call_count[0] <= 1 else "bbb222"})()
+        if "diff --name-only" in cmd_str:
+            return type("R", (), {"stdout": "src/foo.py\n"})()
+        if "--format=%s" in cmd_str:
+            return type("R", (), {"stdout": "update"})()
+        if "--format=%an" in cmd_str:
+            return type("R", (), {"stdout": "Alice"})()
+        return type("R", (), {"stdout": ""})()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    n = from_git_hook("/fake/repo", poll_ms=200)
+    events: list[Any] = []
+    unsub = n.subscribe(_collect_data(events))
+
+    # Unsubscribe before first poll fires; no events should arrive afterward.
+    time.sleep(0.05)
+    unsub()
+    time.sleep(0.3)
+
+    assert events == []
