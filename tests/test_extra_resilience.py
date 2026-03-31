@@ -12,6 +12,7 @@ import pytest
 
 from graphrefly import Graph, Messages, MessageType, node, state
 from graphrefly.extra.backoff import (
+    NS_PER_SEC,
     BackoffPreset,
     constant,
     decorrelated_jitter,
@@ -84,29 +85,29 @@ def _errors_then_ok(*, errors_before_ok: int = 2) -> Any:
 
 
 def test_exponential_backoff() -> None:
-    b = exponential(base=1.0, factor=2.0, max_delay=10.0, jitter="none")
-    assert b(0, None, None) == 1.0
-    assert b(1, None, None) == 2.0
-    assert b(2, None, None) == 4.0
+    b = exponential(base_ns=NS_PER_SEC, factor=2.0, max_delay_ns=10 * NS_PER_SEC, jitter="none")
+    assert b(0, None, None) == NS_PER_SEC
+    assert b(1, None, None) == 2 * NS_PER_SEC
+    assert b(2, None, None) == 4 * NS_PER_SEC
 
 
 def test_linear_backoff() -> None:
-    b = linear(base=0.5, step=0.5)
-    assert b(0, None, None) == 0.5
-    assert b(1, None, None) == 1.0
+    b = linear(base_ns=500_000_000, step_ns=500_000_000)
+    assert b(0, None, None) == 500_000_000
+    assert b(1, None, None) == 1_000_000_000
 
 
 def test_fibonacci_backoff() -> None:
-    b = fibonacci(base=1.0, max_delay=100.0)
-    assert b(0, None, None) == 1.0
-    assert b(1, None, None) == 2.0
-    assert b(2, None, None) == 3.0
-    assert b(3, None, None) == 5.0
+    b = fibonacci(base_ns=NS_PER_SEC, max_delay_ns=100 * NS_PER_SEC)
+    assert b(0, None, None) == NS_PER_SEC
+    assert b(1, None, None) == 2 * NS_PER_SEC
+    assert b(2, None, None) == 3 * NS_PER_SEC
+    assert b(3, None, None) == 5 * NS_PER_SEC
 
 
 def test_resolve_backoff_preset() -> None:
     s = resolve_backoff_preset("linear")
-    assert s(0, None, None) == 1.0
+    assert s(0, None, None) == NS_PER_SEC
     with pytest.raises(ValueError, match="Unknown backoff"):
         resolve_backoff_preset(cast("BackoffPreset", "nope"))
 
@@ -124,7 +125,8 @@ def test_retry_zero_forwards_error() -> None:
 def test_retry_recovers_with_backoff() -> None:
     src = _errors_then_ok(errors_before_ok=2)
     sink: list[Messages] = []
-    bo = exponential(base=0.01, factor=2.0, max_delay=0.05, jitter="none")
+    # 10ms base in nanoseconds
+    bo = exponential(base_ns=10_000_000, factor=2.0, max_delay_ns=50_000_000, jitter="none")
     out = retry(src, 2, backoff=bo)
     out.subscribe(sink.append)
     time.sleep(0.35)
@@ -135,7 +137,7 @@ def test_retry_recovers_with_backoff() -> None:
 def test_retry_exhausted() -> None:
     src = _errors_then_ok(errors_before_ok=5)
     sink: list[Messages] = []
-    out = retry(src, 1, backoff=constant(0.0))
+    out = retry(src, 1, backoff=constant(0))
     out.subscribe(sink.append)
     time.sleep(0.15)
     assert _has_error(sink)
@@ -145,7 +147,7 @@ def test_retry_exhausted() -> None:
 def test_rate_limiter_queues_then_drains() -> None:
     s = state(0)
     sink: list[Messages] = []
-    out = rate_limiter(s, 2, 0.06)
+    out = rate_limiter(s, 2, 60_000_000)
     out.subscribe(sink.append)
     for i in range(1, 5):
         s.down([(MessageType.DATA, i)])
@@ -154,6 +156,32 @@ def test_rate_limiter_queues_then_drains() -> None:
     assert mid == [1, 2]
     time.sleep(0.12)
     assert _values(sink) == [1, 2, 3, 4]
+
+
+def test_retry_backoff_delay_rejects_non_numeric() -> None:
+    src = _errors_then_ok(errors_before_ok=1)
+
+    def bad_backoff(*_args: Any, **_kwargs: Any) -> Any:
+        return "1000"
+
+    out = retry(src, 1, backoff=bad_backoff)
+    sink: list[Messages] = []
+    out.subscribe(sink.append)
+    time.sleep(0.05)
+    assert any(m[0] is MessageType.ERROR and isinstance(m[1], TypeError) for b in sink for m in b)
+
+
+def test_retry_backoff_delay_rejects_non_finite() -> None:
+    src = _errors_then_ok(errors_before_ok=1)
+
+    def bad_backoff(*_args: Any, **_kwargs: Any) -> Any:
+        return float("inf")
+
+    out = retry(src, 1, backoff=bad_backoff)
+    sink: list[Messages] = []
+    out.subscribe(sink.append)
+    time.sleep(0.05)
+    assert any(m[0] is MessageType.ERROR and isinstance(m[1], TypeError) for b in sink for m in b)
 
 
 def test_circuit_breaker_opens() -> None:
@@ -167,7 +195,7 @@ def test_circuit_breaker_opens() -> None:
 
 
 def test_with_breaker_errors_when_open() -> None:
-    b = circuit_breaker(failure_threshold=1, cooldown=60.0)
+    b = circuit_breaker(failure_threshold=1, cooldown_ns=60 * NS_PER_SEC)
     b.record_failure(ValueError("trip"))
     src = state(1)
     bundle = with_breaker(b, on_open="error")(src)
@@ -182,7 +210,7 @@ def test_with_breaker_errors_when_open() -> None:
 
 
 def test_with_breaker_skip_resolved_when_open() -> None:
-    b = circuit_breaker(failure_threshold=1, cooldown=60.0)
+    b = circuit_breaker(failure_threshold=1, cooldown_ns=60 * NS_PER_SEC)
     b.record_failure(ValueError("trip"))
     src = state(1)
     bundle = with_breaker(b, on_open="skip")(src)
@@ -323,24 +351,24 @@ def test_restore_empty_returns_false() -> None:
 
 
 def test_decorrelated_jitter_basic() -> None:
-    strat = decorrelated_jitter(base=0.1, max_delay=30.0)
+    strat = decorrelated_jitter(base_ns=100_000_000, max_delay_ns=30 * NS_PER_SEC)
     d = strat(0, None, None)
-    assert isinstance(d, float)
-    assert d >= 0.1
+    assert isinstance(d, int)
+    assert d >= 100_000_000
 
 
 def test_decorrelated_jitter_uses_prev_delay() -> None:
-    strat = decorrelated_jitter(base=0.1, max_delay=30.0)
-    d = strat(1, None, 5.0)
-    assert d >= 0.1
-    assert d <= 15.0  # min(30, 5*3) = 15
+    strat = decorrelated_jitter(base_ns=100_000_000, max_delay_ns=30 * NS_PER_SEC)
+    d = strat(1, None, 5 * NS_PER_SEC)
+    assert d >= 100_000_000
+    assert d <= 15 * NS_PER_SEC  # min(30s, 5s*3) = 15s
 
 
 def test_with_max_attempts() -> None:
-    inner = constant(1.0)
+    inner = constant(NS_PER_SEC)
     capped = with_max_attempts(inner, 3)
-    assert capped(0, None, None) == 1.0
-    assert capped(2, None, None) == 1.0
+    assert capped(0, None, None) == NS_PER_SEC
+    assert capped(2, None, None) == NS_PER_SEC
     assert capped(3, None, None) is None  # past cap
 
 
@@ -361,10 +389,10 @@ def test_circuit_breaker_reset() -> None:
 
 
 def test_circuit_breaker_cooldown_escalation() -> None:
-    delays: list[float] = []
+    delays: list[int] = []
 
-    def strategy(attempt: int, *_args: Any, **_kw: Any) -> float:
-        d = 0.01 * (attempt + 1)
+    def strategy(attempt: int, *_args: Any, **_kw: Any) -> int:
+        d = 10_000_000 * (attempt + 1)  # 10ms * (attempt+1)
         delays.append(d)
         return d
 
@@ -375,7 +403,7 @@ def test_circuit_breaker_cooldown_escalation() -> None:
     time.sleep(0.02)
     # Transition to half-open
     assert b.can_execute()
-    # Fail again → open with escalated cooldown
+    # Fail again -> open with escalated cooldown
     b.record_failure(ValueError("b"))
     assert b.state == "open"
     assert len(delays) >= 2  # strategy was called at least twice
@@ -391,5 +419,5 @@ def test_token_bucket_factory() -> None:
 def test_resolve_decorrelated_jitter_preset() -> None:
     s = resolve_backoff_preset("decorrelated_jitter")
     d = s(0, None, None)
-    assert isinstance(d, float)
-    assert d >= 0.0
+    assert isinstance(d, int)
+    assert d >= 0

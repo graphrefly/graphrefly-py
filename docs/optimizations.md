@@ -528,6 +528,8 @@ Both ports now align on the following:
    | `first_value_from` | Py-only: sync bridge | `firstValueFrom`: `Promise<T>` | Language concurrency model |
    | `from_awaitable` / `fromPromise` | `from_awaitable`: worker thread + `asyncio.run` | `fromPromise`: native Promise | Language async model |
    | `from_async_iter` / `fromAsyncIter` | Worker thread + `asyncio.run` | Native async iteration | Language async model |
+   | `from_http` / `fromHTTP` transform input | `transform(raw_bytes: bytes)` | `transform(response: Response)` | Runtime/library shape (`urllib` bytes vs Fetch `Response`) |
+   | `from_http` external cancellation | No external signal (deferred); unsubscribe suppresses late emissions | Supports external `AbortSignal` via options | Language/runtime cancellation primitives |
    | AbortSignal on async sources | Not supported (deferred) | `signal` option on `fromTimer`, `fromPromise`, `fromAsyncIter` | TS has native AbortSignal; Py deferred |
 
    **Open:** Python AbortSignal equivalent (e.g. `threading.Event` signal parameter) — deferred to future parity round.

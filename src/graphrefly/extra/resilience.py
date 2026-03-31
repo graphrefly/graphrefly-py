@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import math
 import threading
+import math
 from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
@@ -41,16 +41,15 @@ def _msg_val(m: tuple[Any, ...]) -> Any:
     return m[1]
 
 
-def _coerce_delay(raw_delay: Any) -> float:
-    try:
-        delay = float(raw_delay)
-    except (TypeError, ValueError) as e:
-        msg = "backoff strategy must return a number or None"
-        raise ValueError(msg) from e
-    if not math.isfinite(delay):
-        msg = "backoff strategy returned non-finite delay"
-        raise ValueError(msg)
-    return 0.0 if delay < 0 else delay
+def _coerce_delay_ns(raw_delay: Any) -> int:
+    if isinstance(raw_delay, bool) or not isinstance(raw_delay, int | float):
+        msg = "backoff strategy must return an int/float nanosecond delay or None"
+        raise TypeError(msg)
+    if not math.isfinite(float(raw_delay)):
+        msg = "backoff strategy delay must be finite"
+        raise TypeError(msg)
+    delay = int(raw_delay)
+    return 0 if delay < 0 else delay
 
 
 def retry(
@@ -96,7 +95,7 @@ def retry(
     def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
         attempt = [0]
         stopped = [False]
-        prev_delay: list[float | None] = [None]
+        prev_delay: list[int | None] = [None]
         upstream_unsub: list[Callable[[], None] | None] = [None]
         timer_holder: list[threading.Timer | None] = [None]
         timer_generation = [0]
@@ -147,15 +146,15 @@ def retry(
                     actions.down([(MessageType.ERROR, err)])
                     return
 
-                raw = 0.0 if strategy is None else strategy(attempt[0], err, prev_delay[0])
-                delay = _coerce_delay(0.0 if raw is None else raw)
-                prev_delay[0] = delay
+                raw = 0 if strategy is None else strategy(attempt[0], err, prev_delay[0])
+                delay_ns = _coerce_delay_ns(0 if raw is None else raw)
+                prev_delay[0] = delay_ns
                 attempt[0] += 1
                 timer_generation[0] += 1
                 current_gen = timer_generation[0]
                 disconnect_upstream()
 
-            safe_delay = delay if delay > 0 else 1e-6
+            safe_delay = delay_ns / 1_000_000_000 if delay_ns > 0 else 1e-6
 
             def fire() -> None:
                 with lock:
@@ -245,12 +244,12 @@ class _CircuitBreakerImpl:
         self,
         *,
         failure_threshold: int = 5,
-        cooldown: float = 30.0,
+        cooldown_ns: int = 30_000_000_000,
         cooldown_strategy: BackoffStrategy | None = None,
         half_open_max: int = 1,
     ) -> None:
         self._threshold = max(1, failure_threshold)
-        self._cooldown_base = max(0.0, cooldown)
+        self._cooldown_base = max(0, cooldown_ns)
         self._cooldown_strategy = cooldown_strategy
         self._half_open_max = max(1, half_open_max)
         self._state: CircuitState = "closed"
@@ -261,11 +260,11 @@ class _CircuitBreakerImpl:
         self._last_cooldown = self._cooldown_base
         self._lock = threading.Lock()
 
-    def _get_cooldown(self) -> float:
+    def _get_cooldown(self) -> int:
         if self._cooldown_strategy is None:
             return self._cooldown_base
         raw = self._cooldown_strategy(self._open_cycle, None, None)
-        return float(raw) if raw is not None else self._cooldown_base
+        return int(raw) if raw is not None else self._cooldown_base
 
     def _transition_to_open(self) -> None:
         self._state = "open"
@@ -288,7 +287,7 @@ class _CircuitBreakerImpl:
             if self._state == "closed":
                 return True
             if self._state == "open":
-                if (monotonic_ns() - self._opened_at) >= self._last_cooldown * 1_000_000_000:
+                if (monotonic_ns() - self._opened_at) >= self._last_cooldown:
                     self._state = "half-open"
                     self._trials = 1
                     return True
@@ -328,7 +327,7 @@ class _CircuitBreakerImpl:
 def circuit_breaker(
     *,
     failure_threshold: int = 5,
-    cooldown: float = 30.0,
+    cooldown_ns: int = 30_000_000_000,
     cooldown_strategy: BackoffStrategy | None = None,
     half_open_max: int = 1,
 ) -> CircuitBreaker:
@@ -338,13 +337,13 @@ def circuit_breaker(
 
     Args:
         failure_threshold: Failures before opening (default ``5``).
-        cooldown: Base cooldown seconds (default ``30.0``).
+        cooldown_ns: Base cooldown in nanoseconds (default ``30_000_000_000`` = 30 s).
         cooldown_strategy: Backoff for cooldown escalation.
         half_open_max: Trials in half-open (default ``1``).
     """
     return _CircuitBreakerImpl(
         failure_threshold=failure_threshold,
-        cooldown=cooldown,
+        cooldown_ns=cooldown_ns,
         cooldown_strategy=cooldown_strategy,
         half_open_max=half_open_max,
     )
@@ -521,8 +520,8 @@ def token_tracker(capacity: float, refill_per_second: float) -> TokenBucket:
     return token_bucket(capacity, refill_per_second)
 
 
-def rate_limiter(source: Node[Any], max_events: int, window_seconds: float) -> Node[Any]:
-    """Limit upstream ``DATA`` to at most *max_events* per *window_seconds* (sliding window).
+def rate_limiter(source: Node[Any], max_events: int, window_ns: int) -> Node[Any]:
+    """Limit upstream ``DATA`` to at most *max_events* per *window_ns* (sliding window).
 
     Values exceeding the budget are queued (FIFO) and emitted as slots free.
     ``DIRTY`` and ``RESOLVED`` still propagate immediately when not blocked.
@@ -530,7 +529,7 @@ def rate_limiter(source: Node[Any], max_events: int, window_seconds: float) -> N
     Args:
         source: The upstream :class:`~graphrefly.core.node.Node` to rate-limit.
         max_events: Maximum ``DATA`` emissions allowed per window.
-        window_seconds: Window duration in seconds.
+        window_ns: Window duration in nanoseconds.
 
     Returns:
         A new :class:`~graphrefly.core.node.Node` with rate-limiting applied.
@@ -541,14 +540,14 @@ def rate_limiter(source: Node[Any], max_events: int, window_seconds: float) -> N
         from graphrefly.extra.resilience import rate_limiter
         from graphrefly.extra.sources import to_list
         from graphrefly.extra import of
-        n = rate_limiter(of(1, 2, 3), max_events=2, window_seconds=60)
+        n = rate_limiter(of(1, 2, 3), max_events=2, window_ns=60_000_000_000)
         ```
     """
     if max_events <= 0:
         msg = "max_events must be > 0"
         raise ValueError(msg)
-    if window_seconds <= 0:
-        msg = "window_seconds must be > 0"
+    if window_ns <= 0:
+        msg = "window_ns must be > 0"
         raise ValueError(msg)
 
     def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
@@ -561,8 +560,6 @@ def rate_limiter(source: Node[Any], max_events: int, window_seconds: float) -> N
             if timer[0] is not None:
                 timer[0].cancel()
                 timer[0] = None
-
-        window_ns = window_seconds * 1_000_000_000
 
         def prune(now: int) -> None:
             boundary = now - window_ns

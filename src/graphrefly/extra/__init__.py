@@ -1,6 +1,8 @@
 """Extra operators and sources (roadmap Phase 2+)."""
 
 from graphrefly.extra.backoff import (
+    NS_PER_MS,
+    NS_PER_SEC,
     BackoffPreset,
     BackoffStrategy,
     JitterMode,
@@ -138,6 +140,8 @@ __all__ = [
     "ReactiveLogBundle",
     "ReactiveMapBundle",
     "Versioned",
+    "NS_PER_MS",
+    "NS_PER_SEC",
     "BackoffPreset",
     "BackoffStrategy",
     "CheckpointAdapter",

@@ -8,14 +8,20 @@ downstream sinks of the returned node (ref-counted disconnect when the last sink
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
+import urllib.error
+import urllib.request
 from collections.abc import AsyncIterable, Awaitable, Callable, Iterable
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from graphrefly.core.clock import wall_clock_ns
 from graphrefly.core.node import Node, NodeActions, node
-from graphrefly.core.protocol import Messages, MessageType
+from graphrefly.core.protocol import Messages, MessageType, batch
+from graphrefly.extra.resilience import WithStatusBundle, with_status
 
 
 def _msg_val(m: tuple[Any, ...]) -> Any:
@@ -258,7 +264,7 @@ def from_cron(expr: str, *, tick_s: float = 60.0) -> Node[Any]:
         def check() -> None:
             if stopped[0]:
                 return
-            now = datetime.now()
+            now = datetime.fromtimestamp(_wall_clock_ns() / 1_000_000_000)
             key = (
                 now.year * 100_000_000
                 + now.month * 1_000_000
@@ -415,6 +421,133 @@ def from_any(value: Any) -> Node[Any]:
     except TypeError:
         return of(value)
     return from_iter(it)
+
+
+@dataclass(frozen=True, slots=True)
+class HttpBundle(WithStatusBundle):
+    """Result of :func:`from_http`: pass-through value plus status companions."""
+
+    fetch_count: Node[int]
+    last_updated: Node[int]
+
+
+def from_http(
+    url: str,
+    *,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
+    body: Any = None,
+    transform: Callable[[Any], Any] | None = None,
+    timeout_ns: int = 30_000_000_000,
+    **kwargs: Any,
+) -> HttpBundle:
+    """Create a one-shot reactive HTTP source with lifecycle tracking.
+
+    Uses :func:`urllib.request.urlopen` internally to remain zero-dependency.
+    Performs a single fetch when subscribed, then completes. For periodic
+    fetching, compose with ``switch_map`` and a time source.
+
+    Args:
+        url: The URL to fetch.
+        method: HTTP method (default ``"GET"``).
+        headers: Optional request headers.
+        body: Optional request body (converted to JSON if not a string).
+        transform: Optional function to transform raw response bytes
+            (signature: ``Callable[[bytes], Any]``). Default: ``json.loads``.
+        timeout_ns: Request timeout in **nanoseconds** (default ``30s``).
+        **kwargs: Passed to :func:`~graphrefly.core.node.node` as options.
+
+    Returns:
+        An :class:`HttpBundle` wrapping the primary node and companions.
+
+    Example:
+        ```python
+        from graphrefly.extra.sources import from_http
+        from graphrefly.extra.tier2 import switch_map
+        from graphrefly.extra import from_timer
+
+        # One-shot:
+        api = from_http("https://api.example.com/data")
+
+        # Periodic polling via reactive composition:
+        polled = switch_map(lambda _: from_http(url))(from_timer(0, period=5.0))
+        ```
+    Notes:
+        This source is implemented with ``threading.Thread`` + ``urllib`` and does
+        not currently support external cancellation signals (TS ``AbortSignal`` parity
+        is deferred). Unsubscribe prevents any late emissions from being forwarded.
+    """
+    from graphrefly.core.sugar import state
+
+    ns_per_sec = 1_000_000_000
+    fetch_count = state(0, name=f"{kwargs.get('name', 'http')}/fetch_count")
+    last_updated = state(0, name=f"{kwargs.get('name', 'http')}/last_updated")
+
+    def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
+        active = [True]
+
+        def task() -> None:
+            if not active[0]:
+                return
+            try:
+                data_bytes = None
+                if body is not None:
+                    if isinstance(body, str):
+                        data_bytes = body.encode("utf-8")
+                    else:
+                        data_bytes = json.dumps(body).encode("utf-8")
+
+                req = urllib.request.Request(url, data=data_bytes, method=method)
+                if headers:
+                    for k, v in headers.items():
+                        req.add_header(k, v)
+
+                with urllib.request.urlopen(req, timeout=timeout_ns / ns_per_sec) as response:
+                    if not active[0]:
+                        return
+                    raw_data = response.read()
+                    if transform:
+                        res_data = transform(raw_data)
+                    else:
+                        res_data = json.loads(raw_data)
+
+                    if not active[0]:
+                        return
+
+                    with batch():
+                        fetch_count.down([(MessageType.DATA, fetch_count.get() + 1)])
+                        last_updated.down([(MessageType.DATA, wall_clock_ns())])
+                        actions.emit(res_data)
+                    actions.down([(MessageType.COMPLETE,)])
+
+            except BaseException as err:
+                if not active[0]:
+                    return
+                actions.down([(MessageType.ERROR, err)])
+
+        t = threading.Thread(target=task, daemon=True)
+        t.start()
+
+        def cleanup() -> None:
+            active[0] = False
+
+        return cleanup
+
+    out = node(
+        start,
+        describe_kind="http",
+        complete_when_deps_complete=False,
+        **kwargs,
+    )
+    tracked = with_status(out)
+
+    return HttpBundle(
+        node=tracked.node,
+        status=tracked.status,
+        error=tracked.error,
+        fetch_count=fetch_count,
+        last_updated=last_updated,
+    )
 
 
 # --- sinks --------------------------------------------------------------------
@@ -777,6 +910,7 @@ __all__ = [
     "from_awaitable",
     "from_cron",
     "from_event_emitter",
+    "from_http",
     "from_iter",
     "from_timer",
     "never",
@@ -787,4 +921,5 @@ __all__ = [
     "throw_error",
     "to_array",
     "to_list",
+    "HttpBundle",
 ]

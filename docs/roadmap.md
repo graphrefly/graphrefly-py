@@ -298,7 +298,7 @@ Composition layer over 3.2 (`reactive_log`), 4.1 (sagas), 4.2 (event bus), 4.3 (
 
 ### 5.3 — Adapters
 
-- [ ] `from_http`, `from_websocket` / `to_websocket`
+- [x] `from_http`, `from_websocket` / `to_websocket`
 - [ ] `from_webhook`, `to_sse`
 - [ ] `from_mcp` (Model Context Protocol)
 - [ ] `from_fs_watch(paths, opts?)` — file system watcher as reactive source; debounced, glob include/exclude, recursive. Uses `watchfiles` (or `watchdog`). Cleanup closes watchers on unsubscribe.

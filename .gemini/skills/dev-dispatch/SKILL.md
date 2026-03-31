@@ -16,10 +16,13 @@ The user's task/context is: $ARGUMENTS
 3. **Follow existing patterns.** Before writing new code, find the closest existing pattern in this repo and follow it. If you can't find one, say so in Phase 2.
 4. **No `async def` / `Awaitable` in public APIs.** All public functions return `Node[T]`, `Graph`, `None`, or a plain synchronous value.
 5. **No `datetime.now()` or `time.time()`.** Use `monotonic_ns()` or `wall_clock_ns()` from `src/graphrefly/core/clock.py`.
-6. **Messages are always `list[tuple[Type, Any] | tuple[Type]]`.** No single-tuple shorthand at API boundaries.
-7. **Unknown message types forward.** Do not swallow unrecognized tuples.
-8. **Thread safety is mandatory.** All public APIs must be safe under concurrent access with per-subgraph `RLock`.
-9. **Run tests before reporting done.** `uv run pytest` must pass.
+6. **All durations and timestamps are nanoseconds.** Backoff strategies return `int` (ns). Use `NS_PER_MS` / `NS_PER_SEC` from `graphrefly.extra.backoff` for conversions. Convert to seconds only at `threading.Timer` call sites.
+7. **Messages are always `list[tuple[Type, Any] | tuple[Type]]`.** No single-tuple shorthand at API boundaries.
+8. **Unknown message types forward.** Do not swallow unrecognized tuples.
+9. **Thread safety is mandatory.** All public APIs must be safe under concurrent access with per-subgraph `RLock`.
+10. **No imperative polling or internal timers for composition.** Sources like `from_http` must be one-shot reactive. If users need periodic behavior, they compose with `from_timer()`/`interval()` externally. Only time-domain primitives (`from_timer`, `interval`, `debounce`, `throttle`, `delay`, `timeout`) and resilience retry/rate-limiting may use raw `threading.Timer`.
+11. **No imperative triggers in public APIs.** Use reactive `NodeInput` signals instead of imperative `.trigger()` or `.set()` methods where possible.
+12. **Run tests before reporting done.** `uv run pytest` must pass.
 
 ---
 
@@ -139,6 +142,8 @@ Before reporting done, verify:
 - [ ] Your tests cover the scenarios you listed in Phase 2f
 - [ ] No `async def` / `Awaitable` in return types
 - [ ] No `datetime.now()` / `time.time()` usage
+- [ ] All durations/timestamps use nanoseconds; seconds only at threading.Timer call sites
+- [ ] No internal polling loops — sources are one-shot reactive, compose with from_timer() for periodic
 - [ ] Messages are `list[tuple[Type, Any] | tuple[Type]]` — no shorthand
 - [ ] Thread-safe under concurrent access
 
