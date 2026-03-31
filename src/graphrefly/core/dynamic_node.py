@@ -9,11 +9,13 @@ subscriptions (no teardown/reconnect churn).
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from types import MappingProxyType
 from typing import Any
 
-from graphrefly.core.protocol import Messages, MessageType, emit_with_batch
+from graphrefly.core.protocol import Messages, MessageType, emit_with_batch, propagates_to_meta
 
 # ---------------------------------------------------------------------------
 # Public types
@@ -32,8 +34,15 @@ def dynamic_node[T](
     *,
     name: str | None = None,
     equals: Callable[[Any, Any], bool] | None = None,
+    meta: dict[str, Any] | None = None,
+    guard: Callable[[Any, str], bool] | None = None,
+    on_message: Callable[[Any, int, Any], bool] | None = None,
+    on_resubscribe: Callable[[], None] | None = None,
+    complete_when_deps_complete: bool = True,
+    describe_kind: str | None = None,
     resubscribable: bool = False,
     reset_on_teardown: bool = False,
+    thread_safe: bool = True,
 ) -> DynamicNodeImpl[T]:
     """Create a node with runtime dep tracking.
 
@@ -61,9 +70,46 @@ def dynamic_node[T](
         fn,
         name=name,
         equals=equals or (lambda a, b: a is b),
+        meta=meta,
+        guard=guard,
+        on_message=on_message,
+        on_resubscribe=on_resubscribe,
+        complete_when_deps_complete=complete_when_deps_complete,
+        describe_kind=describe_kind,
         resubscribable=resubscribable,
         reset_on_teardown=reset_on_teardown,
+        thread_safe=thread_safe,
     )
+
+
+# ---------------------------------------------------------------------------
+# Actions object (for on_message handler)
+# ---------------------------------------------------------------------------
+
+
+class _DynamicNodeActions:
+    """Imperative ``actions`` object exposed to on_message handlers."""
+
+    __slots__ = ("_down", "_emit", "_up")
+
+    def __init__(
+        self,
+        down: Callable[[Messages], None],
+        emit: Callable[[Any], None],
+        up: Callable[[Messages], None],
+    ) -> None:
+        self._down = down
+        self._emit = emit
+        self._up = up
+
+    def down(self, messages: Messages) -> None:
+        self._down(messages)
+
+    def emit(self, value: Any) -> None:
+        self._emit(value)
+
+    def up(self, messages: Messages) -> None:
+        self._up(messages)
 
 
 # ---------------------------------------------------------------------------
@@ -75,24 +121,38 @@ class DynamicNodeImpl[T]:
     """Internal implementation of ``dynamic_node``."""
 
     __slots__ = (
+        "__weakref__",
+        "_actions",
+        "_auto_complete",
+        "_cache_lock",
         "_cached",
         "_complete_bits",
         "_connected",
         "_dep_index_map",
         "_dep_unsubs",
         "_deps",
+        "_describe_kind",
         "_dirty_bits",
         "_equals",
         "_fn",
+        "_guard",
+        "_inspector_hook",
+        "_last_mutation",
         "_meta",
         "_name",
+        "_on_message",
+        "_on_resubscribe",
         "_resubscribable",
         "_reset_on_teardown",
         "_rewiring",
         "_settled_bits",
+        "_single_dep_sink_count",
+        "_single_dep_sinks",
+        "_sink_count",
         "_sinks",
         "_status",
         "_terminal",
+        "_thread_safe",
     )
 
     def __init__(
@@ -101,20 +161,42 @@ class DynamicNodeImpl[T]:
         *,
         name: str | None,
         equals: Callable[[Any, Any], bool],
+        meta: dict[str, Any] | None,
+        guard: Callable[[Any, str], bool] | None,
+        on_message: Callable[[Any, int, Any], bool] | None,
+        on_resubscribe: Callable[[], None] | None,
+        complete_when_deps_complete: bool,
+        describe_kind: str | None,
         resubscribable: bool,
         reset_on_teardown: bool,
+        thread_safe: bool,
     ) -> None:
+        # Deferred import to avoid circular dependency
+        from graphrefly.core.node import node as create_node
+        from graphrefly.core.subgraph_locks import ensure_registered, union_nodes
+
         self._fn = fn
         self._name = name
         self._equals = equals
+        self._guard = guard
+        self._on_message = on_message
+        self._on_resubscribe = on_resubscribe
+        self._auto_complete = complete_when_deps_complete
+        self._describe_kind = describe_kind
+        self._last_mutation: dict[str, Any] | None = None
         self._resubscribable = resubscribable
         self._reset_on_teardown = reset_on_teardown
+        self._thread_safe = bool(thread_safe)
+        self._inspector_hook: Callable[[dict[str, Any]], None] | None = None
 
         self._cached: T | None = None
         self._status: str = "disconnected"
         self._terminal = False
         self._connected = False
         self._rewiring = False
+
+        # Thread safety
+        self._cache_lock = threading.Lock() if self._thread_safe else None
 
         # Dynamic deps tracking
         self._deps: list[Any] = []
@@ -126,9 +208,36 @@ class DynamicNodeImpl[T]:
 
         # Sinks
         self._sinks: Callable[[Messages], None] | set[Callable[[Messages], None]] | None = None
+        self._sink_count = 0
+        self._single_dep_sink_count = 0
+        self._single_dep_sinks: set[Callable[..., Any]] = set()
 
-        # Meta (empty — dynamic_node doesn't support meta)
-        self._meta: Mapping[str, Any] = MappingProxyType({})
+        # Build companion meta nodes (same pattern as NodeImpl)
+        built_meta: dict[str, Any] = {}
+        for k, v in (meta or {}).items():
+            meta_opts: dict[str, Any] = {
+                "initial": v,
+                "name": f"{name or 'dynamicNode'}:meta:{k}",
+                "describe_kind": "state",
+                "thread_safe": self._thread_safe,
+            }
+            if guard is not None:
+                meta_opts["guard"] = guard
+            built_meta[k] = create_node(**meta_opts)
+        self._meta: Mapping[str, Any] = MappingProxyType(built_meta)
+
+        # Register with subgraph lock registry
+        if self._thread_safe:
+            ensure_registered(self)
+            for meta_node in self._meta.values():
+                union_nodes(self, meta_node)
+
+        # Actions object for on_message handler
+        self._actions = _DynamicNodeActions(
+            down=lambda msgs: self._down_internal(msgs),
+            emit=lambda v: self._emit_auto_value(v),
+            up=lambda msgs: self.up(msgs, internal=True),
+        )
 
     # --- Public interface (Node protocol) ---
 
@@ -145,30 +254,97 @@ class DynamicNodeImpl[T]:
         return self._meta
 
     @property
-    def last_mutation(self) -> None:
-        return None
+    def last_mutation(self) -> dict[str, Any] | None:
+        return self._last_mutation
 
     def has_guard(self) -> bool:
-        return False
+        return self._guard is not None
 
     def allows_observe(self, actor: Any = None) -> bool:
-        return True
+        if self._guard is None:
+            return True
+        from graphrefly.core.guard import normalize_actor
+        a = normalize_actor(actor)
+        return bool(self._guard(a, "observe"))
 
     def get(self) -> T | None:
+        lock = self._cache_lock
+        if lock is not None:
+            with lock:
+                return self._cached
         return self._cached
 
-    def down(self, messages: Messages, **_kwargs: Any) -> None:
-        self._down_internal(messages)
+    def down(
+        self,
+        messages: Messages,
+        *,
+        actor: Any = None,
+        internal: bool = False,
+        guard_action: str = "write",
+        **_kwargs: Any,
+    ) -> None:
+        if not messages:
+            return
+        if self._thread_safe:
+            from graphrefly.core.subgraph_locks import acquire_subgraph_write_lock_with_defer
+            with acquire_subgraph_write_lock_with_defer(self):
+                if not internal and self._guard is not None:
+                    from graphrefly.core.guard import GuardDenied, normalize_actor, record_mutation
+                    a = normalize_actor(actor)
+                    if not self._guard(a, guard_action):
+                        raise GuardDenied(a, self._name or "<unnamed>", guard_action)
+                    if guard_action == "write":
+                        self._last_mutation = record_mutation(a)
+                self._down_internal(messages)
+        else:
+            if not internal and self._guard is not None:
+                from graphrefly.core.guard import GuardDenied, normalize_actor, record_mutation
+                a = normalize_actor(actor)
+                if not self._guard(a, guard_action):
+                    raise GuardDenied(a, self._name or "<unnamed>", guard_action)
+                if guard_action == "write":
+                    self._last_mutation = record_mutation(a)
+            self._down_internal(messages)
 
     def subscribe(
         self,
         sink: Callable[[Messages], None],
         hints: Any = None,
+        *,
+        actor: Any = None,
         **_kwargs: Any,
+    ) -> Callable[[], None]:
+        check_actor = actor or (getattr(hints, "actor", None) if hints else None)
+        if check_actor is not None and self._guard is not None:
+            from graphrefly.core.guard import GuardDenied, normalize_actor
+            a = normalize_actor(check_actor)
+            if not self._guard(a, "observe"):
+                raise GuardDenied(a, self._name or "<unnamed>", "observe")
+
+        if self._thread_safe:
+            from graphrefly.core.subgraph_locks import acquire_subgraph_write_lock_with_defer
+            with acquire_subgraph_write_lock_with_defer(self):
+                return self._subscribe_body(sink, hints)
+        else:
+            return self._subscribe_body(sink, hints)
+
+    def _subscribe_body(
+        self,
+        sink: Callable[[Messages], None],
+        hints: Any,
     ) -> Callable[[], None]:
         if self._terminal and self._resubscribable:
             self._terminal = False
             self._status = "disconnected"
+            if self._on_resubscribe is not None:
+                self._on_resubscribe()
+
+        # Track sink counts
+        self._sink_count += 1
+        h_single = getattr(hints, "single_dep", False) if hints else False
+        if h_single:
+            self._single_dep_sink_count += 1
+            self._single_dep_sinks.add(sink)
 
         if self._sinks is None:
             self._sinks = sink
@@ -183,31 +359,71 @@ class DynamicNodeImpl[T]:
 
         removed = False
 
-        def unsubscribe() -> None:
-            nonlocal removed
-            if removed:
-                return
-            removed = True
-            if self._sinks is None:
-                return
-            if callable(self._sinks) and not isinstance(self._sinks, set):
-                if self._sinks is sink:
-                    self._sinks = None
-            else:
-                assert isinstance(self._sinks, set)
-                self._sinks.discard(sink)
-                if len(self._sinks) == 1:
-                    (only,) = self._sinks
-                    self._sinks = only
-                elif len(self._sinks) == 0:
-                    self._sinks = None
-            if self._sinks is None:
-                self._disconnect()
+        if self._thread_safe:
+            from graphrefly.core.subgraph_locks import acquire_subgraph_write_lock_with_defer
+
+            def unsubscribe() -> None:
+                nonlocal removed
+                with acquire_subgraph_write_lock_with_defer(self):
+                    if removed:
+                        return
+                    removed = True
+                    self._unsubscribe_body(sink)
+        else:
+            def unsubscribe() -> None:
+                nonlocal removed
+                if removed:
+                    return
+                removed = True
+                self._unsubscribe_body(sink)
 
         return unsubscribe
 
-    def up(self, messages: Messages, **_kwargs: Any) -> None:
-        """No-op — dynamicNode doesn't support up()."""
+    def _unsubscribe_body(self, sink: Callable[[Messages], None]) -> None:
+        self._sink_count -= 1
+        if sink in self._single_dep_sinks:
+            self._single_dep_sink_count -= 1
+            self._single_dep_sinks.discard(sink)
+
+        if self._sinks is None:
+            return
+        if callable(self._sinks) and not isinstance(self._sinks, set):
+            if self._sinks is sink:
+                self._sinks = None
+        else:
+            assert isinstance(self._sinks, set)
+            self._sinks.discard(sink)
+            if len(self._sinks) == 1:
+                (only,) = self._sinks
+                self._sinks = only
+            elif len(self._sinks) == 0:
+                self._sinks = None
+        if self._sinks is None:
+            self._disconnect()
+
+    def up(
+        self,
+        messages: Messages,
+        *,
+        actor: Any = None,
+        internal: bool = False,
+        guard_action: str = "write",
+        **_kwargs: Any,
+    ) -> None:
+        """Send messages upstream to currently-tracked deps."""
+        if not self._deps:
+            return
+        if not internal and self._guard is not None:
+            from graphrefly.core.guard import GuardDenied, normalize_actor, record_mutation
+            a = normalize_actor(actor)
+            if not self._guard(a, guard_action):
+                raise GuardDenied(a, self._name or "<unnamed>", guard_action)
+            if guard_action == "write":
+                self._last_mutation = record_mutation(a)
+        for dep in self._deps:
+            u = getattr(dep, "up", None)
+            if u is not None:
+                u(messages, internal=internal)
 
     def unsubscribe(self) -> None:
         """Disconnect from all upstream deps."""
@@ -217,6 +433,21 @@ class DynamicNodeImpl[T]:
         if not callable(other):
             return NotImplemented
         return other(self)
+
+    # --- Inspector hook ---
+
+    def _set_inspector_hook(
+        self, hook: Callable[[dict[str, Any]], None] | None
+    ) -> Callable[[], None]:
+        """Internal inspector hook attach/detach for graph observability."""
+        prev = self._inspector_hook
+        self._inspector_hook = hook
+
+        def dispose() -> None:
+            if self._inspector_hook is hook:
+                self._inspector_hook = prev
+
+        return dispose
 
     # --- Private methods ---
 
@@ -230,6 +461,9 @@ class DynamicNodeImpl[T]:
         for s in snapshot:
             s(messages)
 
+    def _can_skip_dirty(self) -> bool:
+        return self._sink_count == 1 and self._single_dep_sink_count == 1
+
     def _down_internal(self, messages: Messages) -> None:
         if not messages:
             return
@@ -241,16 +475,40 @@ class DynamicNodeImpl[T]:
             if not filtered:
                 return
             messages = filtered
+
         self._handle_local_lifecycle(messages)
-        self._emit_to_sinks(messages)
+
+        # singleDep DIRTY skip optimization
+        if self._can_skip_dirty():
+            has_phase2 = any(
+                m[0] is MessageType.DATA or m[0] is MessageType.RESOLVED
+                for m in messages
+            )
+            if has_phase2:
+                filtered = [m for m in messages if m[0] is not MessageType.DIRTY]
+                if filtered:
+                    emit_with_batch(self._emit_to_sinks, filtered)
+                return
+
+        emit_with_batch(self._emit_to_sinks, messages)
 
     def _handle_local_lifecycle(self, messages: Messages) -> None:
+        lock = self._cache_lock
         for m in messages:
             t = m[0]
             if t is MessageType.DATA:
-                self._cached = m[1] if len(m) > 1 else None
+                val = m[1] if len(m) > 1 else None
+                if lock is not None:
+                    with lock:
+                        self._cached = val
+                else:
+                    self._cached = val
             if t is MessageType.INVALIDATE:
-                self._cached = None
+                if lock is not None:
+                    with lock:
+                        self._cached = None
+                else:
+                    self._cached = None
             if t is MessageType.DATA or t is MessageType.RESOLVED:
                 self._status = "settled"
             elif t is MessageType.DIRTY:
@@ -263,12 +521,34 @@ class DynamicNodeImpl[T]:
                 self._terminal = True
             if t is MessageType.TEARDOWN:
                 if self._reset_on_teardown:
-                    self._cached = None
-                self._disconnect()
+                    if lock is not None:
+                        with lock:
+                            self._cached = None
+                    else:
+                        self._cached = None
+                try:
+                    self._propagate_to_meta(t)
+                finally:
+                    self._disconnect()
+            # Propagate other meta-eligible signals (centralized in protocol.py).
+            if t is not MessageType.TEARDOWN and propagates_to_meta(t):
+                self._propagate_to_meta(t)
+
+    def _propagate_to_meta(self, t: MessageType) -> None:
+        """Propagate a signal to all companion meta nodes (best-effort)."""
+        for meta_node in self._meta.values():
+            with suppress(Exception):
+                meta_node.down([(t,)], internal=True)
 
     def _emit_auto_value(self, value: Any) -> None:
         was_dirty = self._status == "dirty"
-        unchanged = self._equals(self._cached, value)
+        lock = self._cache_lock
+        if lock is not None:
+            with lock:
+                cached_snapshot = self._cached
+        else:
+            cached_snapshot = self._cached
+        unchanged = self._equals(cached_snapshot, value)
         if unchanged:
             msgs: Messages = (
                 [(MessageType.RESOLVED,)]
@@ -277,7 +557,11 @@ class DynamicNodeImpl[T]:
             )
             self._down_internal(msgs)
             return
-        self._cached = value
+        if lock is not None:
+            with lock:
+                self._cached = value
+        else:
+            self._cached = value
         msgs = (
             [(MessageType.DATA, value)]
             if was_dirty
@@ -327,7 +611,15 @@ class DynamicNodeImpl[T]:
 
         try:
             result = self._fn(get)
+
+            # Inspector hook: collect dep values BEFORE rewire (pre-rewire deps
+            # show what triggered recompute, matching TS semantics)
+            if self._inspector_hook is not None:
+                dep_values = [d.get() for d in self._deps]
+                self._inspector_hook({"kind": "run", "dep_values": dep_values})
+
             self._rewire(tracked_deps)
+
             if result is None:
                 return
             self._emit_auto_value(result)
@@ -356,6 +648,10 @@ class DynamicNodeImpl[T]:
                         lambda msgs, _idx=idx: self._handle_dep_messages(_idx, msgs)
                     )
                     new_unsubs.append(unsub)
+                    # Union with new dep for thread safety
+                    if self._thread_safe:
+                        from graphrefly.core.subgraph_locks import union_nodes
+                        union_nodes(self, dep)
 
             # Disconnect removed deps
             for dep_id, old_idx in old_map.items():
@@ -385,7 +681,21 @@ class DynamicNodeImpl[T]:
             return
 
         for msg in messages:
+            # Inspector hook
+            if self._inspector_hook is not None:
+                self._inspector_hook({"kind": "dep_message", "dep_index": index, "message": msg})
+
             t = msg[0]
+
+            # User-defined message handler gets first look
+            if self._on_message is not None:
+                try:
+                    if self._on_message(msg, index, self._actions):
+                        continue
+                except Exception as err:
+                    self._down_internal([(MessageType.ERROR, err)])
+                    return
+
             if t is MessageType.DIRTY:
                 self._dirty_bits.add(index)
                 self._settled_bits.discard(index)
@@ -410,7 +720,7 @@ class DynamicNodeImpl[T]:
                     self._dirty_bits.clear()
                     self._settled_bits.clear()
                     self._run_fn()
-                if len(self._complete_bits) >= len(self._deps) > 0:
+                if self._auto_complete and len(self._complete_bits) >= len(self._deps) > 0:
                     self._down_internal([(MessageType.COMPLETE,)])
                 continue
             if t is MessageType.ERROR:

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+from graphrefly.core.dynamic_node import DynamicNodeImpl
 from graphrefly.core.guard import access_hint_for_guard
 from graphrefly.core.node import NodeImpl  # noqa: TC001 — runtime type for describe_node
 
@@ -67,7 +68,7 @@ def _infer_describe_type(n: NodeImpl[Any]) -> str:
     return "derived"
 
 
-def describe_node(n: NodeImpl[Any]) -> dict[str, Any]:
+def describe_node(n: NodeImpl[Any] | DynamicNodeImpl[Any]) -> dict[str, Any]:
     """Build a single-node slice of ``Graph.describe()`` JSON (structure + ``meta`` snapshot).
 
     The ``meta`` field uses :func:`meta_snapshot` (plain values), matching the
@@ -77,7 +78,8 @@ def describe_node(n: NodeImpl[Any]) -> dict[str, Any]:
     (``effect``, ``producer``, ``derived``) set ``describe_kind`` automatically.
 
     Args:
-        n: A :class:`~graphrefly.core.node.NodeImpl` to describe.
+        n: A :class:`~graphrefly.core.node.NodeImpl` or
+           :class:`~graphrefly.core.dynamic_node.DynamicNodeImpl` to describe.
 
     Returns:
         A ``dict`` with keys ``type``, ``status``, ``deps``, ``meta``, and optionally
@@ -93,7 +95,26 @@ def describe_node(n: NodeImpl[Any]) -> dict[str, Any]:
         assert d["value"] == 42
         ```
     """
-    out: dict[str, Any] = {
+    if isinstance(n, DynamicNodeImpl):
+        out: dict[str, Any] = {
+            "type": n._describe_kind or "derived",
+            "status": n.status,
+            "deps": [],
+            "meta": meta_snapshot(n),
+        }
+        if n.name is not None:
+            out["name"] = n.name
+        with suppress(Exception):
+            out["value"] = n.get()
+        g = n._guard
+        if g is not None:
+            meta = dict(out.get("meta") or {})
+            if "access" not in meta:
+                meta["access"] = access_hint_for_guard(g)
+            out["meta"] = meta
+        return out
+
+    out = {
         "type": _infer_describe_type(n),
         "status": n.status,
         "deps": [d.name or "" for d in n._deps],
