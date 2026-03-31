@@ -85,6 +85,21 @@ Key sessions from the predecessor that directly informed GraphReFly:
 
 **Files:** `archive/docs/SESSION-tier2-parity-nonlocal-forward-inner.md`
 
+### Session demo-test-strategy (March 30) — Demo & Test Strategy: 4 Demos, Inspection-as-Test-Harness, Foreseen Building Blocks
+**Topic:** Demo and test strategy for Phase 4 domain layers. Companion to canonical design in `~/src/graphrefly-ts/docs/demo-and-test-strategy.md`. Python-specific: demos run in Pyodide/WASM lab, thread-safety is a first-class test axis (per-subgraph `RLock`, free-threaded Python 3.14), mock LLM must be thread-safe.
+
+**Key decisions:**
+- Four demos mirroring TS topology using Python APIs (text/table output in Pyodide REPL)
+- Scenario tests (`tests/scenarios/test_*.py`) mirror TS demo AC lists, adapted for `snake_case` and context managers
+- Adversarial tests include thread-safety dimension (concurrent factory composition, snapshot during batch drain with contention)
+- Foreseen building blocks include thread-safe mock LLM and Pyodide-safe fallbacks
+
+**Canonical document:** `~/src/graphrefly-ts/docs/demo-and-test-strategy.md`
+
+**Roadmap impact:** New Phase 7.1–7.4.
+
+**Files:** `archive/docs/SESSION-demo-test-strategy.md`
+
 ---
 
 ## Reading Guide
@@ -109,4 +124,4 @@ Each session file contains:
 
 **Created:** March 27, 2026
 **Updated:** March 30, 2026
-**Archive Status:** Active — spec design + access control + cross-repo implementation audit (companion) + Tier 2 parity
+**Archive Status:** Active — spec design + access control + cross-repo implementation audit (companion) + Tier 2 parity + demo & test strategy

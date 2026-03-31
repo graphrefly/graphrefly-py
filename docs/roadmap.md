@@ -319,6 +319,49 @@ Composition layer over 3.2 (`reactive_log`), 4.1 (sagas), 4.2 (event bus), 4.3 (
 - [ ] Free-threaded Python 3.14 benchmark suite
 - [ ] Community launch
 
+### 7.1 — Showcase demos (Pyodide/WASM lab)
+
+Python demos run in Pyodide/WASM lab on the graphrefly-py docs site. Each mirrors the TS demo's graph logic (same topology, Python APIs) with a simplified visual layer. Detailed ACs in `graphrefly-ts/docs/demo-and-test-strategy.md`.
+
+- [ ] **Demo 1: Order Processing Pipeline** — 4.1 + 4.2 + 4.5 + 1.5 (Pyodide, headless + text output)
+- [ ] **Demo 2: Multi-Agent Task Board** — 4.1 + 4.3 + 4.4 + 3.2b + 1.5 (Pyodide, mock LLM)
+- [ ] **Demo 3: Real-Time Monitoring Dashboard** — 4.1 + 4.2 + 4.3 + 3.1 + 3.2 (Pyodide)
+- [ ] **Demo 4: AI Documentation Assistant** — 4.3 + 4.4 + 3.2b + 3.2 + 3.1 (Pyodide, mock LLM)
+
+### 7.2 — Scenario tests (headless demo logic)
+
+Each demo has a headless scenario test mirroring TS demo AC lists — no UI, mock LLM.
+
+- [ ] `tests/scenarios/test_order_pipeline.py`
+- [ ] `tests/scenarios/test_agent_task_board.py`
+- [ ] `tests/scenarios/test_monitoring_dashboard.py`
+- [ ] `tests/scenarios/test_docs_assistant.py`
+
+### 7.3 — Inspection stress & adversarial tests
+
+- [ ] `describe()` consistency during batch drain
+- [ ] `observe()` structured/causal/timeline correctness under concurrent updates
+- [ ] `Graph.diff()` performance on 500-node graphs
+- [ ] `to_mermaid()` output validity
+- [ ] `trace_log()` ring buffer wrap correctness
+- [ ] Cross-factory composition: mounted subgraphs don't interfere
+- [ ] Guard bypass attempts (`.down()` without actor)
+- [ ] `snapshot()` during batch drain (consistent, never partial)
+- [ ] `subscription()` added mid-drain (correct offset)
+- [ ] `collection()` eviction during derived read (no stale refs)
+- [ ] Thread-safety: concurrent factory composition under per-subgraph locks
+
+### 7.4 — Foreseen building blocks (to be exposed by demos)
+
+Items expected to emerge during demo implementation. Validate need, then add to the appropriate phase.
+
+- [ ] **Reactive cursor** (shared by `subscription()` + `job_queue()`) — cursor advancing through `reactive_log`; likely 3.2 primitive
+- [ ] **Streaming node convention** — partial value emission for `chat_stream()`/`from_llm()` token-by-token output
+- [ ] **Factory composition helper** — shared pattern for 4.x graph factory boilerplate
+- [ ] **Guard-aware describe for UI** — `describe(show_denied=True)` variant showing hidden nodes with `{ denied: True, reason }` for UI display
+- [ ] **Mock LLM fixture system** — `mock_llm(responses)` adapter for `from_llm()` replaying deterministic canned responses
+- [ ] **Time simulation** — `monotonic_ns()` test-mode override for integration with `from_timer`/`from_cron`/`wait`
+
 ---
 
 ## Effort Key
