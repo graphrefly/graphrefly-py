@@ -1,3 +1,10 @@
+# Optimizations and Open Decisions
+
+## Open design decisions
+
+- Compat adapter write semantics: decide whether framework adapter setters should forward `DATA` when payload is `None`/`undefined`-equivalent (for optional payload nodes) instead of dropping the write.
+- Compat adapter lifecycle semantics: decide whether subscriptions should auto-dispose on terminal messages (`COMPLETE`/`ERROR`) while the UI scope remains mounted, or remain mounted until framework teardown.
+- Compat adapter record-sync semantics: decide whether keyed record subscriptions should ignore phase-1 `DIRTY` waves and only resubscribe on settled phase-2 key updates (`DATA`/`RESOLVED`).
 # Optimizations
 
 `graphrefly-py` prioritizes protocol correctness and parity with `graphrefly-ts`, with Python-specific encoding (e.g. `StrEnum` message tags, unlimited `int` bitmasks). This document tracks built-in optimizations and cross-language notes in a format aligned with `graphrefly-ts/docs/optimizations.md`.
