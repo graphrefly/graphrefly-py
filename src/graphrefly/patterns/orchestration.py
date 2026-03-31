@@ -329,8 +329,10 @@ def loop(
 
     def compute(_deps: list[Any], actions: NodeActions) -> Any:
         value = source_node.get()
-        raw: Any = static_iterations if static_iterations is not None else (
-            iter_node.get() if iter_node is not None else 1
+        raw: Any = (
+            static_iterations
+            if static_iterations is not None
+            else (iter_node.get() if iter_node is not None else 1)
         )
         count = _coerce_loop_iterations(raw)
         for i in range(count):
@@ -425,6 +427,7 @@ def wait(
                 terminated[0] = True
             return True
         if msg[0] is MessageType.DATA:
+
             def fire() -> None:
                 actions.down([msg])
                 should_complete = False

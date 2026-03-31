@@ -113,8 +113,7 @@ def _validate_appendix_b(data: dict) -> None:
         assert "type" in spec, f"Node '{path}' missing required 'type'"
         assert "status" in spec, f"Node '{path}' missing required 'status'"
         assert spec["type"] in _VALID_TYPES, (
-            f"Node '{path}' has invalid type '{spec['type']}'; "
-            f"expected one of {_VALID_TYPES}"
+            f"Node '{path}' has invalid type '{spec['type']}'; expected one of {_VALID_TYPES}"
         )
         assert spec["status"] in _VALID_STATUSES, (
             f"Node '{path}' has invalid status '{spec['status']}'; "

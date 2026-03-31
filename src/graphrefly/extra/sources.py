@@ -506,16 +506,15 @@ def from_http(
                     if not active[0]:
                         return
                     raw_data = response.read()
-                    if transform:
-                        res_data = transform(raw_data)
-                    else:
-                        res_data = json.loads(raw_data)
+                    res_data = transform(raw_data) if transform else json.loads(raw_data)
 
                     if not active[0]:
                         return
 
                     with batch():
-                        fetch_count.down([(MessageType.DATA, fetch_count.get() + 1)])
+                        current_count = fetch_count.get()
+                        next_count = (current_count if isinstance(current_count, int) else 0) + 1
+                        fetch_count.down([(MessageType.DATA, next_count)])
                         last_updated.down([(MessageType.DATA, wall_clock_ns())])
                         actions.emit(res_data)
                     actions.down([(MessageType.COMPLETE,)])
@@ -975,6 +974,245 @@ def from_webhook(
     return node(start, describe_kind="from_webhook", complete_when_deps_complete=False)
 
 
+def from_websocket(
+    socket: Any | None = None,
+    *,
+    register: Callable[
+        [
+            Callable[[Any], None],
+            Callable[[BaseException | Any], None],
+            Callable[[], None],
+        ],
+        Callable[[], None] | None,
+    ]
+    | None = None,
+    add_method: str = "add_listener",
+    remove_method: str = "remove_listener",
+    message_event: str = "message",
+    error_event: str = "error",
+    close_event: str = "close",
+    parse: Callable[[Any], Any] | None = None,
+    close_on_cleanup: bool = False,
+) -> Node[Any]:
+    """Bridge WebSocket events into a GraphReFly source.
+
+    You can either pass a ``register`` callback (preferred in Python for runtime-agnostic wiring)
+    or pass a socket-like object with ``add_method``/``remove_method`` listener APIs.
+
+    The ``register`` callback must be atomic: either fully register and return a cleanup callable,
+    or raise before any listener side effects.
+    """
+    if register is None and socket is None:
+        msg = "from_websocket requires either socket or register"
+        raise ValueError(msg)
+
+    def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
+        lock = threading.Lock()
+        active = [True]
+        cleaned = [False]
+        cleanup: Callable[[], None] | None = None
+
+        def _run_cleanup_once() -> None:
+            nonlocal cleanup
+            fn: Callable[[], None] | None = None
+            with lock:
+                if cleaned[0]:
+                    return
+                cleaned[0] = True
+                fn = cleanup
+            if fn is not None:
+                with suppress(Exception):
+                    fn()
+
+        def _terminate(msgs: Messages) -> bool:
+            with lock:
+                if not active[0]:
+                    return False
+                active[0] = False
+            _run_cleanup_once()
+            actions.down(msgs)
+            return True
+
+        def _extract_payload(value: Any) -> Any:
+            if hasattr(value, "data"):
+                return value.data
+            if isinstance(value, dict) and "data" in value:
+                return value["data"]
+            return value
+
+        def emit(payload: Any) -> None:
+            with lock:
+                if not active[0]:
+                    return
+            try:
+                normalized = _extract_payload(payload)
+                with lock:
+                    if not active[0]:
+                        return
+                    actions.emit(parse(normalized) if parse is not None else normalized)
+            except Exception as err:
+                _terminate([(MessageType.ERROR, err)])
+
+        def error(err: BaseException | Any) -> None:
+            if isinstance(err, BaseException):
+                _terminate([(MessageType.ERROR, err)])
+                return
+            _terminate([(MessageType.ERROR, RuntimeError(str(err)))])
+
+        def complete() -> None:
+            _terminate([(MessageType.COMPLETE,)])
+
+        if register is not None:
+            try:
+                cleanup = register(emit, error, complete)
+                if cleanup is None:
+                    raise RuntimeError(
+                        "from_websocket register contract violation: "
+                        "register must return cleanup callable"
+                    )
+            except Exception as err:
+                _terminate([(MessageType.ERROR, err)])
+        else:
+            assert socket is not None
+            listeners: list[tuple[str, Callable[..., None]]] = []
+
+            def on_message(*args: Any) -> None:
+                if len(args) == 1:
+                    emit(args[0])
+                else:
+                    emit(args)
+
+            def on_error(*args: Any) -> None:
+                if len(args) == 1:
+                    error(args[0])
+                else:
+                    error(args)
+
+            def on_close(*_args: Any) -> None:
+                complete()
+
+            try:
+                getattr(socket, add_method)(message_event, on_message)
+                listeners.append((message_event, on_message))
+                getattr(socket, add_method)(error_event, on_error)
+                listeners.append((error_event, on_error))
+                getattr(socket, add_method)(close_event, on_close)
+                listeners.append((close_event, on_close))
+            except Exception as err:
+                for event_name, fn in listeners:
+                    with suppress(Exception):
+                        getattr(socket, remove_method)(event_name, fn)
+                _terminate([(MessageType.ERROR, err)])
+
+            def cleanup() -> None:
+                for event_name, fn in listeners:
+                    with suppress(Exception):
+                        getattr(socket, remove_method)(event_name, fn)
+                if close_on_cleanup:
+                    with suppress(Exception):
+                        socket.close()
+
+        def stop() -> None:
+            with lock:
+                active[0] = False
+            _run_cleanup_once()
+
+        return stop
+
+    return node(start, describe_kind="from_websocket", complete_when_deps_complete=False)
+
+
+def to_websocket(
+    source: Node[Any],
+    socket: Any | None = None,
+    *,
+    send: Callable[[Any], None] | None = None,
+    close: Callable[..., None] | None = None,
+    serialize: Callable[[Any], Any] | None = None,
+    close_on_complete: bool = True,
+    close_on_error: bool = True,
+    close_code: int | None = None,
+    close_reason: str | None = None,
+    on_transport_error: Callable[[dict[str, Any]], None] | None = None,
+) -> Callable[[], None]:
+    """Forward upstream DATA payloads to a WebSocket-like transport.
+
+    Transport failures from serialization/send/close are reported through
+    ``on_transport_error`` as a dict with ``stage``, ``error``, and ``message`` keys.
+    """
+    if send is None:
+        if socket is None:
+            msg = "to_websocket requires socket or send"
+            raise ValueError(msg)
+        send = socket.send
+    if close is None and socket is not None and hasattr(socket, "close"):
+        close = socket.close
+
+    def _serialize(value: Any) -> Any:
+        if serialize is not None:
+            return serialize(value)
+        if isinstance(value, (str, bytes, bytearray, memoryview)):
+            return value
+        try:
+            return json.dumps(value)
+        except TypeError:
+            return str(value)
+
+    closed = [False]
+
+    def _report_transport_error(
+        stage: str, err: Exception, message: tuple[Any, ...] | None
+    ) -> None:
+        if on_transport_error is None:
+            return
+        with suppress(Exception):
+            on_transport_error({"stage": stage, "error": err, "message": message})
+
+    def sink(msgs: Messages) -> None:
+        def _close(message: tuple[Any, ...]) -> None:
+            if close is None:
+                return
+            if closed[0]:
+                return
+            closed[0] = True
+            if close_code is None and close_reason is None:
+                try:
+                    close()
+                except Exception as err:
+                    _report_transport_error("close", err, message)
+                return
+            try:
+                close(close_code, close_reason)
+            except TypeError:
+                # Some close callables don't accept code/reason.
+                try:
+                    close()
+                except Exception as err:
+                    _report_transport_error("close", err, message)
+            except Exception as err:
+                _report_transport_error("close", err, message)
+
+        for msg in msgs:
+            t = msg[0]
+            if t is MessageType.DATA:
+                try:
+                    payload = _serialize(msg[1] if len(msg) > 1 else None)
+                except Exception as err:
+                    _report_transport_error("serialize", err, msg)
+                    return
+                try:
+                    send(payload)
+                except Exception as err:
+                    _report_transport_error("send", err, msg)
+                    return
+            elif (t is MessageType.COMPLETE and close_on_complete and close is not None) or (
+                t is MessageType.ERROR and close_on_error and close is not None
+            ):
+                _close(msg)
+
+    return source.subscribe(sink)
+
+
 def to_array(source: Node[Any]) -> Node[list[Any]]:
     """Collect all DATA values; on COMPLETE emit one DATA (the list) then COMPLETE.
 
@@ -1078,6 +1316,7 @@ def to_sse(
     keepalive_stop = threading.Event()
     keepalive_thread: threading.Thread | None = None
     if keepalive_s is not None and keepalive_s > 0:
+
         def keepalive_loop() -> None:
             while not keepalive_stop.wait(keepalive_s):
                 if done.is_set():
@@ -1089,6 +1328,7 @@ def to_sse(
 
     cancel_thread: threading.Thread | None = None
     if cancel_event is not None:
+
         def cancel_loop() -> None:
             cancel_event.wait()
             if done.is_set():
@@ -1127,6 +1367,7 @@ __all__ = [
     "from_awaitable",
     "from_cron",
     "from_event_emitter",
+    "from_websocket",
     "from_webhook",
     "from_http",
     "from_iter",
@@ -1138,6 +1379,7 @@ __all__ = [
     "share_replay",
     "throw_error",
     "to_array",
+    "to_websocket",
     "to_sse",
     "to_list",
     "HttpBundle",

@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 import pytest
 
@@ -22,9 +25,10 @@ from graphrefly.extra.sources import (
     from_awaitable,
     from_cron,
     from_event_emitter,
-    from_webhook,
     from_iter,
     from_timer,
+    from_webhook,
+    from_websocket,
     never,
     of,
     replay,
@@ -32,8 +36,9 @@ from graphrefly.extra.sources import (
     share_replay,
     throw_error,
     to_array,
-    to_sse,
     to_list,
+    to_sse,
+    to_websocket,
 )
 
 
@@ -395,10 +400,341 @@ def test_from_webhook_register_error_forwards_error() -> None:
     n = from_webhook(bad_register)
     n.subscribe(sink.append)
     assert any(
-        m[0] is MessageType.ERROR and isinstance(m[1], RuntimeError) and str(m[1]) == "register-failed"
+        m[0] is MessageType.ERROR
+        and isinstance(m[1], RuntimeError)
+        and str(m[1]) == "register-failed"
         for batch in sink
         for m in batch
     )
+
+
+def test_from_websocket_socket_like_emits_data_and_complete() -> None:
+    class FakeSocket:
+        def __init__(self) -> None:
+            self._listeners: dict[str, list[Any]] = {}
+
+        def add_listener(self, event: str, fn: Any) -> None:
+            self._listeners.setdefault(event, []).append(fn)
+
+        def remove_listener(self, event: str, fn: Any) -> None:
+            if event in self._listeners:
+                self._listeners[event] = [f for f in self._listeners[event] if f is not fn]
+
+        def emit(self, event: str, *args: Any) -> None:
+            for fn in self._listeners.get(event, []):
+                fn(*args)
+
+        def close(self) -> None:
+            pass
+
+    ws = FakeSocket()
+    sink: list[Any] = []
+    n = from_websocket(ws)
+    unsub = n.subscribe(sink.append)
+    ws.emit("message", {"id": "m1"})
+    ws.emit("close")
+    time.sleep(0.02)
+    unsub()
+    assert any(m[0] is MessageType.DATA and m[1] == {"id": "m1"} for batch in sink for m in batch)
+    assert any(m[0] is MessageType.COMPLETE for batch in sink for m in batch)
+
+
+def test_from_websocket_register_branch_emits_data_and_cleans_up() -> None:
+    emit_ref: dict[str, Any] = {}
+    cleaned = {"ok": False}
+
+    def register(
+        emit: Callable[[Any], None],
+        _error: Callable[[BaseException | Any], None],
+        complete: Callable[[], None],
+    ) -> Callable[[], None]:
+        emit_ref["emit"] = emit
+        emit_ref["complete"] = complete
+
+        def cleanup() -> None:
+            cleaned["ok"] = True
+
+        return cleanup
+
+    sink: list[Any] = []
+    n = from_websocket(register=register)
+    unsub = n.subscribe(sink.append)
+    emit_ref["emit"]({"id": "m1"})
+    emit_ref["complete"]()
+    time.sleep(0.02)
+    unsub()
+    assert any(m[0] is MessageType.DATA and m[1] == {"id": "m1"} for batch in sink for m in batch)
+    assert any(m[0] is MessageType.COMPLETE for batch in sink for m in batch)
+    assert cleaned["ok"] is True
+
+
+def test_from_websocket_register_requires_cleanup_callable() -> None:
+    def register(
+        _emit: Callable[[Any], None],
+        _error: Callable[[BaseException | Any], None],
+        _complete: Callable[[], None],
+    ) -> None:
+        return None
+
+    sink: list[Any] = []
+    n = from_websocket(register=register)
+    n.subscribe(sink.append)
+    assert any(
+        m[0] is MessageType.ERROR and "register contract violation" in str(m[1])
+        for batch in sink
+        for m in batch
+    )
+
+
+def test_from_websocket_extracts_data_field_before_parse() -> None:
+    class EventObj:
+        def __init__(self, data: Any) -> None:
+            self.data = data
+
+    class FakeSocket:
+        def __init__(self) -> None:
+            self._listeners: dict[str, list[Any]] = {}
+
+        def add_listener(self, event: str, fn: Any) -> None:
+            self._listeners.setdefault(event, []).append(fn)
+
+        def remove_listener(self, event: str, fn: Any) -> None:
+            if event in self._listeners:
+                self._listeners[event] = [f for f in self._listeners[event] if f is not fn]
+
+        def emit(self, event: str, *args: Any) -> None:
+            for fn in self._listeners.get(event, []):
+                fn(*args)
+
+    ws = FakeSocket()
+    sink: list[Any] = []
+    n = from_websocket(ws)
+    unsub = n.subscribe(sink.append)
+    ws.emit("message", EventObj({"id": "obj"}))
+    ws.emit("message", {"data": {"id": "dict"}})
+    time.sleep(0.02)
+    unsub()
+    values = [m[1] for batch in sink for m in batch if m[0] is MessageType.DATA]
+    assert {"id": "obj"} in values
+    assert {"id": "dict"} in values
+
+
+def test_from_websocket_close_detaches_listeners_immediately() -> None:
+    class FakeSocket:
+        def __init__(self) -> None:
+            self._listeners: dict[str, list[Any]] = {}
+
+        def add_listener(self, event: str, fn: Any) -> None:
+            self._listeners.setdefault(event, []).append(fn)
+
+        def remove_listener(self, event: str, fn: Any) -> None:
+            if event in self._listeners:
+                self._listeners[event] = [f for f in self._listeners[event] if f is not fn]
+
+        def emit(self, event: str, *args: Any) -> None:
+            for fn in self._listeners.get(event, []):
+                fn(*args)
+
+    ws = FakeSocket()
+    sink: list[Any] = []
+    n = from_websocket(ws)
+    unsub = n.subscribe(sink.append)
+    ws.emit("close")
+    # No explicit unsubscribe yet; listeners should already be detached.
+    assert ws._listeners.get("message", []) == []
+    assert ws._listeners.get("error", []) == []
+    assert ws._listeners.get("close", []) == []
+    unsub()
+
+
+def test_from_websocket_parse_error_emits_error() -> None:
+    class FakeSocket:
+        def __init__(self) -> None:
+            self._listeners: dict[str, list[Any]] = {}
+
+        def add_listener(self, event: str, fn: Any) -> None:
+            self._listeners.setdefault(event, []).append(fn)
+
+        def remove_listener(self, event: str, fn: Any) -> None:
+            if event in self._listeners:
+                self._listeners[event] = [f for f in self._listeners[event] if f is not fn]
+
+        def emit(self, event: str, *args: Any) -> None:
+            for fn in self._listeners.get(event, []):
+                fn(*args)
+
+    ws = FakeSocket()
+    sink: list[Any] = []
+    n = from_websocket(ws, parse=lambda _v: (_ for _ in ()).throw(ValueError("bad-parse")))
+    unsub = n.subscribe(sink.append)
+    ws.emit("message", {"id": "m1"})
+    time.sleep(0.02)
+    unsub()
+    assert any(
+        m[0] is MessageType.ERROR and isinstance(m[1], ValueError) and str(m[1]) == "bad-parse"
+        for batch in sink
+        for m in batch
+    )
+
+
+def test_from_websocket_socket_like_emits_error() -> None:
+    class FakeSocket:
+        def __init__(self) -> None:
+            self._listeners: dict[str, list[Any]] = {}
+
+        def add_listener(self, event: str, fn: Any) -> None:
+            self._listeners.setdefault(event, []).append(fn)
+
+        def remove_listener(self, event: str, fn: Any) -> None:
+            if event in self._listeners:
+                self._listeners[event] = [f for f in self._listeners[event] if f is not fn]
+
+        def emit(self, event: str, *args: Any) -> None:
+            for fn in self._listeners.get(event, []):
+                fn(*args)
+
+        def close(self) -> None:
+            pass
+
+    ws = FakeSocket()
+    sink: list[Any] = []
+    n = from_websocket(ws)
+    unsub = n.subscribe(sink.append)
+    ws.emit("error", RuntimeError("bad"))
+    time.sleep(0.02)
+    unsub()
+    assert any(m[0] is MessageType.ERROR for batch in sink for m in batch)
+
+
+def test_from_websocket_close_on_cleanup_calls_socket_close() -> None:
+    class FakeSocket:
+        def __init__(self) -> None:
+            self._listeners: dict[str, list[Any]] = {}
+            self.closed = 0
+
+        def add_listener(self, event: str, fn: Any) -> None:
+            self._listeners.setdefault(event, []).append(fn)
+
+        def remove_listener(self, event: str, fn: Any) -> None:
+            if event in self._listeners:
+                self._listeners[event] = [f for f in self._listeners[event] if f is not fn]
+
+        def close(self) -> None:
+            self.closed += 1
+
+    ws = FakeSocket()
+    n = from_websocket(ws, close_on_cleanup=True)
+    unsub = n.subscribe(lambda _batch: None)
+    time.sleep(0.02)
+    unsub()
+    assert ws.closed == 1
+
+
+def test_to_websocket_sends_data_and_closes_on_complete() -> None:
+    class FakeSocket:
+        def __init__(self) -> None:
+            self.sent: list[Any] = []
+            self.closed = 0
+
+        def send(self, payload: Any) -> None:
+            self.sent.append(payload)
+
+        def close(self) -> None:
+            self.closed += 1
+
+    ws = FakeSocket()
+    unsub = to_websocket(of(1, 2), ws, serialize=lambda v: f"n:{v}")
+    time.sleep(0.02)
+    unsub()
+    assert ws.sent == ["n:1", "n:2"]
+    assert ws.closed == 1
+
+
+def test_to_websocket_passes_close_code_and_reason() -> None:
+    class FakeSocket:
+        def __init__(self) -> None:
+            self.sent: list[Any] = []
+            self.closed_args: list[tuple[Any, Any]] = []
+
+        def send(self, payload: Any) -> None:
+            self.sent.append(payload)
+
+        def close(self, code: int | None = None, reason: str | None = None) -> None:
+            self.closed_args.append((code, reason))
+
+    ws = FakeSocket()
+    unsub = to_websocket(of(1), ws, close_code=4001, close_reason="done")
+    time.sleep(0.02)
+    unsub()
+    assert ws.sent == ["1"]
+    assert ws.closed_args == [(4001, "done")]
+
+
+def test_to_websocket_close_is_idempotent_for_repeated_terminals() -> None:
+    n = producer(
+        lambda _deps, actions: (
+            actions.down([(MessageType.COMPLETE,), (MessageType.ERROR, RuntimeError("late"))]),
+            (lambda: None),
+        )[1]
+    )
+
+    class FakeSocket:
+        def __init__(self) -> None:
+            self.closed = 0
+
+        def send(self, payload: Any) -> None:
+            _ = payload
+
+        def close(self) -> None:
+            self.closed += 1
+
+    ws = FakeSocket()
+    unsub = to_websocket(n, ws)
+    time.sleep(0.02)
+    unsub()
+    assert ws.closed == 1
+
+
+def test_to_websocket_reports_structured_transport_send_error() -> None:
+    errors: list[dict[str, Any]] = []
+
+    class FakeSocket:
+        def send(self, _payload: Any) -> None:
+            raise RuntimeError("send-failed")
+
+        def close(self) -> None:
+            pass
+
+    ws = FakeSocket()
+    unsub = to_websocket(of(1), ws, on_transport_error=errors.append)
+    time.sleep(0.02)
+    unsub()
+    assert len(errors) == 1
+    assert errors[0]["stage"] == "send"
+    assert isinstance(errors[0]["error"], RuntimeError)
+    assert str(errors[0]["error"]) == "send-failed"
+    assert errors[0]["message"][0] is MessageType.DATA
+
+
+def test_to_websocket_reports_structured_transport_close_error() -> None:
+    errors: list[dict[str, Any]] = []
+
+    class FakeSocket:
+        def send(self, _payload: Any) -> None:
+            pass
+
+        def close(self, _code: int | None = None, _reason: str | None = None) -> None:
+            raise RuntimeError("close-failed")
+
+    ws = FakeSocket()
+    unsub = to_websocket(of(1), ws, on_transport_error=errors.append)
+    time.sleep(0.02)
+    unsub()
+    assert len(errors) == 1
+    assert errors[0]["stage"] == "close"
+    assert isinstance(errors[0]["error"], RuntimeError)
+    assert str(errors[0]["error"]) == "close-failed"
+    assert errors[0]["message"][0] is MessageType.COMPLETE
 
 
 def test_to_array_reactive() -> None:

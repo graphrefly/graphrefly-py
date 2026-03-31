@@ -90,11 +90,7 @@ def _forward_inner(
     # is already settled. Derived nodes that compute during subscribe will
     # have set emitted=True via inner_sink, so we skip the manual emit.
     # None is a valid DATA payload (Node[None] / void sources).
-    if (
-        unsub is not None
-        and not emitted
-        and inner.status in ("settled", "resolved")
-    ):
+    if unsub is not None and not emitted and inner.status in ("settled", "resolved"):
         actions.down([(MessageType.DATA, inner.get())])
 
     if inner.status in ("completed", "errored"):
@@ -157,6 +153,7 @@ def switch_map(
             nonlocal attached, inner_unsub
             attached = True
             clear_inner()
+
             def _on_inner_complete() -> None:
                 clear_inner()
                 if source_done:
@@ -256,6 +253,7 @@ def concat_map(
                     a.down([(MessageType.COMPLETE,)])
                 return
             v = queue.popleft()
+
             def _on_inner_complete() -> None:
                 clear_inner()
                 try_pump(a)
@@ -467,6 +465,7 @@ def exhaust_map(fn: Callable[[Any], Any], *, initial: Any = _UNSET) -> PipeOpera
         def attach(v: Any, a: NodeActions) -> None:
             nonlocal attached, inner_unsub
             attached = True
+
             def _on_inner_complete() -> None:
                 clear_inner()
                 if source_done:

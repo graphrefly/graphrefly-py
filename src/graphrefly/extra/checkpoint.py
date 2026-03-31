@@ -246,7 +246,9 @@ def save_graph_checkpoint(graph: Graph, adapter: CheckpointAdapter) -> None:
 
 
 def restore_graph_checkpoint(graph: Graph, adapter: CheckpointAdapter) -> bool:
-    """Load a snapshot from *adapter* and apply it to *graph* via :meth:`~graphrefly.graph.Graph.restore`.
+    """Load a snapshot from *adapter* and apply it to *graph*.
+
+    Uses :meth:`~graphrefly.graph.Graph.restore` for application.
 
     Args:
         graph: The target :class:`~graphrefly.graph.Graph`.
@@ -259,7 +261,11 @@ def restore_graph_checkpoint(graph: Graph, adapter: CheckpointAdapter) -> bool:
     Example:
         ```python
         from graphrefly import Graph, state
-        from graphrefly.extra.checkpoint import MemoryCheckpointAdapter, save_graph_checkpoint, restore_graph_checkpoint
+        from graphrefly.extra.checkpoint import (
+            MemoryCheckpointAdapter,
+            restore_graph_checkpoint,
+            save_graph_checkpoint,
+        )
         g = Graph("g"); x = state(0); g.add("x", x)
         adapter = MemoryCheckpointAdapter()
         save_graph_checkpoint(g, adapter)

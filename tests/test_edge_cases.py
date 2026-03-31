@@ -245,9 +245,7 @@ def test_diamond_glitch_freedom() -> None:
     joined = combine(left, right)
 
     snapshots: list[Any] = []
-    joined.subscribe(
-        lambda msgs: snapshots.extend(m[1] for m in msgs if m[0] is MessageType.DATA)
-    )
+    joined.subscribe(lambda msgs: snapshots.extend(m[1] for m in msgs if m[0] is MessageType.DATA))
 
     assert len(snapshots) >= 1
     initial = snapshots[-1]

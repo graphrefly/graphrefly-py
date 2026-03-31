@@ -36,8 +36,8 @@ from graphrefly.extra.tier2 import (
 
 def _values(sink: list[Messages]) -> list[Any]:
     out: list[Any] = []
-    for batch in sink:
-        for m in batch:
+    for msgs in sink:
+        for m in msgs:
             if m[0] is MessageType.DATA:
                 out.append(m[1])
     return out
@@ -686,7 +686,9 @@ def test_rescue_wraps_switch_map_inner_error() -> None:
 
     def failing_inner(_v: Any) -> Any:
         return node(
-            lambda _d, a: a.down([(MessageType.ERROR, ValueError("inner")), (MessageType.COMPLETE,)]),
+            lambda _d, a: a.down(
+                [(MessageType.ERROR, ValueError("inner")), (MessageType.COMPLETE,)]
+            ),
             describe_kind="failing_inner",
         )
 

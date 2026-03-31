@@ -1,6 +1,7 @@
 import unittest.mock
-from graphrefly.extra.sources import from_http
+
 from graphrefly.core.clock import monotonic_ns
+from graphrefly.extra.sources import from_http
 
 NS_PER_SEC = 1_000_000_000
 

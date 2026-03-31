@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import threading
 import math
+import threading
 from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
@@ -190,7 +190,7 @@ CircuitState = Literal["closed", "open", "half-open"]
 
 
 class CircuitOpenError(RuntimeError):
-    """Raised when :func:`with_breaker` is configured with ``on_open="error"`` and the circuit is open.
+    """Raised when ``with_breaker(..., on_open="error")`` sees an open circuit.
 
     Example:
         ```python

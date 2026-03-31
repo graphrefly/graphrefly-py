@@ -596,6 +596,19 @@ These are tracked primarily in `graphrefly-ts/docs/optimizations.md`; listed her
 
 **Rationale:** Keeps orchestration ergonomics AI-friendly while preserving deterministic cross-language behavior.
 
+### H. Phase 5.2 WebSocket adapter seam (`from_websocket` / `to_websocket`)
+
+**Resolved subset:** Both ports now support the same practical seam for source/sink adapters:
+
+- Source supports either runtime socket listener wiring or explicit register-style wiring.
+- Inbound payload normalization uses `event.data` when present, otherwise the raw event payload.
+- Sink supports optional terminal close metadata (`close_code`/`close_reason` in Python, `closeCode`/`closeReason` in TypeScript).
+
+**Rationale:** This keeps adapters thin and runtime-friendly while preserving parity for message shaping and terminal close behavior.
+
+**Note:** Lifecycle and sink error-policy behavior are tracked separately below under
+**WebSocket adapter lifecycle and error-policy seams**.
+
 ---
 
 ## Deferred follow-ups (QA)
@@ -628,5 +641,43 @@ Applies to `src/extra/operators.ts` and `graphrefly.extra.tier2`. **Keep the tab
 |------|-------|
 | **`sample` + `undefined` as `T`** | Sampling uses the primary dep’s cached value (`get()`). If `T` allows `undefined`, a cache of `undefined` is indistinguishable from “no snapshot yet”; TypeScript currently emits `RESOLVED` instead of `DATA` in that case (JSDoc `@remarks`). Decide whether both ports should adopt an explicit optional/sentinel, or document the limitation only. |
 | **`mergeMap` / `merge_map` + `ERROR`** | When the outer stream or one inner emits `ERROR`, other inner subscriptions may keep running until they complete or unsubscribe. Rx-style “first error cancels all sibling inners” is **not** specified or implemented; align if product wants fail-fast teardown across active inners. |
+
+### TC39 compat read/subscribe terminal semantics (`Signal.get` / `Signal.sub`)
+
+**Open decision:** How should compat signals expose terminal/error state while staying aligned with GraphReFly core guarantees?
+
+**Context:** The shared spec states `get()` never throws and returns last good value when status is `errored`; current TS compat pull patterns can throw on `ERROR` and rely on subscribe/unsubscribe for disconnected reads. `Signal.sub` currently forwards only `DATA`, which mirrors ergonomic watcher APIs but hides terminal tuples at the compat boundary.
+
+**Decision needed:** For cross-language parity, should both ports standardize on:
+
+1. strict data-only compat APIs (`get` never throws; terminal handling remains in core/node APIs), or
+2. extended compat subscription hooks that optionally surface terminal/error events while preserving current shorthand.
+
+### WebSocket adapter lifecycle and error-policy seams (`from_websocket` / `to_websocket`)
+
+**Open decision:** Which lifecycle and sink error semantics should be guaranteed as cross-language parity behavior?
+
+**Context:** Current adapters focus on ergonomic wiring, but two policy seams remain:
+
+1. terminal handling/teardown timing (whether listeners are detached immediately on first terminal vs deferred to unsubscribe), and
+2. sink-side transport failures (whether `send`/`close` exceptions are surfaced to callers or converted to protocol-level error handling).
+
+**Decision needed:** For parity, standardize both ports on:
+
+1. eager terminal teardown + idempotent close behavior, and
+2. explicit sink error contract (propagate, swallow, or map to a structured callback/error channel).
+
+### Adapter behavior contract scope (`from_webhook` / `from_websocket` / `to_websocket`)
+
+**Open decision:** Should we lock and document a shared cross-language contract for adapter behavior beyond core tuple mapping?
+
+**Context:** Current parity work aligned major seams, but we still need an explicit contract checklist for:
+
+1. register callback expectations (atomicity, required cleanup callable, error forwarding),
+2. terminal-time ordering guarantees (cleanup-before-terminal vs terminal-before-cleanup),
+3. sink transport failure handling (structured callback payload shape and non-throwing expectations),
+4. idempotency guarantees under malformed/repeated terminal input.
+
+**Decision needed:** Define one canonical adapter contract and enforce it with mirrored tests in both repos before marking this seam fully closed.
 
 ---

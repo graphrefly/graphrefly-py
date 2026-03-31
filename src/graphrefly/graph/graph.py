@@ -85,6 +85,7 @@ class GraphDiffResult:
 class GraphAutoCheckpointHandle:
     dispose: Callable[[], None]
 
+
 #: Separator for qualified paths (e.g. ``"parent::child::node"``).
 PATH_SEP = "::"
 
@@ -806,11 +807,7 @@ class Graph:
                 f'"{data["name"]}" does not match this graph'
             )
             raise ValueError(msg)
-        only_patterns = (
-            None
-            if only is None
-            else ([only] if isinstance(only, str) else list(only))
-        )
+        only_patterns = None if only is None else ([only] if isinstance(only, str) else list(only))
         for path in sorted(data["nodes"]):
             if only_patterns is not None and not any(
                 fnmatch.fnmatchcase(path, p) for p in only_patterns
@@ -876,9 +873,7 @@ class Graph:
                 spec = pending[path]
                 deps = spec.get("deps")
                 dep_paths = (
-                    [d for d in deps if isinstance(d, str)]
-                    if isinstance(deps, list)
-                    else []
+                    [d for d in deps if isinstance(d, str)] if isinstance(deps, list) else []
                 )
                 if not all(dep in created for dep in dep_paths):
                     continue
@@ -986,6 +981,7 @@ class Graph:
             if callable(filter):
                 nodes_map = {p: d for p, d in raw["nodes"].items() if filter(p, d)}
             elif isinstance(filter, dict):
+
                 def _match(desc: dict[str, Any]) -> bool:
                     for k, v in filter.items():
                         if k in ("deps_includes", "depsIncludes"):
@@ -1013,9 +1009,7 @@ class Graph:
             subgraphs_out = [
                 s
                 for s in raw["subgraphs"]
-                if any(
-                    p == s or p.startswith(f"{s}{sep}") for p in visible_after_filter
-                )
+                if any(p == s or p.startswith(f"{s}{sep}") for p in visible_after_filter)
             ]
             raw = {**raw, "nodes": nodes_map, "edges": edges_out, "subgraphs": subgraphs_out}
         return raw
@@ -1076,6 +1070,7 @@ class Graph:
         if (causal or derived) and path is not None:
             n = self.node(path)
             if isinstance(n, NodeImpl):
+
                 def _hook(event: dict[str, Any]) -> None:
                     nonlocal last_trigger_dep_index, last_run_dep_values
                     kind = event.get("kind")
@@ -1099,6 +1094,7 @@ class Graph:
                 detach_hook = n._set_inspector_hook(_hook)
 
         if path is not None:
+
             def _sink(msgs: Messages) -> None:
                 for m in msgs:
                     t = m[0]
@@ -1146,6 +1142,7 @@ class Graph:
 
             unsub = source.subscribe(_sink)
         else:
+
             def _graph_sink(qpath: str, msgs: Messages) -> None:
                 for m in msgs:
                     t = m[0]
@@ -1301,6 +1298,7 @@ class Graph:
                 if not isinstance(stream, GraphObserveSource):
                     msg = "spy expected GraphObserveSource in raw mode"
                     raise TypeError(msg)
+
                 def _on_path_msgs(msgs: Any) -> None:
                     for m in msgs:
                         _push_event(result, path, m)

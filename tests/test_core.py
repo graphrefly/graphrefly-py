@@ -715,7 +715,7 @@ def test_terminal_blocks_later_data_when_not_resubscribable() -> None:
     post_error.clear()
     # Push another value upstream — node is terminal and non-resubscribable
     source.down([(MessageType.DATA, 2)])
-    assert post_error == [], (
-        "Received messages after ERROR on non-resubscribable node: " + str(post_error)
+    assert post_error == [], "Received messages after ERROR on non-resubscribable node: " + str(
+        post_error
     )
     unsub()

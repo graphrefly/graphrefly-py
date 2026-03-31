@@ -157,9 +157,7 @@ def test_meta_teardown_propagates():
 
     d.down([(MessageType.TEARDOWN,)])
 
-    has_teardown = any(
-        m[0] is MessageType.TEARDOWN for batch in meta_msgs for m in batch
-    )
+    has_teardown = any(m[0] is MessageType.TEARDOWN for batch in meta_msgs for m in batch)
     assert has_teardown
 
 
@@ -345,7 +343,7 @@ def test_guard_denies_write():
     d = dynamic_node(lambda get: get(a), guard=guard)
     try:
         d.down([(MessageType.DATA, 42)])
-        assert False, "should have raised"
+        raise AssertionError("should have raised")
     except Exception:
         pass
 
@@ -356,7 +354,7 @@ def test_guard_denies_observe_on_subscribe():
     d = dynamic_node(lambda get: get(a), guard=guard)
     try:
         d.subscribe(lambda _: None, actor={"type": "human", "id": "u1"})
-        assert False, "should have raised"
+        raise AssertionError("should have raised")
     except Exception:
         pass
 

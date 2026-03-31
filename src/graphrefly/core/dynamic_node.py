@@ -264,6 +264,7 @@ class DynamicNodeImpl[T]:
         if self._guard is None:
             return True
         from graphrefly.core.guard import normalize_actor
+
         a = normalize_actor(actor)
         return bool(self._guard(a, "observe"))
 
@@ -287,9 +288,11 @@ class DynamicNodeImpl[T]:
             return
         if self._thread_safe:
             from graphrefly.core.subgraph_locks import acquire_subgraph_write_lock_with_defer
+
             with acquire_subgraph_write_lock_with_defer(self):
                 if not internal and self._guard is not None:
                     from graphrefly.core.guard import GuardDenied, normalize_actor, record_mutation
+
                     a = normalize_actor(actor)
                     if not self._guard(a, guard_action):
                         raise GuardDenied(a, self._name or "<unnamed>", guard_action)
@@ -299,6 +302,7 @@ class DynamicNodeImpl[T]:
         else:
             if not internal and self._guard is not None:
                 from graphrefly.core.guard import GuardDenied, normalize_actor, record_mutation
+
                 a = normalize_actor(actor)
                 if not self._guard(a, guard_action):
                     raise GuardDenied(a, self._name or "<unnamed>", guard_action)
@@ -317,12 +321,14 @@ class DynamicNodeImpl[T]:
         check_actor = actor or (getattr(hints, "actor", None) if hints else None)
         if check_actor is not None and self._guard is not None:
             from graphrefly.core.guard import GuardDenied, normalize_actor
+
             a = normalize_actor(check_actor)
             if not self._guard(a, "observe"):
                 raise GuardDenied(a, self._name or "<unnamed>", "observe")
 
         if self._thread_safe:
             from graphrefly.core.subgraph_locks import acquire_subgraph_write_lock_with_defer
+
             with acquire_subgraph_write_lock_with_defer(self):
                 return self._subscribe_body(sink, hints)
         else:
@@ -370,6 +376,7 @@ class DynamicNodeImpl[T]:
                     removed = True
                     self._unsubscribe_body(sink)
         else:
+
             def unsubscribe() -> None:
                 nonlocal removed
                 if removed:
@@ -415,6 +422,7 @@ class DynamicNodeImpl[T]:
             return
         if not internal and self._guard is not None:
             from graphrefly.core.guard import GuardDenied, normalize_actor, record_mutation
+
             a = normalize_actor(actor)
             if not self._guard(a, guard_action):
                 raise GuardDenied(a, self._name or "<unnamed>", guard_action)
@@ -469,7 +477,8 @@ class DynamicNodeImpl[T]:
             return
         if self._terminal and not self._resubscribable:
             filtered = [
-                m for m in messages
+                m
+                for m in messages
                 if m[0] is MessageType.TEARDOWN or m[0] is MessageType.INVALIDATE
             ]
             if not filtered:
@@ -481,8 +490,7 @@ class DynamicNodeImpl[T]:
         # singleDep DIRTY skip optimization
         if self._can_skip_dirty():
             has_phase2 = any(
-                m[0] is MessageType.DATA or m[0] is MessageType.RESOLVED
-                for m in messages
+                m[0] is MessageType.DATA or m[0] is MessageType.RESOLVED for m in messages
             )
             if has_phase2:
                 filtered = [m for m in messages if m[0] is not MessageType.DIRTY]
@@ -651,6 +659,7 @@ class DynamicNodeImpl[T]:
                     # Union with new dep for thread safety
                     if self._thread_safe:
                         from graphrefly.core.subgraph_locks import union_nodes
+
                         union_nodes(self, dep)
 
             # Disconnect removed deps
