@@ -34,6 +34,11 @@ install dependencies.
 - Wall-clock attribution payloads must use `wall_clock_ns()`.
 - Do not call `time.time_ns()` / `time.monotonic_ns()` directly outside `core/clock.py`.
 
+## Auto-checkpoint trigger rule
+
+- For persistence auto-checkpoint behavior, gate saves by `message_tier >= 2`.
+- Do not describe this as DATA/RESOLVED-only; terminal/teardown lifecycle tiers are included.
+
 ## Predecessor repo (reference)
 
 For **implementation help**, **test patterns**, **concurrency** (e.g. subgraph locks), and

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import time
+from typing import Any
 
 import pytest
 
@@ -853,7 +855,7 @@ def test_from_snapshot_rejects_edges() -> None:
     g.connect("a", "b")
     snap = g.snapshot()
     assert snap["edges"]
-    with pytest.raises(ValueError, match="edges"):
+    with pytest.raises(ValueError, match="could not reconstruct"):
         Graph.from_snapshot(snap)
 
 
@@ -867,7 +869,7 @@ def test_from_snapshot_rejects_non_state_nodes() -> None:
         "edges": [],
         "subgraphs": [],
     }
-    with pytest.raises(ValueError, match="state"):
+    with pytest.raises(ValueError, match="could not reconstruct"):
         Graph.from_snapshot(snap)
 
 
@@ -928,6 +930,62 @@ def test_from_snapshot_with_build_restores_derived() -> None:
 
     g1 = Graph.from_snapshot(snap, build=build)
     assert g1.get("a") == 7
+
+
+def test_auto_checkpoint_triggers_only_for_message_tier_gte_2() -> None:
+    class Adapter:
+        def __init__(self) -> None:
+            self.saved: list[dict[str, Any]] = []
+
+        def save(self, data: dict[str, Any]) -> None:
+            self.saved.append(data)
+
+    g = Graph("g")
+    g.add("a", state(0))
+    ad = Adapter()
+    handle = g.auto_checkpoint(ad, debounce_ms=10, compact_every=2)
+    g.signal([(MessageType.PAUSE, "lock")])
+    time.sleep(0.03)
+    assert len(ad.saved) == 0
+    g.set("a", 1)
+    time.sleep(0.03)
+    assert len(ad.saved) == 1
+    handle.dispose()
+
+
+def test_restore_only_pattern_selective_hydration() -> None:
+    g = Graph("g")
+    g.add("a", state(1))
+    g.add("b", state(2))
+    snap = g.snapshot()
+    g.set("a", 10)
+    g.set("b", 20)
+    g.restore(snap, only="a")
+    assert g.get("a") == 1
+    assert g.get("b") == 20
+
+
+def test_from_snapshot_reconstructs_dynamic_nodes_via_factory_registry() -> None:
+    g0 = Graph("g")
+    a = state(1)
+    total = derived([a], lambda deps, _: deps[0] + 1)
+    g0.add("a", a)
+    g0.add("sum", total)
+    g0.connect("a", "sum")
+    total.subscribe(lambda _msgs: None)
+    snap = g0.snapshot()
+
+    def sum_factory(name: str, ctx: dict[str, Any]) -> Any:
+        return derived(list(ctx["resolved_deps"]), lambda deps, _: deps[0] + 1, name=name)
+
+    Graph.register_factory("sum", sum_factory)
+    try:
+        g1 = Graph.from_snapshot(snap)
+        g1.node("sum").subscribe(lambda _msgs: None)
+        g1.set("a", 5)
+        assert g1.get("sum") == 6
+    finally:
+        Graph.unregister_factory("sum")
 
 
 def test_to_json_has_trailing_newline() -> None:

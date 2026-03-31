@@ -11,6 +11,7 @@ from graphrefly.core.guard import (
     compose_guards,
     normalize_actor,
     policy,
+    policy_from_rules,
     record_mutation,
     system_actor,
 )
@@ -98,6 +99,7 @@ __all__ = [
     "normalize_actor",
     "partition_for_batch",
     "policy",
+    "policy_from_rules",
     "record_mutation",
     "system_actor",
     "union_nodes",

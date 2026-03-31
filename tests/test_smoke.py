@@ -9,6 +9,7 @@ def test_package_imports() -> None:
     assert graphrefly.__version__ == "0.1.0"
     assert hasattr(graphrefly, "patterns")
     assert hasattr(graphrefly.patterns, "orchestration")
+    assert hasattr(graphrefly.patterns, "messaging")
     assert hasattr(graphrefly.patterns.orchestration, "pipeline")
     assert hasattr(graphrefly.patterns.orchestration, "task")
     assert hasattr(graphrefly.patterns.orchestration, "branch")
@@ -21,3 +22,8 @@ def test_package_imports() -> None:
     assert hasattr(graphrefly.patterns.orchestration, "sensor")
     assert hasattr(graphrefly.patterns.orchestration, "wait")
     assert hasattr(graphrefly.patterns.orchestration, "on_failure")
+    assert hasattr(graphrefly.patterns.messaging, "topic")
+    assert hasattr(graphrefly.patterns.messaging, "subscription")
+    assert hasattr(graphrefly.patterns.messaging, "job_queue")
+    assert hasattr(graphrefly.patterns.messaging, "job_flow")
+    assert hasattr(graphrefly.patterns.messaging, "topic_bridge")

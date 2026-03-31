@@ -107,6 +107,17 @@
 - [x] `graph.snapshot()` / `graph.restore(data)` / `Graph.from_snapshot(data)`
 - [x] `graph.to_json()` — deterministic serialization
 
+### 1.4b — Seamless persistence
+
+- [x] `graph.auto_checkpoint(adapter, opts?)` — debounced reactive persistence wired to `observe()`; trigger gate uses `message_tier` (`>=2`)
+- [x] Incremental snapshots — diff-based persistence via `Graph.diff()`, periodic full snapshot compaction
+- [x] Selective checkpoint filter — `{ filter: (name, described) => boolean }` to control which nodes trigger saves
+- [x] `Graph.register_factory(pattern, factory)` — register node factory by name glob pattern for `from_snapshot` reconstruction
+- [x] `Graph.unregister_factory(pattern)` — remove registered factory
+- [x] `Graph.from_snapshot(data)` registry integration — auto-reconstruct dynamic graphs (runtime-added nodes) without `build` callback; topological dep resolution
+- [x] `restore(data, only=...)` — selective restore (partial hydration by node name pattern)
+- [x] Guard reconstruction from data — `policy_from_rules()` pattern for rebuilding guard functions from persisted policy rules
+
 ### 1.5 — Actor & Guard (access control)
 
 Built-in ABAC at the node level. Replaces external authz libraries (e.g. CASL) — the graph is the single enforcement point.
@@ -229,11 +240,13 @@ Each returns a `Graph` — uniform introspection, lifecycle, persistence.
 
 ### 4.2 — Messaging
 
-- [ ] `topic()` → Graph
-- [ ] `subscription()` (cursor-based consumer)
-- [ ] `job_queue()` → Graph
-- [ ] `job_flow()` → Graph
-- [ ] `topic_bridge()` (distributed sync)
+Pulsar-inspired messaging features for topic retention, cursor consumers, and queue workers.
+
+- [x] `topic()` → Graph
+- [x] `subscription()` (cursor-based consumer)
+- [x] `job_queue()` → Graph
+- [x] `job_flow()` → Graph
+- [x] `topic_bridge()` (distributed sync)
 
 ### 4.3 — Memory
 

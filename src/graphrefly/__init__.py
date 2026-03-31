@@ -1,5 +1,6 @@
 """graphrefly — Reactive graph protocol for human and LLM co-operation."""
 
+from graphrefly import patterns
 from graphrefly.core import (
     Actor,
     DeferWhen,
@@ -41,6 +42,7 @@ from graphrefly.core import (
     partition_for_batch,
     pipe,
     policy,
+    policy_from_rules,
     producer,
     record_mutation,
     state,
@@ -54,6 +56,7 @@ from graphrefly.graph import (
     META_PATH_SEG,
     PATH_SEP,
     Graph,
+    GraphAutoCheckpointHandle,
     GraphDiffResult,
     GraphObserveSource,
     ObserveResult,
@@ -61,13 +64,13 @@ from graphrefly.graph import (
     TraceEntry,
     reachable,
 )
-from graphrefly import patterns
 
 __version__ = "0.1.0"
 
 __all__ = [
     "GRAPH_META_SEGMENT",
     "GRAPH_SNAPSHOT_VERSION",
+    "GraphAutoCheckpointHandle",
     "Graph",
     "GraphDiffResult",
     "GraphObserveSource",
@@ -116,6 +119,7 @@ __all__ = [
     "normalize_actor",
     "partition_for_batch",
     "policy",
+    "policy_from_rules",
     "record_mutation",
     "system_actor",
     "union_nodes",

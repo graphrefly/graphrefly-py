@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import contextlib
+import fnmatch
 import json
 import os
 import threading
 from collections import deque
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -15,7 +16,7 @@ from graphrefly.core.clock import monotonic_ns
 from graphrefly.core.guard import GuardDenied, normalize_actor
 from graphrefly.core.meta import describe_node
 from graphrefly.core.node import NodeImpl
-from graphrefly.core.protocol import Messages, MessageType, is_batching
+from graphrefly.core.protocol import Messages, MessageType, is_batching, message_tier
 from graphrefly.core.sugar import state
 
 if TYPE_CHECKING:
@@ -71,13 +72,18 @@ class SpyHandle:
 class GraphDiffResult:
     """Result of :meth:`Graph.diff` comparing two describe outputs."""
 
-    added_nodes: list[str] = field(default_factory=list)
-    removed_nodes: list[str] = field(default_factory=list)
-    changed_nodes: list[str] = field(default_factory=list)
-    added_edges: list[dict[str, str]] = field(default_factory=list)
-    removed_edges: list[dict[str, str]] = field(default_factory=list)
-    added_subgraphs: list[str] = field(default_factory=list)
-    removed_subgraphs: list[str] = field(default_factory=list)
+    nodesAdded: list[str] = field(default_factory=list)
+    nodesRemoved: list[str] = field(default_factory=list)
+    nodesChanged: list[dict[str, Any]] = field(default_factory=list)
+    edgesAdded: list[dict[str, str]] = field(default_factory=list)
+    edgesRemoved: list[dict[str, str]] = field(default_factory=list)
+    subgraphsAdded: list[str] = field(default_factory=list)
+    subgraphsRemoved: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True, frozen=True)
+class GraphAutoCheckpointHandle:
+    dispose: Callable[[], None]
 
 #: Separator for qualified paths (e.g. ``"parent::child::node"``).
 PATH_SEP = "::"
@@ -302,6 +308,7 @@ class Graph:
     """
 
     inspector_enabled: ClassVar[bool] = os.environ.get("NODE_ENV") != "production"
+    _factories: ClassVar[list[tuple[str, Callable[[str, dict[str, Any]], NodeImpl[Any]]]]] = []
 
     __slots__ = (
         "_annotations",
@@ -312,6 +319,7 @@ class Graph:
         "_nodes",
         "_thread_safe",
         "_trace_ring",
+        "_auto_checkpoint_disposers",
     )
 
     def __init__(self, name: str, opts: dict[str, Any] | None = None) -> None:
@@ -331,10 +339,31 @@ class Graph:
         self._edges: set[tuple[str, str]] = set()
         self._annotations: dict[str, str] = {}
         self._trace_ring: deque[TraceEntry] = deque(maxlen=1000)
+        self._auto_checkpoint_disposers: set[Callable[[], None]] = set()
 
     @property
     def name(self) -> str:
         return self._name
+
+    @classmethod
+    def register_factory(
+        cls, pattern: str, factory: Callable[[str, dict[str, Any]], NodeImpl[Any]]
+    ) -> None:
+        if not pattern:
+            raise ValueError("Graph.register_factory requires a non-empty pattern")
+        cls.unregister_factory(pattern)
+        cls._factories.append((pattern, factory))
+
+    @classmethod
+    def unregister_factory(cls, pattern: str) -> None:
+        cls._factories = [entry for entry in cls._factories if entry[0] != pattern]
+
+    @classmethod
+    def _factory_for_path(cls, path: str) -> Callable[[str, dict[str, Any]], NodeImpl[Any]] | None:
+        for pattern, factory in reversed(cls._factories):
+            if fnmatch.fnmatchcase(path, pattern):
+                return factory
+        return None
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
@@ -601,6 +630,10 @@ class Graph:
             "",
             internal=True,
         )
+        for dispose in list(self._auto_checkpoint_disposers):
+            with suppress(Exception):
+                dispose()
+        self._auto_checkpoint_disposers.clear()
         _clear_graph_registry(self)
 
     def snapshot(self) -> dict[str, Any]:
@@ -662,7 +695,89 @@ class Graph:
             + "\n"
         )
 
-    def restore(self, data: dict[str, Any]) -> None:
+    def auto_checkpoint(
+        self,
+        adapter: Any,
+        *,
+        debounce_ms: int = 500,
+        compact_every: int = 10,
+        filter: Callable[[str, dict[str, Any]], bool] | None = None,
+        on_error: Callable[[Exception], None] | None = None,
+    ) -> GraphAutoCheckpointHandle:
+        """Arm debounced reactive persistence via graph-wide observe stream.
+
+        Trigger gate uses :func:`message_tier`: only message batches containing
+        tier >= 2 tuples schedule a checkpoint.
+        """
+
+        lock = threading.Lock()
+        timer: threading.Timer | None = None
+        seq = 0
+        pending = False
+        last_describe: dict[str, Any] | None = None
+        debounce_s = max(0.0, float(debounce_ms) / 1000.0)
+        compact_every = max(1, int(compact_every))
+
+        def flush() -> None:
+            nonlocal timer, seq, pending, last_describe
+            with lock:
+                timer = None
+                if not pending:
+                    return
+                pending = False
+            try:
+                described = self.describe()
+                snapshot = {**described, "version": GRAPH_SNAPSHOT_VERSION}
+                seq += 1
+                if last_describe is None or seq % compact_every == 0:
+                    adapter.save({"mode": "full", "snapshot": snapshot, "seq": seq})
+                else:
+                    diff = Graph.diff(last_describe, described)
+                    adapter.save(
+                        {"mode": "diff", "diff": diff.__dict__, "snapshot": snapshot, "seq": seq}
+                    )
+                last_describe = described
+            except Exception as exc:
+                if on_error is not None:
+                    on_error(exc)
+
+        def schedule() -> None:
+            nonlocal timer, pending
+            with lock:
+                pending = True
+                if timer is not None:
+                    timer.cancel()
+                timer = threading.Timer(debounce_s, flush)
+                timer.daemon = True
+                timer.start()
+
+        def on_msgs(path: str, msgs: Messages) -> None:
+            if not any(message_tier(m[0]) >= 2 for m in msgs):
+                return
+            if filter is not None:
+                node_desc = self.describe()["nodes"].get(path)
+                if not isinstance(node_desc, dict) or not filter(path, node_desc):
+                    return
+            schedule()
+
+        observe_stream = self.observe()
+        if not isinstance(observe_stream, GraphObserveSource):
+            raise TypeError("auto_checkpoint expected GraphObserveSource from observe()")
+        unsub = observe_stream.subscribe(on_msgs)
+
+        def dispose() -> None:
+            nonlocal timer
+            unsub()
+            with lock:
+                if timer is not None:
+                    timer.cancel()
+                    timer = None
+            self._auto_checkpoint_disposers.discard(dispose)
+
+        self._auto_checkpoint_disposers.add(dispose)
+        return GraphAutoCheckpointHandle(dispose=dispose)
+
+    def restore(self, data: dict[str, Any], *, only: str | list[str] | None = None) -> None:
         """Apply ``value`` fields from a prior :meth:`snapshot` onto this graph (§3.8).
 
         Only ``state`` and ``producer`` entries with a ``value`` key are written;
@@ -691,7 +806,16 @@ class Graph:
                 f'"{data["name"]}" does not match this graph'
             )
             raise ValueError(msg)
+        only_patterns = (
+            None
+            if only is None
+            else ([only] if isinstance(only, str) else list(only))
+        )
         for path in sorted(data["nodes"]):
+            if only_patterns is not None and not any(
+                fnmatch.fnmatchcase(path, p) for p in only_patterns
+            ):
+                continue
             spec = data["nodes"][path]
             if not isinstance(spec, dict) or "value" not in spec:
                 continue
@@ -736,37 +860,73 @@ class Graph:
             build(root)
             root.restore(data)
             return root
-        if data["edges"]:
-            msg = (
-                "Graph.from_snapshot does not support non-empty edges; node functions "
-                "cannot be reconstructed from JSON. Build the graph in code and use "
-                "graph.restore(snapshot) to apply values, or pass a build callback."
-            )
-            raise ValueError(msg)
         for q in sorted(data["subgraphs"], key=lambda p: (p.count(PATH_SEP), p)):
             _ensure_qualified_mount(root, q)
-        for path in sorted(data["nodes"]):
-            if _path_has_meta_segment(path):
-                continue
-            spec = data["nodes"][path]
-            if not isinstance(spec, dict):
-                continue
-            ntype = spec.get("type", "state")
-            if ntype != "state":
-                msg = (
-                    f"Graph.from_snapshot only supports state nodes (got type {ntype!r} "
-                    f"at {path!r})"
+        primary_paths = [
+            p
+            for p in sorted(data["nodes"])
+            if not _path_has_meta_segment(p) and isinstance(data["nodes"][p], dict)
+        ]
+        pending: dict[str, dict[str, Any]] = {p: data["nodes"][p] for p in primary_paths}
+        created: dict[str, NodeImpl[Any]] = {}
+        progressed = True
+        while pending and progressed:
+            progressed = False
+            for path in list(sorted(pending)):
+                spec = pending[path]
+                deps = spec.get("deps")
+                dep_paths = (
+                    [d for d in deps if isinstance(d, str)]
+                    if isinstance(deps, list)
+                    else []
                 )
-                raise ValueError(msg)
-            owner, local = _owner_graph_and_local(root, path)
-            meta_plain = spec.get("meta")
-            meta_kw: dict[str, Any] = dict(meta_plain) if isinstance(meta_plain, dict) else {}
-            n = state(spec.get("value"), meta=meta_kw)
-            with owner._locked():
-                if local in owner._nodes or local in owner._mounts:
-                    msg = f"snapshot path {path!r} collides with an existing name"
-                    raise ValueError(msg)
-            owner.add(local, n)
+                if not all(dep in created for dep in dep_paths):
+                    continue
+                owner, local = _owner_graph_and_local(root, path)
+                meta_plain = spec.get("meta")
+                meta_kw: dict[str, Any] = dict(meta_plain) if isinstance(meta_plain, dict) else {}
+                ntype = spec.get("type", "state")
+                if ntype == "state":
+                    new_node = state(spec.get("value"), meta=meta_kw)
+                else:
+                    factory = cls._factory_for_path(path)
+                    if factory is None:
+                        continue
+                    new_node = factory(
+                        local,
+                        {
+                            "path": path,
+                            "type": ntype,
+                            "value": spec.get("value"),
+                            "meta": meta_kw,
+                            "deps": dep_paths,
+                            "resolved_deps": [created[d] for d in dep_paths],
+                        },
+                    )
+                with owner._locked():
+                    if local in owner._nodes or local in owner._mounts:
+                        msg = f"snapshot path {path!r} collides with an existing name"
+                        raise ValueError(msg)
+                owner.add(local, new_node)
+                created[path] = new_node
+                pending.pop(path, None)
+                progressed = True
+        if pending:
+            unresolved = ", ".join(sorted(pending))
+            raise ValueError(
+                "Graph.from_snapshot could not reconstruct nodes without build callback: "
+                f"{unresolved}. Register factories with Graph.register_factory(pattern, factory)."
+            )
+        for edge in data["edges"]:
+            if not isinstance(edge, dict):
+                continue
+            ef = edge.get("from")
+            et = edge.get("to")
+            if not isinstance(ef, str) or not isinstance(et, str):
+                continue
+            with suppress(Exception):
+                root.connect(ef, et)
+        root.restore(data)
         return root
 
     def describe(
@@ -1634,10 +1794,19 @@ class Graph:
         b_nodes = set(b.get("nodes", {}).keys())
         added_nodes = sorted(b_nodes - a_nodes)
         removed_nodes = sorted(a_nodes - b_nodes)
-        changed_nodes: list[str] = []
+        changed_nodes: list[dict[str, Any]] = []
         for p in sorted(a_nodes & b_nodes):
-            if a["nodes"][p] != b["nodes"][p]:
-                changed_nodes.append(p)
+            na = a["nodes"][p]
+            nb = b["nodes"][p]
+            if not isinstance(na, dict) or not isinstance(nb, dict):
+                if na != nb:
+                    changed_nodes.append({"path": p, "field": "node", "from": na, "to": nb})
+                continue
+            for key in ("type", "status", "value"):
+                va = na.get(key)
+                vb = nb.get(key)
+                if va != vb:
+                    changed_nodes.append({"path": p, "field": key, "from": va, "to": vb})
 
         a_edges = {(e["from"], e["to"]) for e in a.get("edges", [])}
         b_edges = {(e["from"], e["to"]) for e in b.get("edges", [])}
@@ -1650,13 +1819,13 @@ class Graph:
         removed_subgraphs = sorted(a_subs - b_subs)
 
         return GraphDiffResult(
-            added_nodes=added_nodes,
-            removed_nodes=removed_nodes,
-            changed_nodes=changed_nodes,
-            added_edges=added_edges,
-            removed_edges=removed_edges,
-            added_subgraphs=added_subgraphs,
-            removed_subgraphs=removed_subgraphs,
+            nodesAdded=added_nodes,
+            nodesRemoved=removed_nodes,
+            nodesChanged=changed_nodes,
+            edgesAdded=added_edges,
+            edgesRemoved=removed_edges,
+            subgraphsAdded=added_subgraphs,
+            subgraphsRemoved=removed_subgraphs,
         )
 
 
@@ -1977,6 +2146,7 @@ def _signal_graph(
 __all__ = [
     "GRAPH_META_SEGMENT",
     "GRAPH_SNAPSHOT_VERSION",
+    "GraphAutoCheckpointHandle",
     "Graph",
     "GraphDiffResult",
     "GraphObserveSource",

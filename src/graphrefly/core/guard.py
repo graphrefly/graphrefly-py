@@ -158,6 +158,61 @@ def policy(
     return guard
 
 
+def policy_from_rules(rules: list[dict[str, Any]]) -> GuardFn:
+    """Rebuild a declarative guard from persisted rule data.
+
+    Rule schema:
+    - ``effect``: ``"allow"`` or ``"deny"``
+    - ``action``: str or list[str]
+    - ``actorType``: optional str or list[str]
+    - ``actorId``: optional str or list[str]
+    - ``claims``: optional dict[str, Any] exact-match constraints
+    """
+
+    def build(
+        allow: Callable[..., None],
+        deny: Callable[..., None],
+    ) -> None:
+        for rule in rules:
+            effect = str(rule.get("effect", "allow")).lower()
+            if effect not in ("allow", "deny"):
+                raise ValueError(f"policy_from_rules unknown effect {effect!r}")
+            action_value = rule.get("action", "write")
+            actor_type_raw = rule.get("actorType")
+            actor_id_raw = rule.get("actorId")
+            claims = rule.get("claims")
+            actor_types = (
+                None
+                if actor_type_raw is None
+                else set(actor_type_raw if isinstance(actor_type_raw, list) else [actor_type_raw])
+            )
+            actor_ids = (
+                None
+                if actor_id_raw is None
+                else set(actor_id_raw if isinstance(actor_id_raw, list) else [actor_id_raw])
+            )
+            claim_items = list(claims.items()) if isinstance(claims, dict) else []
+
+            def where(
+                actor: Actor,
+                _types: set[Any] | None = actor_types,
+                _ids: set[Any] | None = actor_ids,
+                _claims: list[tuple[Any, Any]] = claim_items,
+            ) -> bool:
+                if _types is not None and actor.get("type") not in _types:
+                    return False
+                if _ids is not None and actor.get("id", "") not in _ids:
+                    return False
+                return all(actor.get(str(k)) == v for k, v in _claims)
+
+            if effect == "deny":
+                deny(action_value, where=where)
+            else:
+                allow(action_value, where=where)
+
+    return policy(build)
+
+
 def compose_guards(*guards: GuardFn | None) -> GuardFn:
     """Compose multiple guard functions with AND logic; ``None`` entries are skipped.
 
@@ -216,6 +271,7 @@ __all__ = [
     "compose_guards",
     "normalize_actor",
     "policy",
+    "policy_from_rules",
     "record_mutation",
     "system_actor",
 ]
