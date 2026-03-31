@@ -12,7 +12,7 @@ import json
 import threading
 import urllib.error
 import urllib.request
-from collections.abc import AsyncIterable, Awaitable, Callable, Iterable
+from collections.abc import AsyncIterable, Awaitable, Callable, Iterable, Iterator
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
@@ -873,6 +873,108 @@ def from_event_emitter(
     return node(start, describe_kind="from_event_emitter", complete_when_deps_complete=False)
 
 
+def from_webhook(
+    register: Callable[
+        [
+            Callable[[Any], None],
+            Callable[[BaseException | Any], None],
+            Callable[[], None],
+        ],
+        Callable[[], None] | None,
+    ],
+) -> Node[Any]:
+    """Bridge HTTP webhook callbacks into a GraphReFly source.
+
+    The ``register`` callback wires your runtime/framework callback into GraphReFly and may return
+    cleanup. It receives three functions: ``emit(payload)``, ``error(err)``, and ``complete()``.
+
+    This mirrors the source-adapter style of :func:`from_event_emitter`, but targets HTTP webhook
+    handlers from frameworks like FastAPI or Flask.
+
+    Example (FastAPI):
+        ```python
+        from fastapi import FastAPI, Request
+        from graphrefly.extra import from_webhook
+
+        app = FastAPI()
+        bridge: dict[str, object] = {}
+
+        def register(emit, error, complete):
+            bridge["emit"] = emit
+            bridge["error"] = error
+            bridge["complete"] = complete
+            return None
+
+        webhook_node = from_webhook(register)
+
+        @app.post("/webhook")
+        async def webhook(request: Request):
+            payload = await request.json()
+            bridge["emit"](payload)
+            return {"ok": True}
+        ```
+
+    Example (Flask):
+        ```python
+        from flask import Flask, jsonify, request
+        from graphrefly.extra import from_webhook
+
+        app = Flask(__name__)
+        bridge: dict[str, object] = {}
+
+        def register(emit, error, complete):
+            bridge["emit"] = emit
+            bridge["error"] = error
+            bridge["complete"] = complete
+            return None
+
+        webhook_node = from_webhook(register)
+
+        @app.post("/webhook")
+        def webhook():
+            try:
+                bridge["emit"](request.get_json(force=True))
+                return jsonify({"ok": True}), 200
+            except Exception as exc:
+                bridge["error"](exc)
+                return jsonify({"ok": False}), 500
+        ```
+    """
+
+    def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
+        active = [True]
+
+        def emit(payload: Any) -> None:
+            if not active[0]:
+                return
+            actions.emit(payload)
+
+        def error(err: BaseException | Any) -> None:
+            if not active[0]:
+                return
+            actions.down([(MessageType.ERROR, err)])
+
+        def complete() -> None:
+            if not active[0]:
+                return
+            actions.down([(MessageType.COMPLETE,)])
+
+        try:
+            cleanup = register(emit, error, complete)
+        except BaseException as err:
+            actions.down([(MessageType.ERROR, err)])
+            cleanup = None
+
+        def stop() -> None:
+            active[0] = False
+            if cleanup is not None:
+                cleanup()
+
+        return stop
+
+    return node(start, describe_kind="from_webhook", complete_when_deps_complete=False)
+
+
 def to_array(source: Node[Any]) -> Node[list[Any]]:
     """Collect all DATA values; on COMPLETE emit one DATA (the list) then COMPLETE.
 
@@ -898,6 +1000,121 @@ def to_array(source: Node[Any]) -> Node[list[Any]]:
     )
 
 
+def _sse_frame(event: str, data: str | None = None) -> str:
+    out = f"event: {event}\n"
+    if data is not None:
+        # Preserve trailing empty lines (matches TS split(/\r?\n/) framing behavior).
+        normalized = data.replace("\r\n", "\n")
+        for line in normalized.split("\n"):
+            out += f"data: {line}\n"
+    return f"{out}\n"
+
+
+def to_sse(
+    source: Node[Any],
+    *,
+    serialize: Callable[[Any], str] | None = None,
+    data_event: str = "data",
+    error_event: str = "error",
+    complete_event: str = "complete",
+    include_resolved: bool = False,
+    include_dirty: bool = False,
+    keepalive_s: float | None = None,
+    cancel_event: threading.Event | None = None,
+    event_name_resolver: Callable[[Any], str] | None = None,
+) -> Iterator[str]:
+    """Convert node messages into standard SSE text frames.
+
+    This is a sink adapter implemented as a thin subscription bridge over GraphReFly
+    messages. The returned iterator yields framed SSE chunks (``event: ...`` and
+    ``data: ...`` lines, separated by a blank line).
+    """
+
+    import queue
+
+    q: queue.Queue[str | None] = queue.Queue()
+    done = threading.Event()
+
+    def encode(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        if serialize is not None:
+            return serialize(value)
+        if isinstance(value, BaseException):
+            return str(value)
+        try:
+            return json.dumps(value)
+        except TypeError:
+            return str(value)
+
+    def sink(msgs: Messages) -> None:
+        if done.is_set():
+            return
+        for msg in msgs:
+            t = msg[0]
+            if t is MessageType.DATA:
+                q.put(_sse_frame(data_event, encode(msg[1] if len(msg) > 1 else None)))
+                continue
+            if t is MessageType.ERROR:
+                q.put(_sse_frame(error_event, encode(msg[1] if len(msg) > 1 else None)))
+                done.set()
+                q.put(None)
+                return
+            if t is MessageType.COMPLETE:
+                q.put(_sse_frame(complete_event))
+                done.set()
+                q.put(None)
+                return
+            if t is MessageType.RESOLVED and not include_resolved:
+                continue
+            if t is MessageType.DIRTY and not include_dirty:
+                continue
+            event = event_name_resolver(t) if event_name_resolver is not None else str(t)
+            data = encode(msg[1]) if len(msg) > 1 else None
+            q.put(_sse_frame(event, data))
+
+    unsub = source.subscribe(sink)
+
+    keepalive_stop = threading.Event()
+    keepalive_thread: threading.Thread | None = None
+    if keepalive_s is not None and keepalive_s > 0:
+        def keepalive_loop() -> None:
+            while not keepalive_stop.wait(keepalive_s):
+                if done.is_set():
+                    return
+                q.put(": keepalive\n\n")
+
+        keepalive_thread = threading.Thread(target=keepalive_loop, daemon=True)
+        keepalive_thread.start()
+
+    cancel_thread: threading.Thread | None = None
+    if cancel_event is not None:
+        def cancel_loop() -> None:
+            cancel_event.wait()
+            if done.is_set():
+                return
+            done.set()
+            q.put(None)
+
+        cancel_thread = threading.Thread(target=cancel_loop, daemon=True)
+        cancel_thread.start()
+
+    try:
+        while True:
+            chunk = q.get()
+            if chunk is None:
+                break
+            yield chunk
+    finally:
+        done.set()
+        keepalive_stop.set()
+        if keepalive_thread is not None:
+            keepalive_thread.join(timeout=0.05)
+        if cancel_thread is not None:
+            cancel_thread.join(timeout=0.05)
+        unsub()
+
+
 share_replay = replay
 
 __all__ = [
@@ -910,6 +1127,7 @@ __all__ = [
     "from_awaitable",
     "from_cron",
     "from_event_emitter",
+    "from_webhook",
     "from_http",
     "from_iter",
     "from_timer",
@@ -920,6 +1138,7 @@ __all__ = [
     "share_replay",
     "throw_error",
     "to_array",
+    "to_sse",
     "to_list",
     "HttpBundle",
 ]

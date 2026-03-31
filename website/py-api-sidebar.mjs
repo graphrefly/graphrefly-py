@@ -61,6 +61,7 @@ export const pyApiSidebar = [
 			{ label: "from_awaitable()", link: "/api/from_awaitable" },
 			{ label: "from_cron()", link: "/api/from_cron" },
 			{ label: "from_event_emitter()", link: "/api/from_event_emitter" },
+			{ label: "from_webhook()", link: "/api/from_webhook" },
 			{ label: "from_iter()", link: "/api/from_iter" },
 			{ label: "from_timer()", link: "/api/from_timer" },
 			{ label: "never()", link: "/api/never" },

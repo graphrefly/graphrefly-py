@@ -516,6 +516,7 @@ Both ports now align on the following:
    | `cached` | Both: `replay(source, buffer_size=1)` / `replay(source, 1)`. |
    | `replay` | Both: real circular buffer + late-subscriber replay; reject `buffer_size < 1`. |
    | `first_value_from` | Py: blocks via `threading.Event`, returns value. TS: `firstValueFrom(source): Promise<T>`. |
+   | `to_sse` / `toSSE` | Both: standard SSE frames (`event:` + `data:` lines + blank line), DATA/ERROR/COMPLETE mapping, optional keepalive comments, optional DIRTY/RESOLVED inclusion, and transport-level cancellation without synthetic graph ERROR frames. |
    | `describe_kind` | Both: source factories use `"producer"` (not `"operator"`). |
    | Static source timing | Both: synchronous emission during producer start (no deferred microtask). |
 
@@ -526,6 +527,7 @@ Both ports now align on the following:
    | `from_event_emitter` / `fromEvent` | `from_event_emitter(emitter, event, add_method=, remove_method=)` — generic emitter | `fromEvent(target, type, opts?)` — DOM `addEventListener` API | Language ecosystem |
    | `to_list` (blocking) | Py-only: blocks via `threading.Event`, returns `list` | N/A — use `await firstValueFrom(toArray(src))` | Py sync bridge |
    | `first_value_from` | Py-only: sync bridge | `firstValueFrom`: `Promise<T>` | Language concurrency model |
+   | `to_sse` / `toSSE` return type | `Iterator[str]` SSE chunks | `ReadableStream<Uint8Array>` | Language runtime idiom |
    | `from_awaitable` / `fromPromise` | `from_awaitable`: worker thread + `asyncio.run` | `fromPromise`: native Promise | Language async model |
    | `from_async_iter` / `fromAsyncIter` | Worker thread + `asyncio.run` | Native async iteration | Language async model |
    | `from_http` / `fromHTTP` transform input | `transform(raw_bytes: bytes)` | `transform(response: Response)` | Runtime/library shape (`urllib` bytes vs Fetch `Response`) |

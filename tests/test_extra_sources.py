@@ -5,13 +5,13 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 
 from graphrefly.core import MessageType
 from graphrefly.core.node import NodeImpl
-from graphrefly.core.sugar import state
+from graphrefly.core.sugar import producer, state
 from graphrefly.extra.sources import (
     cached,
     empty,
@@ -22,6 +22,7 @@ from graphrefly.extra.sources import (
     from_awaitable,
     from_cron,
     from_event_emitter,
+    from_webhook,
     from_iter,
     from_timer,
     never,
@@ -31,6 +32,7 @@ from graphrefly.extra.sources import (
     share_replay,
     throw_error,
     to_array,
+    to_sse,
     to_list,
 )
 
@@ -347,7 +349,126 @@ def test_from_event_emitter() -> None:
     assert out == ["hello", "world"]
 
 
+def test_from_webhook_emits_and_cleans_up() -> None:
+    emitted: list[Any] = []
+    cleanup_called = [False]
+    hook: dict[str, Any] = {"emit": None, "error": None, "complete": None}
+
+    def register(
+        emit: Callable[[Any], None],
+        error: Callable[[BaseException | Any], None],
+        complete: Callable[[], None],
+    ) -> Callable[[], None]:
+        hook["emit"] = emit
+        hook["error"] = error
+        hook["complete"] = complete
+
+        def cleanup() -> None:
+            cleanup_called[0] = True
+
+        return cleanup
+
+    n = from_webhook(register)
+
+    def sink(msgs: list) -> None:
+        for m in msgs:
+            if m[0] is MessageType.DATA:
+                emitted.append(m[1])
+
+    unsub = n.subscribe(sink)
+    hook["emit"]({"id": "evt-1"})
+    time.sleep(0.02)
+    unsub()
+    assert emitted == [{"id": "evt-1"}]
+    assert cleanup_called[0] is True
+
+
+def test_from_webhook_register_error_forwards_error() -> None:
+    def bad_register(
+        _emit: Callable[[Any], None],
+        _error: Callable[[BaseException | Any], None],
+        _complete: Callable[[], None],
+    ) -> Callable[[], None] | None:
+        raise RuntimeError("register-failed")
+
+    sink: list[Any] = []
+    n = from_webhook(bad_register)
+    n.subscribe(sink.append)
+    assert any(
+        m[0] is MessageType.ERROR and isinstance(m[1], RuntimeError) and str(m[1]) == "register-failed"
+        for batch in sink
+        for m in batch
+    )
+
+
 def test_to_array_reactive() -> None:
     """of(1,2,3) | to_array -> Node that emits [1,2,3]."""
     result = to_list(of(1, 2, 3) | to_array)
     assert result == [[1, 2, 3]]
+
+
+def test_to_sse_data_and_complete_frames() -> None:
+    chunks = list(to_sse(of(1, 2)))
+    text = "".join(chunks)
+    assert "event: data\ndata: 1\n\n" in text
+    assert "event: data\ndata: 2\n\n" in text
+    assert "event: complete\n\n" in text
+
+
+def test_to_sse_error_frame() -> None:
+    text = "".join(
+        to_sse(
+            throw_error(ValueError("boom")),
+            serialize=lambda v: str(v),
+        )
+    )
+    assert "event: error\ndata: boom\n\n" in text
+
+
+def test_to_sse_default_error_serialization_uses_message() -> None:
+    text = "".join(to_sse(throw_error(ValueError("boom"))))
+    assert "event: error\ndata: boom\n\n" in text
+
+
+def test_to_sse_custom_serializer_can_override_error_payload() -> None:
+    text = "".join(
+        to_sse(
+            throw_error(ValueError("boom")),
+            serialize=lambda v: f"ERR:{type(v).__name__}",
+        )
+    )
+    assert "event: error\ndata: ERR:ValueError\n\n" in text
+
+
+def test_to_sse_keepalive_and_cancel_event() -> None:
+    cancel = threading.Event()
+    out: list[str] = []
+
+    def consume() -> None:
+        for chunk in to_sse(never(), keepalive_s=0.01, cancel_event=cancel):
+            out.append(chunk)
+
+    t = threading.Thread(target=consume, daemon=True)
+    t.start()
+    time.sleep(0.03)
+    cancel.set()
+    t.join(timeout=1.0)
+    assert t.is_alive() is False
+    assert any(chunk == ": keepalive\n\n" for chunk in out)
+
+
+def test_to_sse_can_include_dirty_and_resolved() -> None:
+    n = producer(
+        lambda _deps, actions: (
+            actions.down([(MessageType.DIRTY,), (MessageType.RESOLVED,), (MessageType.COMPLETE,)]),
+            (lambda: None),
+        )[1]
+    )
+    text = "".join(to_sse(n, include_dirty=True, include_resolved=True))
+    assert "event: DIRTY\n\n" in text
+    assert "event: RESOLVED\n\n" in text
+
+
+def test_to_sse_preserves_trailing_newline_lines() -> None:
+    text = "".join(to_sse(of("a\n")))
+    assert "event: data\ndata: a\ndata: \n\n" in text
