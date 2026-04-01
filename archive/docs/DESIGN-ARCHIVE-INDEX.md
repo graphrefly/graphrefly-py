@@ -100,6 +100,19 @@ Key sessions from the predecessor that directly informed GraphReFly:
 
 **Files:** `archive/docs/SESSION-demo-test-strategy.md`
 
+### Session universal-reduction-layer (March 31) — Universal Reduction Layer: Massive Info → Actionable Items via LLM-Composable Reactive Graphs
+**Topic:** Generalizing GraphReFly from domain-specific tools (issue tracker, observability) to a universal reactive reduction layer for any "massive info → actionable items" pattern. Python companion to the canonical session in `~/src/graphrefly-ts/archive/docs/SESSION-universal-reduction-layer.md`.
+
+**Python-specific considerations:**
+- Adapter ecosystem advantages: `confluent-kafka`, `clickhouse-connect`, `boto3`, `redis-py` are all mature Python libraries
+- Concurrency: per-subgraph `RLock` critical for high-throughput reduction branches; free-threaded Python 3.14 enables true parallelism
+- OTel bridge: `from_otel()` should accept `opentelemetry-sdk` SpanProcessor/MetricReader/LogEmitterProvider interfaces
+- `multiprocessing`-based `sharded_graph` for scaling beyond single process
+
+**Roadmap impact:** New Phase 5.3b (ingest adapters), 5.3c (storage/sink adapters), Phase 8 (Universal Reduction Layer: 8.1–8.5), Phase 7.1b (3 universal reduction demos).
+
+**Files:** `archive/docs/SESSION-universal-reduction-layer.md`
+
 ---
 
 ## Reading Guide
@@ -123,5 +136,5 @@ Each session file contains:
 ---
 
 **Created:** March 27, 2026
-**Updated:** March 30, 2026
-**Archive Status:** Active — spec design + access control + cross-repo implementation audit (companion) + Tier 2 parity + demo & test strategy
+**Updated:** March 31, 2026
+**Archive Status:** Active — spec design + access control + cross-repo implementation audit (companion) + Tier 2 parity + demo & test strategy + universal reduction layer

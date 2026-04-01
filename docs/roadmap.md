@@ -258,14 +258,14 @@ Pulsar-inspired messaging features for topic retention, cursor consumers, and qu
 
 ### 4.4 — AI surface
 
-- [ ] `chat_stream()` → Graph
-- [ ] `agent_loop()` → Graph
-- [ ] `from_llm()` (adapter)
-- [ ] `tool_registry()` → Graph
-- [ ] `agent_memory()` → Graph — composes `distill()` (3.2b) + tracker-specific scoring/eviction
-- [ ] `llm_extractor(system_prompt, opts)` → `extract_fn` for `distill()` — handles structured and unstructured LLM output, deduplicates against existing memories
-- [ ] `llm_consolidator(system_prompt, opts)` → `consolidate_fn` for `distill()` — clusters and merges related memories via LLM
-- [ ] `system_prompt_builder()`
+- [x] `chat_stream()` → Graph
+- [x] `agent_loop()` → Graph
+- [x] `from_llm()` (adapter)
+- [x] `tool_registry()` → Graph
+- [x] `agent_memory()` → Graph — `distill()` + store/compact/size; optional LLM hooks; in-factory `knowledge_graph` / `vector_index` / … composition is future work (compose externally today)
+- [x] `llm_extractor(system_prompt, opts)` → `extract_fn` for `distill()` — handles structured and unstructured LLM output, deduplicates against existing memories
+- [x] `llm_consolidator(system_prompt, opts)` → `consolidate_fn` for `distill()` — clusters and merges related memories via LLM
+- [x] `system_prompt_builder()`
 
 ### 4.5 — CQRS
 
@@ -304,11 +304,35 @@ Composition layer over 3.2 (`reactive_log`), 4.1 (sagas), 4.2 (event bus), 4.3 (
 - [x] `from_fs_watch(paths, opts?)` — file system watcher as reactive source; debounced, glob include/exclude, recursive. Uses `watchdog`. Cleanup closes watchers on unsubscribe.
 - [x] `from_git_hook(repo_path, opts?)` — git change detection as reactive source; emits structured `GitEvent` (commit, files, message, author). Default: polling via `git log --since`; opt-in hook script installation.
 
+### 5.3b — Ingest adapters (universal source layer)
+
+Connectors for the universal reduction layer (Phase 8). Each wraps an external protocol/system as a reactive `producer` node.
+
+- [ ] `from_otel(opts)` — OTLP/HTTP receiver; accepts traces, metrics, logs as nodes. Bridges `opentelemetry-sdk` SpanProcessor/MetricReader/LogEmitterProvider.
+- [ ] `from_syslog(opts)` — RFC 5424 syslog receiver (UDP/TCP)
+- [ ] `from_statsd(opts)` — StatsD/DogStatsD UDP receiver
+- [ ] `from_prometheus(endpoint, opts)` — scrape Prometheus /metrics as reactive source
+- [ ] `from_kafka(topic, opts)` / `to_kafka(topic, opts)` — Kafka consumer/producer (via `confluent-kafka` or `aiokafka`)
+- [ ] `from_redis_stream(key, opts)` / `to_redis_stream(key, opts)` — Redis Streams
+- [ ] `from_csv(path, opts)` / `from_ndjson(stream)` — file/stream ingest for batch replay
+- [ ] `from_clickhouse_watch(query, opts)` — live materialized view as reactive source (via `clickhouse-connect`)
+
+### 5.3c — Storage & sink adapters
+
+- [ ] `to_clickhouse(table, opts)` — buffered batch insert sink
+- [ ] `to_s3(bucket, opts)` — object storage sink (Parquet/NDJSON, partitioned; via `boto3`)
+- [ ] `to_postgres(table, opts)` / `to_mongo(collection, opts)` — document/relational sink
+- [ ] `to_loki(opts)` / `to_tempo(opts)` — Grafana stack sinks
+- [ ] `checkpoint_to_s3(bucket, opts)` — graph snapshot persistence to object storage
+- [ ] `checkpoint_to_redis(prefix, opts)` — fast checkpoint for ephemeral infra
+
 ### 5.4 — LLM tool integration
 
 - [ ] `knobs_as_tools(graph, actor=)` → OpenAI/MCP tool schemas from scoped describe()
 - [ ] `gauges_as_context(graph, actor=)` → formatted gauge values for system prompts
 - [ ] Graph builder validation
+- [ ] `graph_from_spec(natural_language, adapter, opts)` → LLM composes a Graph from natural language; validates topology; returns runnable graph
+- [ ] `suggest_strategy(graph, problem, adapter)` → LLM analyzes current graph + problem, suggests operator/topology changes
 
 ---
 
@@ -340,6 +364,14 @@ Python demos run in Pyodide/WASM lab on the graphrefly-py docs site. Each mirror
 - [ ] **Demo 2: Multi-Agent Task Board** — 4.1 + 4.3 + 4.4 + 3.2b + 1.5 (Pyodide, mock LLM)
 - [ ] **Demo 3: Real-Time Monitoring Dashboard** — 4.1 + 4.2 + 4.3 + 3.1 + 3.2 (Pyodide)
 - [ ] **Demo 4: AI Documentation Assistant** — 4.3 + 4.4 + 3.2b + 3.2 + 3.1 (Pyodide, mock LLM)
+
+### 7.1b — Universal reduction demos
+
+Demos exercising Phase 8 reduction layer patterns. Design reference: `~/src/graphrefly-ts/archive/docs/SESSION-universal-reduction-layer.md`.
+
+- [ ] **Demo 5: Observability Pipeline** — 5.3b + 8.1 + 8.4 + 3.2b (from_otel → stratify → LLM correlation → SLO verifiable → Grafana sink)
+- [ ] **Demo 6: AI Agent Observatory** — 4.4 + 8.1 + 8.4 (instrument agent_loop with full tracing → LLM distills "why agent went off-track")
+- [ ] **Demo 7: Log Reduction Pipeline** — 5.3b + 8.1 + 8.2 (from_syslog 10K lines/sec → 4-layer reduction → 5 prioritized items/minute)
 
 ### 7.2 — Scenario tests (headless demo logic)
 
@@ -374,6 +406,56 @@ Items expected to emerge during demo implementation. Validate need, then add to 
 - [ ] **Guard-aware describe for UI** — `describe(show_denied=True)` variant showing hidden nodes with `{ denied: True, reason }` for UI display
 - [ ] **Mock LLM fixture system** — `mock_llm(responses)` adapter for `from_llm()` replaying deterministic canned responses
 - [ ] **Time simulation** — `monotonic_ns()` test-mode override for integration with `from_timer`/`from_cron`/`wait`
+
+---
+
+## Phase 8: Universal Reduction Layer (Info → Action)
+
+Reusable patterns for taking heterogeneous massive inputs and producing prioritized, auditable, human-actionable output. Every pattern is a Graph factory — uniform introspection, lifecycle, persistence. Design reference: `~/src/graphrefly-ts/archive/docs/SESSION-universal-reduction-layer.md` (canonical), `archive/docs/SESSION-universal-reduction-layer.md` (Python companion).
+
+### 8.1 — Reduction primitives
+
+Composable building blocks between sources and sinks.
+
+- [ ] `stratify(source, rules)` → Graph — route input to different reduction branches based on classifier fn. Each branch gets independent operator chains. Rules are reactive — an LLM can rewrite them at runtime.
+- [ ] `funnel(sources, stages)` → Graph — multi-source merge with sequential reduction stages. Each stage is a named subgraph. Stages are pluggable — swap a stage by graph composition.
+- [ ] `feedback(graph, condition, reentry)` → Graph — introduce a cycle: when condition node fires, route output back to reentry point. Bounded by max iterations + budget constraints.
+- [ ] `budget_gate(source, constraints)` → Node — pass-through respecting reactive constraint nodes (token budget, network IO, cost ceiling). Backpressure via PAUSE/RESUME.
+- [ ] `scorer(sources, weights)` → Node — reactive multi-signal scoring. Weights are nodes (LLM or human can adjust live). Output: sorted, prioritized items with full score breakdown in meta.
+
+### 8.2 — Domain templates (opinionated Graph factories)
+
+Pre-wired graphs for common "info → action" domains. Users fork/extend.
+
+- [ ] `observability_graph(opts)` → Graph — OTel ingest → stratified reduction → correlation → SLO verification → alert prioritization → sink
+- [ ] `issue_tracker_graph(opts)` → Graph — findings → extraction → verifiable assertions → regression detection → distillation → prioritized queue
+- [ ] `content_moderation_graph(opts)` → Graph — ingest → LLM classification → human review → feedback → policy refinement
+- [ ] `data_quality_graph(opts)` → Graph — DB/API ingest → schema validation → anomaly detection → drift alerting → remediation suggestions
+
+### 8.3 — LLM graph composition
+
+- [ ] `GraphSpec` schema — JSON schema for declarative graph topology. Serializable, diffable.
+- [ ] `compile_spec(spec)` → Graph — instantiate from spec
+- [ ] `decompile_graph(graph)` → GraphSpec — extract spec from running graph
+- [ ] `llm_compose(problem, adapter, opts)` → GraphSpec — LLM generates topology from natural language
+- [ ] `llm_refine(graph, feedback, adapter)` → GraphSpec — LLM modifies existing topology
+- [ ] `spec_diff(spec_a, spec_b)` — structural diff between specs
+
+### 8.4 — Audit & accountability
+
+- [ ] `audit_trail(graph, opts)` → Graph — wraps graph with reactive_log recording every mutation, actor, timestamp, causal chain
+- [ ] `explain_path(graph, from_node, to_node)` — walk backward to explain derivation. Human + LLM readable.
+- [ ] `policy_enforcer(graph, policies)` — reactive constraint enforcement. Policies are nodes. Violations → alert subgraph.
+- [ ] `compliance_snapshot(graph)` — point-in-time export for regulatory archival
+
+### 8.5 — Performance & scale
+
+- [ ] Backpressure protocol — formalize PAUSE/RESUME for throughput control across graph boundaries
+- [ ] `peer_graph(transport, opts)` — federate graphs across processes/services (WebSocket, gRPC, NATS, Redis pub/sub)
+- [ ] Benchmark suite: 10K nodes, 100K msgs/sec. Target: <1ms p99 per hop.
+- [ ] `sharded_graph(shard_fn, opts)` — partition across `multiprocessing` workers. Transparent to consumers.
+- [ ] Adaptive sampling — adjusts sample rate from downstream backpressure + budget constraints
+- [ ] Free-threaded Python 3.14 benchmark for parallel reduction branches
 
 ---
 
