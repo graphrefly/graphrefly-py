@@ -1,9 +1,9 @@
 ---
 title: 'for_each'
-description: 'Subscribe to *source* and invoke ``fn(value)`` for each ``DATA``.'
+description: 'Subscribe to *source* and invoke ``fn(value)`` for each ``DATA`` message.'
 ---
 
-Subscribe to *source* and invoke ``fn(value)`` for each ``DATA``.
+Subscribe to *source* and invoke ``fn(value)`` for each ``DATA`` message.
 
 ## Signature
 
@@ -18,8 +18,25 @@ def for_each(
 
 ## Documentation
 
-Subscribe to *source* and invoke ``fn(value)`` for each ``DATA``.
+Subscribe to *source* and invoke ``fn(value)`` for each ``DATA`` message.
 
-Returns an unsubscribe callable. Prefer ``on_error`` for ``ERROR`` handling; the default
-path raises the error from inside the sink and may not always propagate through
-:meth:`~graphrefly.core.node.Node.subscribe` when ``thread_safe`` is enabled.
+Args:
+    source: The node to subscribe to.
+    fn: Callback invoked with each ``DATA`` payload.
+    on_error: Optional callback invoked when an ``ERROR`` is received. If
+        omitted, the error is re-raised from inside the sink.
+
+Returns:
+    An unsubscribe callable; call it to detach.
+
+Example:
+    ```python
+    from graphrefly import state
+    from graphrefly.extra.sources import for_each
+    x = state(0)
+    log = []
+    unsub = for_each(x, log.append)
+    x.down([("DATA", 7)])
+    unsub()
+    assert log == [7]
+    ```

@@ -60,6 +60,19 @@ def test_verifiable_accepts_falsy_scalar_trigger() -> None:
     assert bundle.verified.get() == 30
 
 
+def test_verifiable_stamps_source_version_meta_for_v0_sources() -> None:
+    src = state(2, versioning=0)
+    trigger = state(0)
+    bundle = verifiable(
+        src,
+        lambda value: {"checked": value},
+        trigger=trigger,
+    )
+    trigger.down([(MessageType.DATA, 1)])
+    sv = bundle.verified.meta["source_version"].get()
+    assert sv == {"id": src.v.id, "version": src.v.version}
+
+
 def test_distill_extracts_and_compacts() -> None:
     src = state("alpha")
     bundle = distill(

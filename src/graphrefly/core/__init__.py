@@ -60,9 +60,9 @@ from graphrefly.core.sugar import (
 from graphrefly.core.versioning import (
     V0,
     V1,
+    HashFn,
     NodeVersionInfo,
     VersioningLevel,
-    HashFn,
     advance_version,
     create_versioning,
     default_hash,

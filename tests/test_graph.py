@@ -599,6 +599,22 @@ def test_observe_causal_and_derived_capture_trigger_and_dep_values() -> None:
     assert data_event.get("dep_values") == [5]
 
 
+def test_observe_causal_includes_trigger_version_when_dep_has_v0() -> None:
+    g = Graph("g")
+    a = state(0, versioning=0)
+    b = derived([a], lambda deps, _: deps[0] + 1)
+    g.add("a", a)
+    g.add("b", b)
+    g.connect("a", "b")
+    obs = g.observe("b", causal=True, derived=True, timeline=True)
+    g.set("a", 5)
+    obs.dispose()
+    data_events = [e for e in obs.events if e.get("type") == "data"]
+    data_event = data_events[-1] if data_events else None
+    assert data_event is not None
+    assert data_event.get("trigger_version") == {"id": a.v.id, "version": a.v.version}
+
+
 def test_observe_derived_includes_initial_run_without_trigger_dep_index() -> None:
     g = Graph("g")
     a = state(0)

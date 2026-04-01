@@ -1,9 +1,9 @@
 ---
 title: 'throttle'
-description: 'Rate-limit: at most one emit per ``seconds`` window.'
+description: 'Rate-limit: emit at most one ``DATA`` per ``seconds`` window.'
 ---
 
-Rate-limit: at most one emit per ``seconds`` window.
+Rate-limit: emit at most one ``DATA`` per ``seconds`` window.
 
 ## Signature
 
@@ -13,9 +13,20 @@ def throttle(seconds: float, *, leading: bool = True, trailing: bool = False) ->
 
 ## Documentation
 
-Rate-limit: at most one emit per ``seconds`` window.
+Rate-limit: emit at most one ``DATA`` per ``seconds`` window.
 
 Args:
     seconds: Window length in seconds.
-    leading: Whether to emit the first value at the start of each window (default ``True``).
-    trailing: Whether to emit the latest suppressed value when the window closes.
+    leading: Emit the first value at the window start (default ``True``).
+    trailing: Emit the latest suppressed value when the window closes.
+
+Returns:
+    A unary pipe operator ``(Node) -&gt; Node``.
+
+Example:
+    ```python
+    from graphrefly import state, pipe
+    from graphrefly.extra.tier2 import throttle
+    src = state(0)
+    out = pipe(src, throttle(0.1))
+    ```

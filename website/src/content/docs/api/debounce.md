@@ -16,3 +16,17 @@ def debounce(seconds: float) -> PipeOperator
 Emit the latest upstream ``DATA`` only after ``seconds`` of silence; flush on ``COMPLETE``.
 
 Timer is cancelled on upstream ``ERROR`` or unsubscribe.
+
+Args:
+    seconds: Silence window in seconds; timer resets on each upstream ``DATA``.
+
+Returns:
+    A unary pipe operator ``(Node) -&gt; Node``.
+
+Example:
+    ```python
+    from graphrefly import state, pipe
+    from graphrefly.extra.tier2 import debounce
+    src = state(0)
+    out = pipe(src, debounce(0.05))
+    ```

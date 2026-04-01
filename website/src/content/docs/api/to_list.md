@@ -1,9 +1,9 @@
 ---
 title: 'to_list'
-description: 'Block until ``COMPLETE`` or ``ERROR``, collecting ``DATA`` payloads in order.'
+description: 'Block until ``COMPLETE`` or ``ERROR``, collecting all ``DATA`` payloads in order.'
 ---
 
-Block until ``COMPLETE`` or ``ERROR``, collecting ``DATA`` payloads in order.
+Block until ``COMPLETE`` or ``ERROR``, collecting all ``DATA`` payloads in order.
 
 ## Signature
 
@@ -17,7 +17,19 @@ def to_list(
 
 ## Documentation
 
-Block until ``COMPLETE`` or ``ERROR``, collecting ``DATA`` payloads in order.
+Block until ``COMPLETE`` or ``ERROR``, collecting all ``DATA`` payloads in order.
 
-Uses an internal subscribe + :class:`threading.Event`. On ``ERROR``, raises the error
-payload if it is a :class:`BaseException`, otherwise ``RuntimeError``.
+Args:
+    source: The node to collect from.
+    timeout: Optional timeout in seconds; raises :exc:`TimeoutError` if
+        ``COMPLETE`` does not arrive in time.
+
+Returns:
+    A list of ``DATA`` payloads in emission order.
+
+Example:
+    ```python
+    from graphrefly.extra import of
+    from graphrefly.extra.sources import to_list
+    assert to_list(of(1, 2, 3)) == [1, 2, 3]
+    ```

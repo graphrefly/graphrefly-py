@@ -15,17 +15,25 @@ def batch() -> Generator[None]
 
 Defer phase-2 messages (DATA, RESOLVED) until the outermost batch exits.
 
-DIRTY and non-phase-2 types propagate immediately. Nested batches share one
-defer queue; flush runs only when the outermost context exits.
+``DIRTY`` and non-phase-2 types propagate immediately. Nested batches share
+one defer queue; flush runs only when the outermost context exits. Each
+thread has isolated batch state (GRAPHREFLY-SPEC §4.2).
 
-If the outermost context exits with an exception, deferred phase-2 work for
-that frame is discarded — phase-2 is not flushed after an error. While the
-drain loop is running (``flush_in_progress``), a nested ``batch()`` that
-throws must **not** clear the global queue (cross-language decision A4;
-matches graphrefly-ts ``batch``).
+If the outermost context exits with an exception, deferred phase-2 work is
+discarded. While the drain loop is running (``flush_in_progress``), nested
+:func:`emit_with_batch` calls with ``defer_when="batching"`` still defer
+``DATA``/``RESOLVED`` until the queue drains.
 
-Each thread has isolated batch state (GRAPHREFLY-SPEC § 4.2).
+Returns:
+    A context manager that yields ``None``; has no return value.
 
-While deferred work is running, :func:`is_batching` remains true so nested
-:func:`emit_with_batch` calls (``defer_when="batching"``) still defer
-DATA/RESOLVED until the queue drains.
+Example:
+    ```python
+    from graphrefly import state, batch
+    x = state(0)
+    y = state(0)
+    with batch():
+        x.down([("DATA", 1)])
+        y.down([("DATA", 2)])
+    # Downstream sees both updates atomically
+    ```

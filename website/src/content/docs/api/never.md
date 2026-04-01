@@ -1,9 +1,9 @@
 ---
 title: 'never'
-description: 'Subscribe connects a no-op producer; no ``DATA`` or ``COMPLETE``.'
+description: 'Create a source that never emits any messages.'
 ---
 
-Subscribe connects a no-op producer; no ``DATA`` or ``COMPLETE``.
+Create a source that never emits any messages.
 
 ## Signature
 
@@ -13,4 +13,15 @@ def never() -> Node[Any]
 
 ## Documentation
 
-Subscribe connects a no-op producer; no ``DATA`` or ``COMPLETE``.
+Create a source that never emits any messages.
+
+Returns:
+    A :class:`~graphrefly.core.node.Node` whose producer is a no-op
+    (no ``DATA``, no ``COMPLETE``).
+
+Example:
+    ```python
+    from graphrefly.extra import never
+    n = never()
+    # n.get() is None; no DATA will ever arrive
+    ```

@@ -20,10 +20,13 @@ def scan(
 
 Fold upstream values with ``reducer(acc, value) -&gt; acc``; emit accumulator after each step.
 
+Unlike RxJS, seed is always required — there is no seedless mode where the first value
+silently becomes the accumulator.
+
 Args:
     reducer: Accumulator update.
     seed: Initial accumulator (also used for ``initial`` on the inner node).
-    equals: Optional equality for consecutive emissions (default ``operator.is_``).
+    equals: Optional equality for consecutive emissions (default ``operator.eq``).
 
 Returns:
     A :class:`~graphrefly.core.sugar.PipeOperator`.

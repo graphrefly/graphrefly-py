@@ -2,6 +2,8 @@
 
 from graphrefly import patterns
 from graphrefly.core import (
+    V0,
+    V1,
     Actor,
     DeferWhen,
     DynamicNodeImpl,
@@ -21,8 +23,6 @@ from graphrefly.core import (
     NodeVersionInfo,
     PipeOperator,
     SubscribeHints,
-    V0,
-    V1,
     VersioningLevel,
     access_hint_for_guard,
     acquire_subgraph_write_lock,

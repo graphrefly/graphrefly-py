@@ -643,6 +643,17 @@ def test_knobs_as_tools_excludes_human_access() -> None:
     g.destroy()
 
 
+def test_knobs_as_tools_includes_v0_version_metadata() -> None:
+    g = Graph("versioned-knobs")
+    knob = state(1, versioning=0, meta={"description": "Versioned knob", "access": "both"})
+    g.add("knob", knob)
+    result = knobs_as_tools(g)
+    defn = next((d for d in result.definitions if d.name == "knob"), None)
+    assert defn is not None
+    assert defn.version == {"id": knob.v.id, "version": knob.v.version}
+    g.destroy()
+
+
 # ---------------------------------------------------------------------------
 # gauges_as_context (5.4)
 # ---------------------------------------------------------------------------
@@ -681,6 +692,18 @@ def test_gauges_as_context_empty_when_no_gauges() -> None:
     g.add("plain", plain)
 
     assert gauges_as_context(g) == ""
+    g.destroy()
+
+
+def test_gauges_as_context_since_version_filters_unchanged_nodes() -> None:
+    g = Graph("delta")
+    metric = state(1, versioning=0, meta={"description": "Metric", "access": "both"})
+    g.add("metric", metric)
+    since = {"metric": {"id": metric.v.id, "version": metric.v.version}}
+    assert gauges_as_context(g, since_version=since) == ""
+    metric.down([(MessageType.DATA, 2)])
+    ctx = gauges_as_context(g, since_version=since)
+    assert "Metric: 2" in ctx
     g.destroy()
 
 

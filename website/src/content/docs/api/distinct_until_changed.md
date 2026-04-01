@@ -1,9 +1,9 @@
 ---
 title: 'distinct_until_changed'
-description: 'Suppress consecutive duplicates using ``equals`` (default: ``operator.is_``).'
+description: 'Suppress consecutive duplicates using ``equals`` (default: ``operator.eq``).'
 ---
 
-Suppress consecutive duplicates using ``equals`` (default: ``operator.is_``).
+Suppress consecutive duplicates using ``equals`` (default: ``operator.eq``).
 
 ## Signature
 
@@ -15,7 +15,7 @@ def distinct_until_changed(
 
 ## Documentation
 
-Suppress consecutive duplicates using ``equals`` (default: ``operator.is_``).
+Suppress consecutive duplicates using ``equals`` (default: ``operator.eq``).
 
 Args:
     equals: Optional binary equality for adjacent values.

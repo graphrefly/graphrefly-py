@@ -1,0 +1,1021 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GraphReFly — 20 Theme Prototypes</title>
+
+<!-- Fonts — a curated mix to showcase range -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;700;900&family=Source+Sans+3:wght@300;400;600;700&family=JetBrains+Mono:wght@400;500&family=Playfair+Display:ital,wght@0,400;0,700;0,900;1,400&family=DM+Serif+Display&family=Instrument+Serif&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Cormorant+Garamond:ital,wght@0,400;0,600;0,700;1,400&family=Crimson+Pro:ital,wght@0,300;0,400;0,600;1,300&family=Space+Grotesk:wght@400;500;700&family=Syne:wght@400;600;700;800&family=Outfit:wght@300;400;600;700&family=General+Sans:wght@400;500;600;700&family=Manrope:wght@300;400;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;600;700;800&family=DM+Sans:ital,wght@0,400;0,500;0,700;1,400&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,700;0,9..144,900;1,9..144,400&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=Lora:ital,wght@0,400;0,600;0,700;1,400&family=Archivo:wght@300;400;600;700;900&family=Spectral:ital,wght@0,300;0,400;0,600;0,700;1,400&display=swap" rel="stylesheet">
+
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+  html{scroll-behavior:smooth;font-size:16px}
+  body{background:#0a0a0f;color:#f5f0e8;font-family:'Source Sans 3',system-ui,sans-serif}
+
+  /* ── NAV ── */
+  .picker-nav{
+    position:fixed;top:0;left:0;right:0;z-index:1000;
+    background:rgba(10,10,15,.92);backdrop-filter:blur(16px);
+    border-bottom:1px solid rgba(255,255,255,.06);
+    padding:.75rem 1.5rem;
+    display:flex;align-items:center;gap:1rem;flex-wrap:wrap;
+  }
+  .picker-nav h1{font-size:.85rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:#999;white-space:nowrap}
+  .picker-pills{display:flex;gap:.4rem;flex-wrap:wrap}
+  .picker-pill{
+    padding:.35rem .7rem;border-radius:4px;font-size:.7rem;font-weight:600;
+    letter-spacing:.04em;cursor:pointer;border:1px solid rgba(255,255,255,.1);
+    background:transparent;color:#bbb;transition:all .2s;white-space:nowrap;
+  }
+  .picker-pill:hover{border-color:rgba(255,255,255,.3);color:#fff}
+  .picker-pill.active{background:rgba(255,255,255,.12);color:#fff;border-color:rgba(255,255,255,.25)}
+
+  /* ── THEME CARDS ── */
+  .themes-grid{
+    padding:5.5rem 1.5rem 3rem;
+    display:flex;flex-direction:column;gap:4rem;
+    max-width:1400px;margin:0 auto;
+  }
+
+  .theme-card{
+    border-radius:16px;overflow:hidden;
+    border:1px solid rgba(255,255,255,.06);
+    box-shadow:0 8px 40px rgba(0,0,0,.4);
+  }
+  .theme-label{
+    padding:.5rem 1rem;
+    font-size:.65rem;font-weight:700;letter-spacing:.15em;text-transform:uppercase;
+    color:#999;background:rgba(0,0,0,.4);
+    display:flex;justify-content:space-between;align-items:center;
+  }
+  .theme-label span.meta{font-weight:400;letter-spacing:.04em;color:#666;font-size:.6rem}
+
+  .theme-preview{
+    position:relative;overflow:hidden;
+    min-height:100vh;
+    display:flex;flex-direction:column;
+  }
+
+  /* ── Each theme's hero section ── */
+  .tp-hero{
+    position:relative;min-height:85vh;
+    display:flex;align-items:center;justify-content:center;
+    overflow:hidden;padding:4rem 2rem;
+  }
+
+  .tp-hero-bg{position:absolute;inset:0;z-index:0}
+
+  .tp-orb{
+    position:absolute;border-radius:50%;
+    filter:blur(100px);will-change:transform;
+  }
+
+  .tp-content{position:relative;z-index:2;text-align:center;max-width:840px}
+  .tp-kicker{font-size:.72rem;font-weight:600;letter-spacing:.25em;text-transform:uppercase;margin-bottom:1.25rem}
+  .tp-title{line-height:1.05;margin:0 0 .4rem}
+  .tp-title-re{-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+  .tp-subtitle{font-style:italic;letter-spacing:.1em;margin:0 0 1.75rem;opacity:.55}
+  .tp-tagline{font-weight:300;line-height:1.6;margin:0 0 2.25rem}
+  .tp-cta{display:flex;gap:.75rem;justify-content:center;flex-wrap:wrap}
+
+  .tp-btn{
+    display:inline-flex;align-items:center;gap:.4rem;
+    padding:.7rem 1.6rem;border-radius:6px;
+    font-size:.85rem;font-weight:600;letter-spacing:.04em;
+    text-decoration:none;border:none;cursor:pointer;transition:all .25s;
+  }
+
+  /* ── Philosophy strip ── */
+  .tp-philosophy{padding:3rem 2rem;max-width:900px;margin:0 auto}
+  .tp-phil-label{font-size:.68rem;font-weight:600;letter-spacing:.22em;text-transform:uppercase;margin-bottom:1rem}
+  .tp-phil-quote{font-size:1.4rem;line-height:1.6;margin-bottom:.5rem}
+  .tp-phil-trans{font-size:.9rem;font-style:italic;opacity:.5;margin-bottom:1.25rem}
+  .tp-phil-body{font-size:.95rem;line-height:1.8;opacity:.75}
+
+  /* ── Feature cards strip ── */
+  .tp-features{padding:2rem 2rem 3rem;max-width:1100px;margin:0 auto}
+  .tp-feat-label{font-size:.68rem;font-weight:600;letter-spacing:.22em;text-transform:uppercase;margin-bottom:.75rem}
+  .tp-feat-heading{font-size:1.6rem;margin-bottom:1.75rem}
+  .tp-feat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:1rem}
+  .tp-feat-card{padding:1.5rem;border-radius:10px;border:1px solid rgba(255,255,255,.06)}
+  .tp-feat-card h4{font-size:.95rem;margin-bottom:.5rem}
+  .tp-feat-card p{font-size:.82rem;line-height:1.6;opacity:.65}
+  .tp-feat-coord{font-size:.6rem;font-weight:600;letter-spacing:.15em;text-transform:uppercase;margin-bottom:.6rem;opacity:.5}
+
+  /* ── Flow lines animation (shared SVG) ── */
+  .tp-lines{position:absolute;inset:0;z-index:1;pointer-events:none;opacity:.45}
+  .tp-lines svg{width:100%;height:100%}
+  .tp-flow{fill:none;stroke-width:2;stroke-linecap:round;stroke-dasharray:1600;stroke-dashoffset:1600}
+  .theme-card:hover .tp-flow{animation:tp-draw 3s ease forwards}
+  @keyframes tp-draw{to{stroke-dashoffset:0}}
+
+  /* ── Vertical text ── */
+  .tp-vert{
+    position:absolute;z-index:2;
+    writing-mode:vertical-rl;
+    font-size:.75rem;letter-spacing:.5em;opacity:.12;user-select:none;
+  }
+  .tp-vert-l{left:1.5rem;top:28%}
+  .tp-vert-r{right:1.5rem;top:36%}
+
+  /* ── Code block ── */
+  .tp-code{padding:2rem;max-width:700px;margin:0 auto}
+  .tp-code-block{border-radius:10px;overflow:hidden}
+  .tp-code-header{padding:.5rem 1rem;display:flex;align-items:center;gap:.5rem;font-size:.72rem}
+  .tp-code-dots{display:flex;gap:5px}
+  .tp-code-dot{width:8px;height:8px;border-radius:50%}
+  .tp-code-body{padding:1rem 1.25rem;font-size:.82rem;line-height:1.7;overflow-x:auto}
+  .tp-code-body pre{margin:0;white-space:pre-wrap}
+
+  /* ── Noise overlay per theme ── */
+  .theme-preview::after{
+    content:'';position:absolute;inset:0;pointer-events:none;z-index:99;
+    opacity:.025;
+    background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-size:128px 128px;
+  }
+
+  /* ── Responsive ── */
+  @media(max-width:600px){
+    .tp-title{font-size:2.5rem!important}
+    .tp-tagline{font-size:1rem!important}
+    .tp-vert{display:none}
+    .tp-feat-grid{grid-template-columns:1fr}
+  }
+
+
+  /* ═══════════════════════════════════════════════════
+     THEME 01 — CURRENT (Ink & Aqua)
+     ═══════════════════════════════════════════════════ */
+  .t01{background:#0a0a0f;color:#f5f0e8}
+  .t01 .tp-kicker{color:#4de8c2}
+  .t01 .tp-title{font-family:'Noto Serif SC',serif;font-weight:900;font-size:clamp(3rem,7vw,5.5rem)}
+  .t01 .tp-title-re{background:linear-gradient(135deg,#4de8c2,#38bdf8)}
+  .t01 .tp-subtitle{font-family:'Noto Serif SC',serif;color:#c4a882}
+  .t01 .tp-tagline{color:#f5f0e8}
+  .t01 .tp-btn-primary{background:#4de8c2;color:#0a0a0f}
+  .t01 .tp-btn-ghost{background:transparent;color:#f5f0e8;border:1px solid rgba(245,240,232,.15)}
+  .t01 .tp-orb:nth-child(1){width:500px;height:500px;background:rgba(77,232,194,.18);top:10%;left:15%}
+  .t01 .tp-orb:nth-child(2){width:400px;height:400px;background:rgba(196,168,130,.14);top:50%;right:10%}
+  .t01 .tp-orb:nth-child(3){width:350px;height:350px;background:rgba(167,139,250,.12);bottom:10%;left:40%}
+  .t01 .tp-vert{font-family:'Noto Serif SC',serif;color:#c4a882}
+  .t01 .tp-phil-label{color:#4de8c2}
+  .t01 .tp-phil-quote{font-family:'Noto Serif SC',serif}
+  .t01 .tp-philosophy{background:#0e0e14}
+  .t01 .tp-feat-label{color:#4de8c2}
+  .t01 .tp-feat-heading{font-family:'Noto Serif SC',serif}
+  .t01 .tp-feat-card{background:rgba(14,14,20,.8);border-color:rgba(77,232,194,.08)}
+  .t01 .tp-feat-card h4{color:#4de8c2}
+  .t01 .tp-code-block{border:1px solid rgba(196,168,130,.12)}
+  .t01 .tp-code-header{background:rgba(14,14,20,.9);color:#6b7280}
+  .t01 .tp-code-dot:nth-child(1){background:#f472b6}
+  .t01 .tp-code-dot:nth-child(2){background:#c4a882}
+  .t01 .tp-code-dot:nth-child(3){background:#4de8c2}
+  .t01 .tp-code-body{background:#0a0a0f;color:#f5f0e8;font-family:'JetBrains Mono',monospace}
+  .t01 .tp-flow:nth-child(1){stroke:rgba(77,232,194,.5)}
+  .t01 .tp-flow:nth-child(2){stroke:rgba(196,168,130,.4)}
+  .t01 .tp-flow:nth-child(3){stroke:rgba(167,139,250,.3)}
+
+  /* ═══════════════════════════════════════════════════
+     THEME 02 — Midnight Ember
+     Deep charcoal + warm orange accent
+     ═══════════════════════════════════════════════════ */
+  .t02{background:#0f0d0b;color:#ede6db}
+  .t02 .tp-kicker{color:#e8733a}
+  .t02 .tp-title{font-family:'Playfair Display',serif;font-weight:900;font-size:clamp(3rem,7vw,5.5rem)}
+  .t02 .tp-title-re{background:linear-gradient(135deg,#e8733a,#f5a623)}
+  .t02 .tp-subtitle{font-family:'Playfair Display',serif;color:#a08060}
+  .t02 .tp-tagline{color:#d4ccc0}
+  .t02 .tp-btn-primary{background:#e8733a;color:#0f0d0b}
+  .t02 .tp-btn-ghost{background:transparent;color:#ede6db;border:1px solid rgba(232,115,58,.2)}
+  .t02 .tp-orb:nth-child(1){width:500px;height:500px;background:rgba(232,115,58,.15);top:8%;left:20%}
+  .t02 .tp-orb:nth-child(2){width:400px;height:400px;background:rgba(160,90,40,.12);top:55%;right:8%}
+  .t02 .tp-orb:nth-child(3){width:350px;height:350px;background:rgba(245,166,35,.08);bottom:15%;left:35%}
+  .t02 .tp-vert{font-family:'Playfair Display',serif;color:#a08060}
+  .t02 .tp-phil-label{color:#e8733a}
+  .t02 .tp-phil-quote{font-family:'Playfair Display',serif}
+  .t02 .tp-philosophy{background:#121010}
+  .t02 .tp-feat-label{color:#e8733a}
+  .t02 .tp-feat-heading{font-family:'Playfair Display',serif}
+  .t02 .tp-feat-card{background:rgba(18,16,16,.9);border-color:rgba(232,115,58,.1)}
+  .t02 .tp-feat-card h4{color:#e8733a}
+  .t02 .tp-code-block{border:1px solid rgba(160,128,96,.15)}
+  .t02 .tp-code-header{background:rgba(18,16,16,.9);color:#6b6054}
+  .t02 .tp-code-dot:nth-child(1){background:#e8733a}
+  .t02 .tp-code-dot:nth-child(2){background:#f5a623}
+  .t02 .tp-code-dot:nth-child(3){background:#a08060}
+  .t02 .tp-code-body{background:#0f0d0b;color:#ede6db;font-family:'JetBrains Mono',monospace}
+  .t02 .tp-flow:nth-child(1){stroke:rgba(232,115,58,.5)}
+  .t02 .tp-flow:nth-child(2){stroke:rgba(245,166,35,.3)}
+  .t02 .tp-flow:nth-child(3){stroke:rgba(160,128,96,.25)}
+
+  /* ═══════════════════════════════════════════════════
+     THEME 03 — Arctic Void
+     Near-black + icy blue-white, brutalist type
+     ═══════════════════════════════════════════════════ */
+  .t03{background:#060608;color:#e0e6ef}
+  .t03 .tp-kicker{color:#7fb8f0}
+  .t03 .tp-title{font-family:'Syne',sans-serif;font-weight:800;font-size:clamp(3rem,7.5vw,6rem);text-transform:uppercase;letter-spacing:-.02em}
+  .t03 .tp-title-re{background:linear-gradient(135deg,#7fb8f0,#c0d8ff)}
+  .t03 .tp-subtitle{font-family:'Crimson Pro',serif;color:#5a7899}
+  .t03 .tp-tagline{color:#a0b0c4}
+  .t03 .tp-btn-primary{background:#7fb8f0;color:#060608}
+  .t03 .tp-btn-ghost{background:transparent;color:#e0e6ef;border:1px solid rgba(127,184,240,.15)}
+  .t03 .tp-orb:nth-child(1){width:600px;height:600px;background:rgba(127,184,240,.1);top:5%;left:10%}
+  .t03 .tp-orb:nth-child(2){width:350px;height:350px;background:rgba(90,120,153,.08);top:60%;right:15%}
+  .t03 .tp-orb:nth-child(3){width:300px;height:300px;background:rgba(192,216,255,.06);bottom:20%;left:50%}
+  .t03 .tp-vert{font-family:'Syne',sans-serif;color:#5a7899}
+  .t03 .tp-phil-label{color:#7fb8f0}
+  .t03 .tp-phil-quote{font-family:'Crimson Pro',serif;font-weight:300}
+  .t03 .tp-philosophy{background:#08080c}
+  .t03 .tp-feat-label{color:#7fb8f0}
+  .t03 .tp-feat-heading{font-family:'Syne',sans-serif;font-weight:700;text-transform:uppercase;letter-spacing:-.01em}
+  .t03 .tp-feat-card{background:rgba(8,8,12,.8);border-color:rgba(127,184,240,.08)}
+  .t03 .tp-feat-card h4{color:#7fb8f0}
+  .t03 .tp-code-block{border:1px solid rgba(127,184,240,.1)}
+  .t03 .tp-code-header{background:rgba(8,8,12,.9);color:#5a7899}
+  .t03 .tp-code-dot:nth-child(1){background:#7fb8f0}
+  .t03 .tp-code-dot:nth-child(2){background:#5a7899}
+  .t03 .tp-code-dot:nth-child(3){background:#c0d8ff}
+  .t03 .tp-code-body{background:#060608;color:#e0e6ef;font-family:'IBM Plex Mono',monospace}
+  .t03 .tp-flow:nth-child(1){stroke:rgba(127,184,240,.4)}
+  .t03 .tp-flow:nth-child(2){stroke:rgba(192,216,255,.2)}
+  .t03 .tp-flow:nth-child(3){stroke:rgba(90,120,153,.15)}
+
+  /* ═══════════════════════════════════════════════════
+     THEME 04 — Jade Monastery
+     Dark green-black + jade green + cream text
+     ═══════════════════════════════════════════════════ */
+  .t04{background:#080c0a;color:#e8e2d4}
+  .t04 .tp-kicker{color:#5ecc94}
+  .t04 .tp-title{font-family:'Cormorant Garamond',serif;font-weight:700;font-size:clamp(3rem,7vw,5.5rem);letter-spacing:.01em}
+  .t04 .tp-title-re{background:linear-gradient(135deg,#5ecc94,#a8e6c4)}
+  .t04 .tp-subtitle{font-family:'Cormorant Garamond',serif;color:#7a9a6a;font-style:italic}
+  .t04 .tp-tagline{color:#c0b8a8}
+  .t04 .tp-btn-primary{background:#5ecc94;color:#080c0a}
+  .t04 .tp-btn-ghost{background:transparent;color:#e8e2d4;border:1px solid rgba(94,204,148,.15)}
+  .t04 .tp-orb:nth-child(1){width:500px;height:500px;background:rgba(94,204,148,.12);top:12%;left:18%}
+  .t04 .tp-orb:nth-child(2){width:400px;height:400px;background:rgba(122,154,106,.1);top:48%;right:12%}
+  .t04 .tp-orb:nth-child(3){width:300px;height:300px;background:rgba(168,230,196,.06);bottom:18%;left:42%}
+  .t04 .tp-vert{font-family:'Cormorant Garamond',serif;color:#5ecc94}
+  .t04 .tp-phil-label{color:#5ecc94}
+  .t04 .tp-phil-quote{font-family:'Cormorant Garamond',serif}
+  .t04 .tp-philosophy{background:#0a0e0c}
+  .t04 .tp-feat-label{color:#5ecc94}
+  .t04 .tp-feat-heading{font-family:'Cormorant Garamond',serif}
+  .t04 .tp-feat-card{background:rgba(10,14,12,.8);border-color:rgba(94,204,148,.08)}
+  .t04 .tp-feat-card h4{color:#5ecc94}
+  .t04 .tp-code-block{border:1px solid rgba(94,204,148,.1)}
+  .t04 .tp-code-header{background:rgba(10,14,12,.9);color:#5a7a5a}
+  .t04 .tp-code-dot:nth-child(1){background:#5ecc94}
+  .t04 .tp-code-dot:nth-child(2){background:#7a9a6a}
+  .t04 .tp-code-dot:nth-child(3){background:#c4a882}
+  .t04 .tp-code-body{background:#080c0a;color:#e8e2d4;font-family:'JetBrains Mono',monospace}
+  .t04 .tp-flow:nth-child(1){stroke:rgba(94,204,148,.4)}
+  .t04 .tp-flow:nth-child(2){stroke:rgba(122,154,106,.3)}
+  .t04 .tp-flow:nth-child(3){stroke:rgba(168,230,196,.2)}
+
+  /* ═══════════════════════════════════════════════════
+     THEME 05 — Rose Gold Dusk
+     Deep plum-black + rose-gold accent
+     ═══════════════════════════════════════════════════ */
+  .t05{background:#0e080c;color:#f0e8e4}
+  .t05 .tp-kicker{color:#e8a0b0}
+  .t05 .tp-title{font-family:'DM Serif Display',serif;font-weight:400;font-size:clamp(3rem,7vw,5.5rem)}
+  .t05 .tp-title-re{background:linear-gradient(135deg,#e8a0b0,#d4a070)}
+  .t05 .tp-subtitle{font-family:'DM Serif Display',serif;color:#a07880}
+  .t05 .tp-tagline{color:#c8bab4}
+  .t05 .tp-btn-primary{background:#e8a0b0;color:#0e080c}
+  .t05 .tp-btn-ghost{background:transparent;color:#f0e8e4;border:1px solid rgba(232,160,176,.15)}
+  .t05 .tp-orb:nth-child(1){width:500px;height:500px;background:rgba(232,160,176,.12);top:10%;left:15%}
+  .t05 .tp-orb:nth-child(2){width:400px;height:400px;background:rgba(212,160,112,.1);top:52%;right:10%}
+  .t05 .tp-orb:nth-child(3){width:350px;height:350px;background:rgba(160,120,128,.08);bottom:12%;left:38%}
+  .t05 .tp-vert{font-family:'DM Serif Display',serif;color:#a07880}
+  .t05 .tp-phil-label{color:#e8a0b0}
+  .t05 .tp-phil-quote{font-family:'DM Serif Display',serif}
+  .t05 .tp-philosophy{background:#10090d}
+  .t05 .tp-feat-label{color:#e8a0b0}
+  .t05 .tp-feat-heading{font-family:'DM Serif Display',serif}
+  .t05 .tp-feat-card{background:rgba(16,9,13,.8);border-color:rgba(232,160,176,.08)}
+  .t05 .tp-feat-card h4{color:#e8a0b0}
+  .t05 .tp-code-block{border:1px solid rgba(232,160,176,.1)}
+  .t05 .tp-code-header{background:rgba(16,9,13,.9);color:#7a6068}
+  .t05 .tp-code-dot:nth-child(1){background:#e8a0b0}
+  .t05 .tp-code-dot:nth-child(2){background:#d4a070}
+  .t05 .tp-code-dot:nth-child(3){background:#a07880}
+  .t05 .tp-code-body{background:#0e080c;color:#f0e8e4;font-family:'JetBrains Mono',monospace}
+  .t05 .tp-flow:nth-child(1){stroke:rgba(232,160,176,.4)}
+  .t05 .tp-flow:nth-child(2){stroke:rgba(212,160,112,.3)}
+  .t05 .tp-flow:nth-child(3){stroke:rgba(160,120,128,.2)}
+
+  /* ═══════════════════════════════════════════════════
+     THEME 06 — Electric Indigo
+     Dark indigo + vivid violet-blue accent, modern sans
+     ═══════════════════════════════════════════════════ */
+  .t06{background:#08080f;color:#e4e0f0}
+  .t06 .tp-kicker{color:#8b6cf0}
+  .t06 .tp-title{font-family:'Outfit',sans-serif;font-weight:700;font-size:clamp(3rem,7.5vw,6rem);letter-spacing:-.03em}
+  .t06 .tp-title-re{background:linear-gradient(135deg,#8b6cf0,#b496ff)}
+  .t06 .tp-subtitle{font-family:'Outfit',sans-serif;font-weight:300;color:#6a5a8a}
+  .t06 .tp-tagline{color:#b0a8c8}
+  .t06 .tp-btn-primary{background:#8b6cf0;color:#fff}
+  .t06 .tp-btn-ghost{background:transparent;color:#e4e0f0;border:1px solid rgba(139,108,240,.2)}
+  .t06 .tp-orb:nth-child(1){width:550px;height:550px;background:rgba(139,108,240,.14);top:8%;left:12%}
+  .t06 .tp-orb:nth-child(2){width:400px;height:400px;background:rgba(106,90,138,.1);top:50%;right:14%}
+  .t06 .tp-orb:nth-child(3){width:350px;height:350px;background:rgba(180,150,255,.06);bottom:15%;left:45%}
+  .t06 .tp-vert{font-family:'Outfit',sans-serif;color:#6a5a8a}
+  .t06 .tp-phil-label{color:#8b6cf0}
+  .t06 .tp-phil-quote{font-family:'Instrument Serif',serif}
+  .t06 .tp-philosophy{background:#0a0a12}
+  .t06 .tp-feat-label{color:#8b6cf0}
+  .t06 .tp-feat-heading{font-family:'Outfit',sans-serif;font-weight:700}
+  .t06 .tp-feat-card{background:rgba(10,10,18,.8);border-color:rgba(139,108,240,.08)}
+  .t06 .tp-feat-card h4{color:#8b6cf0}
+  .t06 .tp-code-block{border:1px solid rgba(139,108,240,.12)}
+  .t06 .tp-code-header{background:rgba(10,10,18,.9);color:#5a5078}
+  .t06 .tp-code-dot:nth-child(1){background:#8b6cf0}
+  .t06 .tp-code-dot:nth-child(2){background:#b496ff}
+  .t06 .tp-code-dot:nth-child(3){background:#6a5a8a}
+  .t06 .tp-code-body{background:#08080f;color:#e4e0f0;font-family:'IBM Plex Mono',monospace}
+  .t06 .tp-flow:nth-child(1){stroke:rgba(139,108,240,.4)}
+  .t06 .tp-flow:nth-child(2){stroke:rgba(180,150,255,.25)}
+  .t06 .tp-flow:nth-child(3){stroke:rgba(106,90,138,.2)}
+
+  /* ═══════════════════════════════════════════════════
+     THEME 07 — Bone & Charcoal (Light)
+     Warm off-white + dark text + terracotta accent
+     ═══════════════════════════════════════════════════ */
+  .t07{background:#f4f0e8;color:#1a1816}
+  .t07 .tp-kicker{color:#c05a30}
+  .t07 .tp-title{font-family:'Libre Baskerville',serif;font-weight:700;font-size:clamp(2.8rem,6.5vw,5rem)}
+  .t07 .tp-title-re{background:linear-gradient(135deg,#c05a30,#d48050)}
+  .t07 .tp-subtitle{font-family:'Libre Baskerville',serif;color:#8a7060}
+  .t07 .tp-tagline{color:#4a4440}
+  .t07 .tp-btn-primary{background:#c05a30;color:#f4f0e8}
+  .t07 .tp-btn-ghost{background:transparent;color:#1a1816;border:1px solid rgba(26,24,22,.15)}
+  .t07 .tp-orb:nth-child(1){width:500px;height:500px;background:rgba(192,90,48,.08);top:10%;left:15%}
+  .t07 .tp-orb:nth-child(2){width:400px;height:400px;background:rgba(212,128,80,.06);top:50%;right:10%}
+  .t07 .tp-orb:nth-child(3){width:300px;height:300px;background:rgba(138,112,96,.05);bottom:15%;left:40%}
+  .t07 .tp-vert{font-family:'Libre Baskerville',serif;color:#c05a30;opacity:.07}
+  .t07 .tp-phil-label{color:#c05a30}
+  .t07 .tp-phil-quote{font-family:'Libre Baskerville',serif}
+  .t07 .tp-philosophy{background:#ece8e0}
+  .t07 .tp-feat-label{color:#c05a30}
+  .t07 .tp-feat-heading{font-family:'Libre Baskerville',serif}
+  .t07 .tp-feat-card{background:rgba(236,232,224,.6);border-color:rgba(26,24,22,.08)}
+  .t07 .tp-feat-card h4{color:#c05a30}
+  .t07 .tp-code-block{border:1px solid rgba(26,24,22,.1)}
+  .t07 .tp-code-header{background:#e8e4dc;color:#8a7060}
+  .t07 .tp-code-dot:nth-child(1){background:#c05a30}
+  .t07 .tp-code-dot:nth-child(2){background:#d48050}
+  .t07 .tp-code-dot:nth-child(3){background:#8a7060}
+  .t07 .tp-code-body{background:#f4f0e8;color:#1a1816;font-family:'JetBrains Mono',monospace}
+  .t07 .tp-flow:nth-child(1){stroke:rgba(192,90,48,.15)}
+  .t07 .tp-flow:nth-child(2){stroke:rgba(212,128,80,.1)}
+  .t07 .tp-flow:nth-child(3){stroke:rgba(138,112,96,.08)}
+  .t07::after{opacity:.015}
+
+  /* ═══════════════════════════════════════════════════
+     THEME 08 — Neon Terminal
+     Pure black + neon green mono, hacker aesthetic
+     ═══════════════════════════════════════════════════ */
+  .t08{background:#000;color:#00ff88}
+  .t08 .tp-kicker{color:#00ff88}
+  .t08 .tp-title{font-family:'JetBrains Mono',monospace;font-weight:500;font-size:clamp(2.5rem,6vw,4.5rem);text-transform:uppercase;letter-spacing:.05em}
+  .t08 .tp-title-re{background:linear-gradient(135deg,#00ff88,#00cc66)}
+  .t08 .tp-subtitle{font-family:'JetBrains Mono',monospace;color:#008844;font-style:normal}
+  .t08 .tp-tagline{color:#00cc66}
+  .t08 .tp-btn-primary{background:#00ff88;color:#000}
+  .t08 .tp-btn-ghost{background:transparent;color:#00ff88;border:1px solid rgba(0,255,136,.25)}
+  .t08 .tp-orb:nth-child(1){width:400px;height:400px;background:rgba(0,255,136,.06);top:15%;left:20%}
+  .t08 .tp-orb:nth-child(2){width:300px;height:300px;background:rgba(0,204,102,.04);top:50%;right:15%}
+  .t08 .tp-orb:nth-child(3){width:250px;height:250px;background:rgba(0,136,68,.04);bottom:20%;left:45%}
+  .t08 .tp-vert{font-family:'JetBrains Mono',monospace;color:#00ff88}
+  .t08 .tp-phil-label{color:#00ff88}
+  .t08 .tp-phil-quote{font-family:'JetBrains Mono',monospace;font-size:1.1rem}
+  .t08 .tp-philosophy{background:#050505}
+  .t08 .tp-phil-body,.t08 .tp-phil-trans{color:#008844}
+  .t08 .tp-feat-label{color:#00ff88}
+  .t08 .tp-feat-heading{font-family:'JetBrains Mono',monospace;text-transform:uppercase}
+  .t08 .tp-feat-card{background:rgba(0,10,5,.8);border-color:rgba(0,255,136,.1)}
+  .t08 .tp-feat-card h4{color:#00ff88}
+  .t08 .tp-feat-card p{color:#00cc66}
+  .t08 .tp-code-block{border:1px solid rgba(0,255,136,.15)}
+  .t08 .tp-code-header{background:#050505;color:#008844}
+  .t08 .tp-code-dot:nth-child(1){background:#00ff88}
+  .t08 .tp-code-dot:nth-child(2){background:#00cc66}
+  .t08 .tp-code-dot:nth-child(3){background:#008844}
+  .t08 .tp-code-body{background:#000;color:#00ff88;font-family:'JetBrains Mono',monospace}
+  .t08 .tp-flow:nth-child(1){stroke:rgba(0,255,136,.3)}
+  .t08 .tp-flow:nth-child(2){stroke:rgba(0,204,102,.2)}
+  .t08 .tp-flow:nth-child(3){stroke:rgba(0,136,68,.15)}
+
+  /* ═══════════════════════════════════════════════════
+     THEME 09 — Copper Patina
+     Dark teal-black + copper + oxidized green
+     ═══════════════════════════════════════════════════ */
+  .t09{background:#0a0d0d;color:#ddd8cc}
+  .t09 .tp-kicker{color:#c08a50}
+  .t09 .tp-title{font-family:'Fraunces',serif;font-weight:900;font-size:clamp(3rem,7vw,5.5rem)}
+  .t09 .tp-title-re{background:linear-gradient(135deg,#c08a50,#88b8a0)}
+  .t09 .tp-subtitle{font-family:'Fraunces',serif;color:#6a8a78}
+  .t09 .tp-tagline{color:#a8a090}
+  .t09 .tp-btn-primary{background:#c08a50;color:#0a0d0d}
+  .t09 .tp-btn-ghost{background:transparent;color:#ddd8cc;border:1px solid rgba(192,138,80,.15)}
+  .t09 .tp-orb:nth-child(1){width:500px;height:500px;background:rgba(192,138,80,.1);top:10%;left:15%}
+  .t09 .tp-orb:nth-child(2){width:400px;height:400px;background:rgba(136,184,160,.08);top:50%;right:12%}
+  .t09 .tp-orb:nth-child(3){width:350px;height:350px;background:rgba(106,138,120,.06);bottom:15%;left:40%}
+  .t09 .tp-vert{font-family:'Fraunces',serif;color:#c08a50}
+  .t09 .tp-phil-label{color:#c08a50}
+  .t09 .tp-phil-quote{font-family:'Fraunces',serif}
+  .t09 .tp-philosophy{background:#0c0f0f}
+  .t09 .tp-feat-label{color:#c08a50}
+  .t09 .tp-feat-heading{font-family:'Fraunces',serif}
+  .t09 .tp-feat-card{background:rgba(12,15,15,.8);border-color:rgba(192,138,80,.08)}
+  .t09 .tp-feat-card h4{color:#88b8a0}
+  .t09 .tp-code-block{border:1px solid rgba(192,138,80,.12)}
+  .t09 .tp-code-header{background:rgba(12,15,15,.9);color:#6a7a70}
+  .t09 .tp-code-dot:nth-child(1){background:#c08a50}
+  .t09 .tp-code-dot:nth-child(2){background:#88b8a0}
+  .t09 .tp-code-dot:nth-child(3){background:#6a8a78}
+  .t09 .tp-code-body{background:#0a0d0d;color:#ddd8cc;font-family:'JetBrains Mono',monospace}
+  .t09 .tp-flow:nth-child(1){stroke:rgba(192,138,80,.4)}
+  .t09 .tp-flow:nth-child(2){stroke:rgba(136,184,160,.25)}
+  .t09 .tp-flow:nth-child(3){stroke:rgba(106,138,120,.2)}
+
+  /* ═══════════════════════════════════════════════════
+     THEME 10 — Pearl & Slate (Light)
+     Cool white + steel blue accent
+     ═══════════════════════════════════════════════════ */
+  .t10{background:#f0f2f6;color:#1c2030}
+  .t10 .tp-kicker{color:#4470a8}
+  .t10 .tp-title{font-family:'Newsreader',serif;font-weight:700;font-size:clamp(2.8rem,6.5vw,5rem)}
+  .t10 .tp-title-re{background:linear-gradient(135deg,#4470a8,#6090cc)}
+  .t10 .tp-subtitle{font-family:'Newsreader',serif;color:#7080a0}
+  .t10 .tp-tagline{color:#444c5c}
+  .t10 .tp-btn-primary{background:#4470a8;color:#fff}
+  .t10 .tp-btn-ghost{background:transparent;color:#1c2030;border:1px solid rgba(28,32,48,.12)}
+  .t10 .tp-orb:nth-child(1){width:500px;height:500px;background:rgba(68,112,168,.06);top:10%;left:15%}
+  .t10 .tp-orb:nth-child(2){width:400px;height:400px;background:rgba(96,144,204,.04);top:50%;right:10%}
+  .t10 .tp-orb:nth-child(3){width:300px;height:300px;background:rgba(112,128,160,.04);bottom:15%;left:40%}
+  .t10 .tp-vert{font-family:'Newsreader',serif;color:#4470a8;opacity:.06}
+  .t10 .tp-phil-label{color:#4470a8}
+  .t10 .tp-phil-quote{font-family:'Newsreader',serif}
+  .t10 .tp-philosophy{background:#e8eaef}
+  .t10 .tp-feat-label{color:#4470a8}
+  .t10 .tp-feat-heading{font-family:'Newsreader',serif}
+  .t10 .tp-feat-card{background:rgba(232,234,239,.6);border-color:rgba(28,32,48,.06)}
+  .t10 .tp-feat-card h4{color:#4470a8}
+  .t10 .tp-code-block{border:1px solid rgba(28,32,48,.08)}
+  .t10 .tp-code-header{background:#e8eaef;color:#7080a0}
+  .t10 .tp-code-dot:nth-child(1){background:#4470a8}
+  .t10 .tp-code-dot:nth-child(2){background:#6090cc}
+  .t10 .tp-code-dot:nth-child(3){background:#7080a0}
+  .t10 .tp-code-body{background:#f0f2f6;color:#1c2030;font-family:'IBM Plex Mono',monospace}
+  .t10 .tp-flow:nth-child(1){stroke:rgba(68,112,168,.12)}
+  .t10 .tp-flow:nth-child(2){stroke:rgba(96,144,204,.08)}
+  .t10 .tp-flow:nth-child(3){stroke:rgba(112,128,160,.06)}
+  .t10::after{opacity:.012}
+
+  /* ═══════════════════════════════════════════════════
+     THEME 11 — Solar Flare
+     Near-black + golden yellow + warm amber
+     ═══════════════════════════════════════════════════ */
+  .t11{background:#0c0a06;color:#f0e8d8}
+  .t11 .tp-kicker{color:#f0c040}
+  .t11 .tp-title{font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:clamp(3rem,7.5vw,6rem);letter-spacing:-.02em}
+  .t11 .tp-title-re{background:linear-gradient(135deg,#f0c040,#ff9020)}
+  .t11 .tp-subtitle{font-family:'Spectral',serif;color:#a08840}
+  .t11 .tp-tagline{color:#c8b898}
+  .t11 .tp-btn-primary{background:#f0c040;color:#0c0a06}
+  .t11 .tp-btn-ghost{background:transparent;color:#f0e8d8;border:1px solid rgba(240,192,64,.15)}
+  .t11 .tp-orb:nth-child(1){width:500px;height:500px;background:rgba(240,192,64,.12);top:8%;left:15%}
+  .t11 .tp-orb:nth-child(2){width:400px;height:400px;background:rgba(255,144,32,.08);top:52%;right:10%}
+  .t11 .tp-orb:nth-child(3){width:300px;height:300px;background:rgba(160,136,64,.06);bottom:18%;left:42%}
+  .t11 .tp-vert{font-family:'Spectral',serif;color:#a08840}
+  .t11 .tp-phil-label{color:#f0c040}
+  .t11 .tp-phil-quote{font-family:'Spectral',serif}
+  .t11 .tp-philosophy{background:#0e0c08}
+  .t11 .tp-feat-label{color:#f0c040}
+  .t11 .tp-feat-heading{font-family:'Bricolage Grotesque',sans-serif;font-weight:700}
+  .t11 .tp-feat-card{background:rgba(14,12,8,.8);border-color:rgba(240,192,64,.08)}
+  .t11 .tp-feat-card h4{color:#f0c040}
+  .t11 .tp-code-block{border:1px solid rgba(240,192,64,.12)}
+  .t11 .tp-code-header{background:rgba(14,12,8,.9);color:#7a6a40}
+  .t11 .tp-code-dot:nth-child(1){background:#f0c040}
+  .t11 .tp-code-dot:nth-child(2){background:#ff9020}
+  .t11 .tp-code-dot:nth-child(3){background:#a08840}
+  .t11 .tp-code-body{background:#0c0a06;color:#f0e8d8;font-family:'JetBrains Mono',monospace}
+  .t11 .tp-flow:nth-child(1){stroke:rgba(240,192,64,.4)}
+  .t11 .tp-flow:nth-child(2){stroke:rgba(255,144,32,.25)}
+  .t11 .tp-flow:nth-child(3){stroke:rgba(160,136,64,.2)}
+
+  /* ═══════════════════════════════════════════════════
+     THEME 12 — Crimson Manuscript
+     Dark burgundy + warm red + parchment
+     ═══════════════════════════════════════════════════ */
+  .t12{background:#0c0808;color:#ece4d8}
+  .t12 .tp-kicker{color:#cc4444}
+  .t12 .tp-title{font-family:'Lora',serif;font-weight:700;font-size:clamp(3rem,7vw,5.5rem)}
+  .t12 .tp-title-re{background:linear-gradient(135deg,#cc4444,#e06060)}
+  .t12 .tp-subtitle{font-family:'Lora',serif;color:#8a5050}
+  .t12 .tp-tagline{color:#b8a898}
+  .t12 .tp-btn-primary{background:#cc4444;color:#ece4d8}
+  .t12 .tp-btn-ghost{background:transparent;color:#ece4d8;border:1px solid rgba(204,68,68,.15)}
+  .t12 .tp-orb:nth-child(1){width:500px;height:500px;background:rgba(204,68,68,.1);top:10%;left:15%}
+  .t12 .tp-orb:nth-child(2){width:400px;height:400px;background:rgba(138,80,80,.08);top:50%;right:10%}
+  .t12 .tp-orb:nth-child(3){width:300px;height:300px;background:rgba(224,96,96,.06);bottom:15%;left:40%}
+  .t12 .tp-vert{font-family:'Lora',serif;color:#8a5050}
+  .t12 .tp-phil-label{color:#cc4444}
+  .t12 .tp-phil-quote{font-family:'Lora',serif}
+  .t12 .tp-philosophy{background:#0e0a0a}
+  .t12 .tp-feat-label{color:#cc4444}
+  .t12 .tp-feat-heading{font-family:'Lora',serif}
+  .t12 .tp-feat-card{background:rgba(14,10,10,.8);border-color:rgba(204,68,68,.08)}
+  .t12 .tp-feat-card h4{color:#cc4444}
+  .t12 .tp-code-block{border:1px solid rgba(204,68,68,.12)}
+  .t12 .tp-code-header{background:rgba(14,10,10,.9);color:#6a4a4a}
+  .t12 .tp-code-dot:nth-child(1){background:#cc4444}
+  .t12 .tp-code-dot:nth-child(2){background:#e06060}
+  .t12 .tp-code-dot:nth-child(3){background:#8a5050}
+  .t12 .tp-code-body{background:#0c0808;color:#ece4d8;font-family:'JetBrains Mono',monospace}
+  .t12 .tp-flow:nth-child(1){stroke:rgba(204,68,68,.35)}
+  .t12 .tp-flow:nth-child(2){stroke:rgba(224,96,96,.2)}
+  .t12 .tp-flow:nth-child(3){stroke:rgba(138,80,80,.15)}
+
+  /* ═══════════════════════════════════════════════════
+     THEME 13 — Sage & Cream (Light)
+     Warm cream bg + muted sage green + earthy type
+     ═══════════════════════════════════════════════════ */
+  .t13{background:#f5f2ec;color:#2a2c24}
+  .t13 .tp-kicker{color:#5a8a60}
+  .t13 .tp-title{font-family:'Instrument Serif',serif;font-weight:400;font-size:clamp(3rem,7vw,5.5rem)}
+  .t13 .tp-title-re{background:linear-gradient(135deg,#5a8a60,#80b080)}
+  .t13 .tp-subtitle{font-family:'Instrument Serif',serif;color:#6a7a5a}
+  .t13 .tp-tagline{color:#4a4c40}
+  .t13 .tp-btn-primary{background:#5a8a60;color:#f5f2ec}
+  .t13 .tp-btn-ghost{background:transparent;color:#2a2c24;border:1px solid rgba(42,44,36,.12)}
+  .t13 .tp-orb:nth-child(1){width:500px;height:500px;background:rgba(90,138,96,.06);top:10%;left:15%}
+  .t13 .tp-orb:nth-child(2){width:400px;height:400px;background:rgba(128,176,128,.04);top:50%;right:10%}
+  .t13 .tp-orb:nth-child(3){width:300px;height:300px;background:rgba(106,122,90,.04);bottom:15%;left:40%}
+  .t13 .tp-vert{font-family:'Instrument Serif',serif;color:#5a8a60;opacity:.06}
+  .t13 .tp-phil-label{color:#5a8a60}
+  .t13 .tp-phil-quote{font-family:'Instrument Serif',serif}
+  .t13 .tp-philosophy{background:#edebe4}
+  .t13 .tp-feat-label{color:#5a8a60}
+  .t13 .tp-feat-heading{font-family:'Instrument Serif',serif}
+  .t13 .tp-feat-card{background:rgba(237,235,228,.6);border-color:rgba(42,44,36,.06)}
+  .t13 .tp-feat-card h4{color:#5a8a60}
+  .t13 .tp-code-block{border:1px solid rgba(42,44,36,.08)}
+  .t13 .tp-code-header{background:#edebe4;color:#6a7a5a}
+  .t13 .tp-code-dot:nth-child(1){background:#5a8a60}
+  .t13 .tp-code-dot:nth-child(2){background:#80b080}
+  .t13 .tp-code-dot:nth-child(3){background:#6a7a5a}
+  .t13 .tp-code-body{background:#f5f2ec;color:#2a2c24;font-family:'JetBrains Mono',monospace}
+  .t13 .tp-flow:nth-child(1){stroke:rgba(90,138,96,.1)}
+  .t13 .tp-flow:nth-child(2){stroke:rgba(128,176,128,.06)}
+  .t13 .tp-flow:nth-child(3){stroke:rgba(106,122,90,.05)}
+  .t13::after{opacity:.015}
+
+  /* ═══════════════════════════════════════════════════
+     THEME 14 — Obsidian & Cyan
+     Pure dark + sharp cyan + geometric feel
+     ═══════════════════════════════════════════════════ */
+  .t14{background:#050508;color:#d8e4e8}
+  .t14 .tp-kicker{color:#00d4e8}
+  .t14 .tp-title{font-family:'Archivo',sans-serif;font-weight:900;font-size:clamp(3rem,7.5vw,6rem);text-transform:uppercase;letter-spacing:-.01em}
+  .t14 .tp-title-re{background:linear-gradient(135deg,#00d4e8,#00a8c0)}
+  .t14 .tp-subtitle{font-family:'Archivo',sans-serif;font-weight:300;color:#407888;font-style:normal}
+  .t14 .tp-tagline{color:#90a8b0}
+  .t14 .tp-btn-primary{background:#00d4e8;color:#050508}
+  .t14 .tp-btn-ghost{background:transparent;color:#d8e4e8;border:1px solid rgba(0,212,232,.15)}
+  .t14 .tp-orb:nth-child(1){width:500px;height:500px;background:rgba(0,212,232,.1);top:8%;left:12%}
+  .t14 .tp-orb:nth-child(2){width:400px;height:400px;background:rgba(0,168,192,.07);top:52%;right:14%}
+  .t14 .tp-orb:nth-child(3){width:300px;height:300px;background:rgba(64,120,136,.05);bottom:18%;left:45%}
+  .t14 .tp-vert{font-family:'Archivo',sans-serif;color:#407888}
+  .t14 .tp-phil-label{color:#00d4e8}
+  .t14 .tp-phil-quote{font-family:'DM Sans',sans-serif;font-weight:500}
+  .t14 .tp-philosophy{background:#080a0c}
+  .t14 .tp-feat-label{color:#00d4e8}
+  .t14 .tp-feat-heading{font-family:'Archivo',sans-serif;font-weight:900;text-transform:uppercase}
+  .t14 .tp-feat-card{background:rgba(8,10,12,.8);border-color:rgba(0,212,232,.08)}
+  .t14 .tp-feat-card h4{color:#00d4e8}
+  .t14 .tp-code-block{border:1px solid rgba(0,212,232,.12)}
+  .t14 .tp-code-header{background:rgba(8,10,12,.9);color:#407888}
+  .t14 .tp-code-dot:nth-child(1){background:#00d4e8}
+  .t14 .tp-code-dot:nth-child(2){background:#00a8c0}
+  .t14 .tp-code-dot:nth-child(3){background:#407888}
+  .t14 .tp-code-body{background:#050508;color:#d8e4e8;font-family:'IBM Plex Mono',monospace}
+  .t14 .tp-flow:nth-child(1){stroke:rgba(0,212,232,.4)}
+  .t14 .tp-flow:nth-child(2){stroke:rgba(0,168,192,.25)}
+  .t14 .tp-flow:nth-child(3){stroke:rgba(64,120,136,.2)}
+
+  /* ═══════════════════════════════════════════════════
+     THEME 15 — Lavender Dusk
+     Deep purple-gray + soft lavender + warm touches
+     ═══════════════════════════════════════════════════ */
+  .t15{background:#0c0a10;color:#e4dce8}
+  .t15 .tp-kicker{color:#b8a0e0}
+  .t15 .tp-title{font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:clamp(3rem,7vw,5.5rem);letter-spacing:-.02em}
+  .t15 .tp-title-re{background:linear-gradient(135deg,#b8a0e0,#d0b8ff)}
+  .t15 .tp-subtitle{font-family:'Plus Jakarta Sans',sans-serif;font-weight:300;color:#7a6a90;font-style:normal}
+  .t15 .tp-tagline{color:#a898b0}
+  .t15 .tp-btn-primary{background:#b8a0e0;color:#0c0a10}
+  .t15 .tp-btn-ghost{background:transparent;color:#e4dce8;border:1px solid rgba(184,160,224,.15)}
+  .t15 .tp-orb:nth-child(1){width:500px;height:500px;background:rgba(184,160,224,.1);top:10%;left:15%}
+  .t15 .tp-orb:nth-child(2){width:400px;height:400px;background:rgba(208,184,255,.06);top:50%;right:10%}
+  .t15 .tp-orb:nth-child(3){width:350px;height:350px;background:rgba(122,106,144,.06);bottom:12%;left:40%}
+  .t15 .tp-vert{font-family:'Plus Jakarta Sans',sans-serif;color:#7a6a90}
+  .t15 .tp-phil-label{color:#b8a0e0}
+  .t15 .tp-phil-quote{font-family:'Cormorant Garamond',serif}
+  .t15 .tp-philosophy{background:#0e0c12}
+  .t15 .tp-feat-label{color:#b8a0e0}
+  .t15 .tp-feat-heading{font-family:'Plus Jakarta Sans',sans-serif;font-weight:700}
+  .t15 .tp-feat-card{background:rgba(14,12,18,.8);border-color:rgba(184,160,224,.08)}
+  .t15 .tp-feat-card h4{color:#b8a0e0}
+  .t15 .tp-code-block{border:1px solid rgba(184,160,224,.1)}
+  .t15 .tp-code-header{background:rgba(14,12,18,.9);color:#5a5068}
+  .t15 .tp-code-dot:nth-child(1){background:#b8a0e0}
+  .t15 .tp-code-dot:nth-child(2){background:#d0b8ff}
+  .t15 .tp-code-dot:nth-child(3){background:#7a6a90}
+  .t15 .tp-code-body{background:#0c0a10;color:#e4dce8;font-family:'JetBrains Mono',monospace}
+  .t15 .tp-flow:nth-child(1){stroke:rgba(184,160,224,.35)}
+  .t15 .tp-flow:nth-child(2){stroke:rgba(208,184,255,.2)}
+  .t15 .tp-flow:nth-child(3){stroke:rgba(122,106,144,.15)}
+
+  /* ═══════════════════════════════════════════════════
+     THEME 16 — Ink & Coral
+     Rich dark navy + coral/salmon accent
+     ═══════════════════════════════════════════════════ */
+  .t16{background:#080a10;color:#e8e0e0}
+  .t16 .tp-kicker{color:#f07060}
+  .t16 .tp-title{font-family:'Manrope',sans-serif;font-weight:800;font-size:clamp(3rem,7.5vw,6rem);letter-spacing:-.03em}
+  .t16 .tp-title-re{background:linear-gradient(135deg,#f07060,#ff9080)}
+  .t16 .tp-subtitle{font-family:'Manrope',sans-serif;font-weight:300;color:#8a6060;font-style:normal}
+  .t16 .tp-tagline{color:#b0a0a0}
+  .t16 .tp-btn-primary{background:#f07060;color:#080a10}
+  .t16 .tp-btn-ghost{background:transparent;color:#e8e0e0;border:1px solid rgba(240,112,96,.15)}
+  .t16 .tp-orb:nth-child(1){width:500px;height:500px;background:rgba(240,112,96,.12);top:8%;left:15%}
+  .t16 .tp-orb:nth-child(2){width:400px;height:400px;background:rgba(255,144,128,.07);top:52%;right:12%}
+  .t16 .tp-orb:nth-child(3){width:300px;height:300px;background:rgba(138,96,96,.06);bottom:15%;left:42%}
+  .t16 .tp-vert{font-family:'Manrope',sans-serif;color:#8a6060}
+  .t16 .tp-phil-label{color:#f07060}
+  .t16 .tp-phil-quote{font-family:'Spectral',serif}
+  .t16 .tp-philosophy{background:#0a0c12}
+  .t16 .tp-feat-label{color:#f07060}
+  .t16 .tp-feat-heading{font-family:'Manrope',sans-serif;font-weight:800}
+  .t16 .tp-feat-card{background:rgba(10,12,18,.8);border-color:rgba(240,112,96,.08)}
+  .t16 .tp-feat-card h4{color:#f07060}
+  .t16 .tp-code-block{border:1px solid rgba(240,112,96,.12)}
+  .t16 .tp-code-header{background:rgba(10,12,18,.9);color:#6a5058}
+  .t16 .tp-code-dot:nth-child(1){background:#f07060}
+  .t16 .tp-code-dot:nth-child(2){background:#ff9080}
+  .t16 .tp-code-dot:nth-child(3){background:#8a6060}
+  .t16 .tp-code-body{background:#080a10;color:#e8e0e0;font-family:'IBM Plex Mono',monospace}
+  .t16 .tp-flow:nth-child(1){stroke:rgba(240,112,96,.4)}
+  .t16 .tp-flow:nth-child(2){stroke:rgba(255,144,128,.25)}
+  .t16 .tp-flow:nth-child(3){stroke:rgba(138,96,96,.2)}
+
+  /* ═══════════════════════════════════════════════════
+     THEME 17 — Moonstone (Light)
+     Cool off-white + deep navy accent + clean sans
+     ═══════════════════════════════════════════════════ */
+  .t17{background:#f2f4f8;color:#14182a}
+  .t17 .tp-kicker{color:#2a3c6a}
+  .t17 .tp-title{font-family:'DM Sans',sans-serif;font-weight:700;font-size:clamp(3rem,7vw,5.5rem);letter-spacing:-.02em}
+  .t17 .tp-title-re{background:linear-gradient(135deg,#2a3c6a,#4060a0)}
+  .t17 .tp-subtitle{font-family:'DM Sans',sans-serif;font-weight:400;color:#5060a0;font-style:normal}
+  .t17 .tp-tagline{color:#3a3c4c}
+  .t17 .tp-btn-primary{background:#2a3c6a;color:#f2f4f8}
+  .t17 .tp-btn-ghost{background:transparent;color:#14182a;border:1px solid rgba(20,24,42,.1)}
+  .t17 .tp-orb:nth-child(1){width:500px;height:500px;background:rgba(42,60,106,.05);top:10%;left:15%}
+  .t17 .tp-orb:nth-child(2){width:400px;height:400px;background:rgba(64,96,160,.04);top:50%;right:10%}
+  .t17 .tp-orb:nth-child(3){width:300px;height:300px;background:rgba(80,96,160,.03);bottom:15%;left:40%}
+  .t17 .tp-vert{font-family:'DM Sans',sans-serif;color:#2a3c6a;opacity:.05}
+  .t17 .tp-phil-label{color:#2a3c6a}
+  .t17 .tp-phil-quote{font-family:'Newsreader',serif}
+  .t17 .tp-philosophy{background:#e8ecf2}
+  .t17 .tp-feat-label{color:#2a3c6a}
+  .t17 .tp-feat-heading{font-family:'DM Sans',sans-serif;font-weight:700}
+  .t17 .tp-feat-card{background:rgba(232,236,242,.6);border-color:rgba(20,24,42,.05)}
+  .t17 .tp-feat-card h4{color:#2a3c6a}
+  .t17 .tp-code-block{border:1px solid rgba(20,24,42,.08)}
+  .t17 .tp-code-header{background:#e8ecf2;color:#5060a0}
+  .t17 .tp-code-dot:nth-child(1){background:#2a3c6a}
+  .t17 .tp-code-dot:nth-child(2){background:#4060a0}
+  .t17 .tp-code-dot:nth-child(3){background:#5060a0}
+  .t17 .tp-code-body{background:#f2f4f8;color:#14182a;font-family:'IBM Plex Mono',monospace}
+  .t17 .tp-flow:nth-child(1){stroke:rgba(42,60,106,.1)}
+  .t17 .tp-flow:nth-child(2){stroke:rgba(64,96,160,.06)}
+  .t17 .tp-flow:nth-child(3){stroke:rgba(80,96,160,.04)}
+  .t17::after{opacity:.012}
+
+  /* ═══════════════════════════════════════════════════
+     THEME 18 — Abyssal Teal
+     Ultra-dark blue-black + teal-green duo-tone
+     ═══════════════════════════════════════════════════ */
+  .t18{background:#060a0c;color:#d0e0dc}
+  .t18 .tp-kicker{color:#40c8a8}
+  .t18 .tp-title{font-family:'IBM Plex Sans',sans-serif;font-weight:700;font-size:clamp(3rem,7vw,5.5rem);letter-spacing:-.01em}
+  .t18 .tp-title-re{background:linear-gradient(135deg,#40c8a8,#60a8e0)}
+  .t18 .tp-subtitle{font-family:'IBM Plex Sans',sans-serif;font-weight:300;color:#4a7a70;font-style:normal}
+  .t18 .tp-tagline{color:#90b0a8}
+  .t18 .tp-btn-primary{background:#40c8a8;color:#060a0c}
+  .t18 .tp-btn-ghost{background:transparent;color:#d0e0dc;border:1px solid rgba(64,200,168,.15)}
+  .t18 .tp-orb:nth-child(1){width:500px;height:500px;background:rgba(64,200,168,.1);top:10%;left:15%}
+  .t18 .tp-orb:nth-child(2){width:400px;height:400px;background:rgba(96,168,224,.07);top:50%;right:12%}
+  .t18 .tp-orb:nth-child(3){width:300px;height:300px;background:rgba(74,122,112,.06);bottom:15%;left:42%}
+  .t18 .tp-vert{font-family:'IBM Plex Sans',sans-serif;color:#4a7a70}
+  .t18 .tp-phil-label{color:#40c8a8}
+  .t18 .tp-phil-quote{font-family:'Lora',serif}
+  .t18 .tp-philosophy{background:#080c0e}
+  .t18 .tp-feat-label{color:#40c8a8}
+  .t18 .tp-feat-heading{font-family:'IBM Plex Sans',sans-serif;font-weight:700}
+  .t18 .tp-feat-card{background:rgba(8,12,14,.8);border-color:rgba(64,200,168,.08)}
+  .t18 .tp-feat-card h4{color:#60a8e0}
+  .t18 .tp-code-block{border:1px solid rgba(64,200,168,.1)}
+  .t18 .tp-code-header{background:rgba(8,12,14,.9);color:#4a7a70}
+  .t18 .tp-code-dot:nth-child(1){background:#40c8a8}
+  .t18 .tp-code-dot:nth-child(2){background:#60a8e0}
+  .t18 .tp-code-dot:nth-child(3){background:#4a7a70}
+  .t18 .tp-code-body{background:#060a0c;color:#d0e0dc;font-family:'IBM Plex Mono',monospace}
+  .t18 .tp-flow:nth-child(1){stroke:rgba(64,200,168,.4)}
+  .t18 .tp-flow:nth-child(2){stroke:rgba(96,168,224,.25)}
+  .t18 .tp-flow:nth-child(3){stroke:rgba(74,122,112,.2)}
+
+  /* ═══════════════════════════════════════════════════
+     THEME 19 — Warm Noir
+     Rich dark brown + warm white + gold highlights
+     ═══════════════════════════════════════════════════ */
+  .t19{background:#0c0a08;color:#ede8dc}
+  .t19 .tp-kicker{color:#d4a860}
+  .t19 .tp-title{font-family:'Playfair Display',serif;font-weight:700;font-size:clamp(3rem,7vw,5.5rem);font-style:italic}
+  .t19 .tp-title-re{background:linear-gradient(135deg,#d4a860,#e8c888)}
+  .t19 .tp-subtitle{font-family:'Playfair Display',serif;color:#8a7850}
+  .t19 .tp-tagline{color:#b0a890}
+  .t19 .tp-btn-primary{background:#d4a860;color:#0c0a08}
+  .t19 .tp-btn-ghost{background:transparent;color:#ede8dc;border:1px solid rgba(212,168,96,.15)}
+  .t19 .tp-orb:nth-child(1){width:500px;height:500px;background:rgba(212,168,96,.1);top:10%;left:15%}
+  .t19 .tp-orb:nth-child(2){width:400px;height:400px;background:rgba(232,200,136,.06);top:50%;right:10%}
+  .t19 .tp-orb:nth-child(3){width:300px;height:300px;background:rgba(138,120,80,.06);bottom:15%;left:40%}
+  .t19 .tp-vert{font-family:'Playfair Display',serif;color:#8a7850}
+  .t19 .tp-phil-label{color:#d4a860}
+  .t19 .tp-phil-quote{font-family:'Playfair Display',serif;font-style:italic}
+  .t19 .tp-philosophy{background:#0e0c0a}
+  .t19 .tp-feat-label{color:#d4a860}
+  .t19 .tp-feat-heading{font-family:'Playfair Display',serif;font-style:italic}
+  .t19 .tp-feat-card{background:rgba(14,12,10,.8);border-color:rgba(212,168,96,.08)}
+  .t19 .tp-feat-card h4{color:#d4a860}
+  .t19 .tp-code-block{border:1px solid rgba(212,168,96,.12)}
+  .t19 .tp-code-header{background:rgba(14,12,10,.9);color:#6a6048}
+  .t19 .tp-code-dot:nth-child(1){background:#d4a860}
+  .t19 .tp-code-dot:nth-child(2){background:#e8c888}
+  .t19 .tp-code-dot:nth-child(3){background:#8a7850}
+  .t19 .tp-code-body{background:#0c0a08;color:#ede8dc;font-family:'JetBrains Mono',monospace}
+  .t19 .tp-flow:nth-child(1){stroke:rgba(212,168,96,.4)}
+  .t19 .tp-flow:nth-child(2){stroke:rgba(232,200,136,.2)}
+  .t19 .tp-flow:nth-child(3){stroke:rgba(138,120,80,.15)}
+
+  /* ═══════════════════════════════════════════════════
+     THEME 20 — Chalk & Ink (Light)
+     Pure warm white + charcoal + vivid teal pop
+     ═══════════════════════════════════════════════════ */
+  .t20{background:#faf8f4;color:#181818}
+  .t20 .tp-kicker{color:#0a8a7a}
+  .t20 .tp-title{font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:clamp(3rem,7.5vw,6rem);letter-spacing:-.03em}
+  .t20 .tp-title-re{background:linear-gradient(135deg,#0a8a7a,#10b0a0)}
+  .t20 .tp-subtitle{font-family:'Crimson Pro',serif;font-weight:300;color:#5a7a78}
+  .t20 .tp-tagline{color:#3a3a38}
+  .t20 .tp-btn-primary{background:#0a8a7a;color:#fff}
+  .t20 .tp-btn-ghost{background:transparent;color:#181818;border:1px solid rgba(24,24,24,.1)}
+  .t20 .tp-orb:nth-child(1){width:500px;height:500px;background:rgba(10,138,122,.05);top:10%;left:15%}
+  .t20 .tp-orb:nth-child(2){width:400px;height:400px;background:rgba(16,176,160,.03);top:50%;right:10%}
+  .t20 .tp-orb:nth-child(3){width:300px;height:300px;background:rgba(90,122,120,.03);bottom:15%;left:40%}
+  .t20 .tp-vert{font-family:'Bricolage Grotesque',sans-serif;color:#0a8a7a;opacity:.05}
+  .t20 .tp-phil-label{color:#0a8a7a}
+  .t20 .tp-phil-quote{font-family:'Crimson Pro',serif;font-weight:300}
+  .t20 .tp-philosophy{background:#f2f0ec}
+  .t20 .tp-feat-label{color:#0a8a7a}
+  .t20 .tp-feat-heading{font-family:'Bricolage Grotesque',sans-serif;font-weight:700}
+  .t20 .tp-feat-card{background:rgba(242,240,236,.6);border-color:rgba(24,24,24,.05)}
+  .t20 .tp-feat-card h4{color:#0a8a7a}
+  .t20 .tp-code-block{border:1px solid rgba(24,24,24,.08)}
+  .t20 .tp-code-header{background:#f2f0ec;color:#5a7a78}
+  .t20 .tp-code-dot:nth-child(1){background:#0a8a7a}
+  .t20 .tp-code-dot:nth-child(2){background:#10b0a0}
+  .t20 .tp-code-dot:nth-child(3){background:#5a7a78}
+  .t20 .tp-code-body{background:#faf8f4;color:#181818;font-family:'JetBrains Mono',monospace}
+  .t20 .tp-flow:nth-child(1){stroke:rgba(10,138,122,.12)}
+  .t20 .tp-flow:nth-child(2){stroke:rgba(16,176,160,.07)}
+  .t20 .tp-flow:nth-child(3){stroke:rgba(90,122,120,.05)}
+  .t20::after{opacity:.015}
+
+  /* ═══════════════════════════════════════════════════
+     THEME 21 — Obsidian Scroll
+     Ink & Aqua typography (Noto Serif SC + Source Sans 3 + JetBrains Mono)
+     meets Obsidian & Cyan color palette (pure dark + sharp cyan)
+     ═══════════════════════════════════════════════════ */
+  .t21{background:#050508;color:#d8e4e8}
+  .t21 .tp-kicker{color:#00d4e8}
+  .t21 .tp-title{font-family:'Noto Serif SC',serif;font-weight:900;font-size:clamp(3rem,8vw,6rem);letter-spacing:-.01em}
+  .t21 .tp-title-re{background:linear-gradient(135deg,#00d4e8,#00a8c0)}
+  .t21 .tp-subtitle{font-family:'Noto Serif SC',serif;color:#407888;font-style:italic}
+  .t21 .tp-tagline{color:#90a8b0;font-family:'Source Sans 3',sans-serif;font-weight:300}
+  .t21 .tp-btn-primary{background:#00d4e8;color:#050508}
+  .t21 .tp-btn-primary:hover{background:#30e8f8;box-shadow:0 0 30px rgba(0,212,232,.3)}
+  .t21 .tp-btn-ghost{background:transparent;color:#d8e4e8;border:1px solid rgba(0,212,232,.18)}
+  .t21 .tp-btn-ghost:hover{border-color:rgba(0,212,232,.4);background:rgba(0,212,232,.06)}
+  .t21 .tp-orb:nth-child(1){width:500px;height:500px;background:rgba(0,212,232,.12);top:8%;left:12%}
+  .t21 .tp-orb:nth-child(2){width:400px;height:400px;background:rgba(0,168,192,.08);top:52%;right:14%}
+  .t21 .tp-orb:nth-child(3){width:350px;height:350px;background:rgba(64,120,136,.06);bottom:15%;left:45%}
+  .t21 .tp-vert{font-family:'Noto Serif SC',serif;color:#00d4e8}
+  .t21 .tp-phil-label{color:#00d4e8}
+  .t21 .tp-phil-quote{font-family:'Noto Serif SC',serif;font-weight:700}
+  .t21 .tp-phil-trans{color:#407888}
+  .t21 .tp-phil-body{color:#90a8b0;font-family:'Source Sans 3',sans-serif}
+  .t21 .tp-philosophy{background:#080a0c}
+  .t21 .tp-feat-label{color:#00d4e8}
+  .t21 .tp-feat-heading{font-family:'Noto Serif SC',serif;font-weight:700;letter-spacing:-.01em}
+  .t21 .tp-feat-card{background:rgba(8,10,12,.8);border-color:rgba(0,212,232,.1)}
+  .t21 .tp-feat-card h4{font-family:'Noto Serif SC',serif;color:#00d4e8}
+  .t21 .tp-feat-card p{font-family:'Source Sans 3',sans-serif;color:#90a8b0}
+  .t21 .tp-feat-coord{color:#407888}
+  .t21 .tp-code-block{border:1px solid rgba(0,212,232,.12)}
+  .t21 .tp-code-header{background:rgba(8,10,12,.9);color:#407888;font-family:'Source Sans 3',sans-serif}
+  .t21 .tp-code-dot:nth-child(1){background:#00d4e8}
+  .t21 .tp-code-dot:nth-child(2){background:#00a8c0}
+  .t21 .tp-code-dot:nth-child(3){background:#407888}
+  .t21 .tp-code-body{background:#050508;color:#d8e4e8;font-family:'JetBrains Mono',monospace}
+  .t21 .tp-flow:nth-child(1){stroke:rgba(0,212,232,.45)}
+  .t21 .tp-flow:nth-child(2){stroke:rgba(0,168,192,.25)}
+  .t21 .tp-flow:nth-child(3){stroke:rgba(64,120,136,.18)}
+</style>
+</head>
+<body>
+
+<!-- ── STICKY NAV ── -->
+<nav class="picker-nav">
+  <h1>GraphReFly Themes</h1>
+  <div class="picker-pills" id="pills"></div>
+</nav>
+
+<!-- ── THEMES ── -->
+<div class="themes-grid" id="grid"></div>
+
+<script>
+const themes = [
+  { id:'t01', name:'01 Ink & Aqua', meta:'CURRENT — Noto Serif SC + Source Sans 3 — Dark' },
+  { id:'t02', name:'02 Midnight Ember', meta:'Playfair Display + Source Sans 3 — Dark warm' },
+  { id:'t03', name:'03 Arctic Void', meta:'Syne + Crimson Pro — Dark icy' },
+  { id:'t04', name:'04 Jade Monastery', meta:'Cormorant Garamond — Dark green' },
+  { id:'t05', name:'05 Rose Gold Dusk', meta:'DM Serif Display — Dark plum' },
+  { id:'t06', name:'06 Electric Indigo', meta:'Outfit + Instrument Serif — Dark violet' },
+  { id:'t07', name:'07 Bone & Charcoal', meta:'Libre Baskerville — Light warm' },
+  { id:'t08', name:'08 Neon Terminal', meta:'JetBrains Mono — Dark hacker' },
+  { id:'t09', name:'09 Copper Patina', meta:'Fraunces — Dark teal-copper' },
+  { id:'t10', name:'10 Pearl & Slate', meta:'Newsreader + IBM Plex — Light cool' },
+  { id:'t11', name:'11 Solar Flare', meta:'Bricolage Grotesque + Spectral — Dark gold' },
+  { id:'t12', name:'12 Crimson Manuscript', meta:'Lora — Dark burgundy' },
+  { id:'t13', name:'13 Sage & Cream', meta:'Instrument Serif — Light organic' },
+  { id:'t14', name:'14 Obsidian & Cyan', meta:'Archivo — Dark geometric' },
+  { id:'t15', name:'15 Lavender Dusk', meta:'Plus Jakarta Sans + Cormorant — Dark purple' },
+  { id:'t16', name:'16 Ink & Coral', meta:'Manrope + Spectral — Dark navy-coral' },
+  { id:'t17', name:'17 Moonstone', meta:'DM Sans + Newsreader — Light navy' },
+  { id:'t18', name:'18 Abyssal Teal', meta:'IBM Plex Sans + Lora — Dark duo-tone' },
+  { id:'t19', name:'19 Warm Noir', meta:'Playfair Display italic — Dark gold-brown' },
+  { id:'t20', name:'20 Chalk & Ink', meta:'Bricolage Grotesque + Crimson Pro — Light teal' },
+  { id:'t21', name:'21 Obsidian Scroll', meta:'Noto Serif SC + Source Sans 3 + Obsidian & Cyan colors — Dark' },
+];
+
+const pillsEl = document.getElementById('pills');
+const gridEl = document.getElementById('grid');
+
+// Build nav pills
+themes.forEach(t => {
+  const btn = document.createElement('button');
+  btn.className = 'picker-pill';
+  btn.textContent = t.name;
+  btn.onclick = () => {
+    document.getElementById(t.id)?.scrollIntoView({ behavior:'smooth', block:'start' });
+  };
+  pillsEl.appendChild(btn);
+});
+
+// Flow lines SVG (shared)
+const flowSVG = `<div class="tp-lines"><svg viewBox="0 0 1440 900" preserveAspectRatio="none">
+  <path class="tp-flow" d="M-50,350 C200,300 350,500 550,380 C750,260 900,450 1150,320 C1300,240 1400,350 1500,300" />
+  <path class="tp-flow" d="M-50,550 C150,500 300,650 500,520 C700,390 850,580 1100,480 C1250,420 1380,530 1500,470" />
+  <path class="tp-flow" d="M-50,200 C180,180 320,280 480,220 C640,160 800,300 1000,230 C1200,160 1350,250 1500,200" />
+</svg></div>`;
+
+// Build theme cards
+themes.forEach(t => {
+  const card = document.createElement('div');
+  card.className = 'theme-card';
+  card.id = t.id;
+  card.innerHTML = `
+    <div class="theme-label">
+      <span>${t.name}</span>
+      <span class="meta">${t.meta}</span>
+    </div>
+    <div class="theme-preview ${t.id}">
+
+      <!-- HERO -->
+      <div class="tp-hero">
+        <div class="tp-hero-bg">
+          <div class="tp-orb"></div>
+          <div class="tp-orb"></div>
+          <div class="tp-orb"></div>
+          ${flowSVG}
+        </div>
+        <div class="tp-vert tp-vert-l">\u89C2\u5176\u6D41\u800C\u77E5\u5176\u6E90</div>
+        <div class="tp-vert tp-vert-r">\u5E94\u4E8E\u52A1\u4EA6\u7559\u5176\u8FF9</div>
+        <div class="tp-content">
+          <p class="tp-kicker">Reactive Graph Protocol</p>
+          <h1 class="tp-title">Graph<span class="tp-title-re">Re</span>Fly<span style="opacity:.5">.</span></h1>
+          <p class="tp-subtitle">state that flows</p>
+          <p class="tp-tagline">Human + LLM co-operation on a shared, inspectable graph.</p>
+          <div class="tp-cta">
+            <a href="#" class="tp-btn tp-btn-primary">Read the Spec</a>
+            <a href="#" class="tp-btn tp-btn-ghost">Implementations</a>
+          </div>
+        </div>
+      </div>
+
+      <!-- PHILOSOPHY -->
+      <div class="tp-philosophy">
+        <p class="tp-phil-label">Philosophy</p>
+        <p class="tp-phil-quote">\u5DDD\u6D41\u4E0D\u606F\uFF0C\u5149\u5F71\u81EA\u6D6E</p>
+        <p class="tp-phil-trans">"Stream flows, light glows \u2014 insight without interference."</p>
+        <p class="tp-phil-body">Data moves with relentless precision, yet its velocity demands a deeper, quieter clarity. We embrace the art of <strong>non-intrusive observation</strong>\u2014capturing the essence of the stream without ever diverting its natural course.</p>
+      </div>
+
+      <!-- FEATURES -->
+      <div class="tp-features">
+        <p class="tp-feat-label">Four Pillars</p>
+        <h2 class="tp-feat-heading">The foundation beneath the flow</h2>
+        <div class="tp-feat-grid">
+          <div class="tp-feat-card">
+            <div class="tp-feat-coord">\u25C6 N01 \u00B7 ENGINE</div>
+            <h4>Reactive Precision</h4>
+            <p>Callbag-ish minimalism with diamond-safe correctness. Glitch-free, high-performance two-phase push.</p>
+          </div>
+          <div class="tp-feat-card">
+            <div class="tp-feat-coord">\u25C6 N02 \u00B7 CONTRACT</div>
+            <h4>Governed Integrity</h4>
+            <p>ABAC and versioning baked into nodes and graphs. Every state change is authorized and auditable.</p>
+          </div>
+          <div class="tp-feat-card">
+            <div class="tp-feat-coord">\u25C6 N03 \u00B7 VISION</div>
+            <h4>Living Blueprints</h4>
+            <p>Introspectable artifacts. Values, Status, and Algorithm in a single serializable unit.</p>
+          </div>
+          <div class="tp-feat-card">
+            <div class="tp-feat-coord">\u25C6 N04 \u00B7 FUTURE</div>
+            <h4>Agentic Co-operation</h4>
+            <p>Humans master abstraction, AI masters implementation. A shared, transparent logic arena.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- CODE -->
+      <div class="tp-code">
+        <div class="tp-code-block">
+          <div class="tp-code-header">
+            <div class="tp-code-dots"><span class="tp-code-dot"></span><span class="tp-code-dot"></span><span class="tp-code-dot"></span></div>
+            <span>example.py</span>
+          </div>
+          <div class="tp-code-body">
+<pre>count   = state(0)
+doubled = derived([count], lambda c: c * 2)
+effect([doubled], lambda d: print(d))
+
+count.down([(DATA, 1)])  # prints: 2</pre>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  `;
+  gridEl.appendChild(card);
+});
+
+// Intersection observer for active pill highlighting
+const observer = new IntersectionObserver(entries => {
+  entries.forEach(e => {
+    if (e.isIntersecting) {
+      document.querySelectorAll('.picker-pill').forEach(p => p.classList.remove('active'));
+      const idx = themes.findIndex(t => t.id === e.target.id);
+      if (idx >= 0) pillsEl.children[idx].classList.add('active');
+    }
+  });
+}, { threshold: 0.3 });
+
+themes.forEach(t => observer.observe(document.getElementById(t.id)));
+</script>
+</body>
+</html>

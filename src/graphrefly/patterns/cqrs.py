@@ -97,6 +97,8 @@ class CqrsEvent:
     payload: Any
     timestamp_ns: int
     seq: int
+    v0: dict[str, Any] | None = None
+    """V0 identity of the event log node at append time (§6.0b)."""
 
 
 # ---------------------------------------------------------------------------
@@ -243,11 +245,13 @@ class CqrsGraph(Graph):
             self.event(event_name)
             entry = self._event_logs[event_name]
         self._seq += 1
+        nv = entry["log"].entries.v
         evt = CqrsEvent(
             type=event_name,
             payload=payload,
             timestamp_ns=wall_clock_ns(),
             seq=self._seq,
+            v0={"id": nv.id, "version": nv.version} if nv is not None else None,
         )
         entry["log"].append(evt)
         if self._event_store is not None and hasattr(self._event_store, "persist_sync"):

@@ -1,9 +1,9 @@
 ---
 title: 'ReactiveIndexBundle'
-description: 'Unique primary key; rows sorted by ``(secondary, primary)`` for ordered scans.'
+description: 'Dual-key index: unique primary key with rows sorted by ``(secondary, primary)``.'
 ---
 
-Unique primary key; rows sorted by ``(secondary, primary)`` for ordered scans.
+Dual-key index: unique primary key with rows sorted by ``(secondary, primary)``.
 
 ## Signature
 
@@ -13,4 +13,16 @@ class ReactiveIndexBundle[K]
 
 ## Documentation
 
-Unique primary key; rows sorted by ``(secondary, primary)`` for ordered scans.
+Dual-key index: unique primary key with rows sorted by ``(secondary, primary)``.
+
+Attributes:
+    by_primary: Derived node mapping ``primary -&gt; value``.
+    ordered: Derived node with all rows as a sorted tuple.
+
+Example:
+    ```python
+    from graphrefly.extra import reactive_index
+    idx = reactive_index()
+    idx.upsert("alice", score=90, value={"name": "Alice"})
+    assert "alice" in idx.by_primary.get()
+    ```

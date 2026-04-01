@@ -29,10 +29,16 @@ if TYPE_CHECKING:
 
 
 class Versioned(NamedTuple):
-    """Immutable snapshot paired with a monotonic version for ``equals``."""
+    """Immutable snapshot paired with a monotonic version for ``equals``.
+
+    When the backing node has V0 versioning (GRAPHREFLY-SPEC §7), ``v0``
+    carries the node's identity (``id``) and version counter for
+    diff-friendly observation and cross-snapshot dedup (roadmap §6.0b).
+    """
 
     version: int
     value: Any
+    v0: dict[str, Any] | None = None
 
 
 def _versioned_equals(a: Any, b: Any) -> bool:
@@ -42,9 +48,22 @@ def _versioned_equals(a: Any, b: Any) -> bool:
     return a.version == b.version
 
 
-def _bump(current: Versioned | None, next_value: Any) -> Versioned:
+def _v0_from_node(n: Any) -> dict[str, Any] | None:
+    """Extract V0 identity from a node's versioning info, if available."""
+    v = getattr(n, "v", None)
+    if v is None:
+        return None
+    return {"id": v.id, "version": v.version}
+
+
+def _bump(current: Versioned | None, next_value: Any, v0: dict[str, Any] | None = None) -> Versioned:
+    """Increment version. ``v0`` is captured before the backing node's DATA
+    emission, so ``v0.version`` is one behind the node's post-emission value.
+    This is intentional — ``v0`` records the node's version at snapshot
+    construction time.
+    """
     v = current.version if isinstance(current, Versioned) else 0
-    return Versioned(version=v + 1, value=next_value)
+    return Versioned(version=v + 1, value=next_value, v0=v0)
 
 
 # --- helpers ------------------------------------------------------------------
@@ -155,7 +174,7 @@ class ReactiveMapBundle:
         raw = self._state.get()
         snap = _visible_map(raw if raw is not None else _MapState.empty())
         cur = self.data.get()
-        next_snap = _bump(cur if isinstance(cur, Versioned) else Versioned(0, snap), snap)
+        next_snap = _bump(cur if isinstance(cur, Versioned) else Versioned(0, snap), snap, _v0_from_node(self.data))
         self._version[0] = next_snap.version
         _push_two_phase(self.data, next_snap)
 
@@ -277,18 +296,21 @@ class ReactiveLogBundle:
             return t[len(t) - self._max_size :]
         return t
 
+    def _v0(self) -> dict[str, Any] | None:
+        return _v0_from_node(self._state)
+
     def append(self, value: Any) -> None:
         cur = self._state.get()
         t: tuple[Any, ...] = cur.value if isinstance(cur, Versioned) else (cur or ())
         t = self._trim((*t, value))
-        _push_two_phase(self._state, _bump(cur, t))
+        _push_two_phase(self._state, _bump(cur, t, self._v0()))
 
     def append_many(self, values: Sequence[Any]) -> None:
         """Extend log with all *values*, trim once, emit one snapshot."""
         cur = self._state.get()
         t: tuple[Any, ...] = cur.value if isinstance(cur, Versioned) else (cur or ())
         t = self._trim((*t, *values))
-        _push_two_phase(self._state, _bump(cur, t))
+        _push_two_phase(self._state, _bump(cur, t, self._v0()))
 
     def trim_head(self, n: int) -> None:
         """Remove first *n* entries from the log and emit a snapshot.
@@ -301,14 +323,15 @@ class ReactiveLogBundle:
             raise ValueError(msg)
         cur = self._state.get()
         t: tuple[Any, ...] = cur.value if isinstance(cur, Versioned) else (cur or ())
+        v0 = self._v0()
         if n >= len(t):
-            _push_two_phase(self._state, _bump(cur, ()))
+            _push_two_phase(self._state, _bump(cur, (), v0))
         else:
-            _push_two_phase(self._state, _bump(cur, t[n:]))
+            _push_two_phase(self._state, _bump(cur, t[n:], v0))
 
     def clear(self) -> None:
         cur = self._state.get()
-        _push_two_phase(self._state, _bump(cur, ()))
+        _push_two_phase(self._state, _bump(cur, (), self._v0()))
 
     def tail(self, n: int) -> Node[tuple[Any, ...]]:
         """Last ``n`` entries (or fewer if shorter); updates when the log changes."""
@@ -408,6 +431,9 @@ class ReactiveIndexBundle[K]:
     by_primary: Node[dict[K, Any]]
     ordered: Node[Versioned]
 
+    def _v0(self) -> dict[str, Any] | None:
+        return _v0_from_node(self._state)
+
     def upsert(self, primary: K, secondary: Any, value: Any) -> None:
         cur = self._state.get()
         prev: tuple[_IndexRow[K], ...] = cur.value if isinstance(cur, Versioned) else (cur or ())
@@ -416,7 +442,7 @@ class ReactiveIndexBundle[K]:
         keys = [_row_key(r) for r in rows]
         pos = bisect_left(keys, _row_key(row))
         rows.insert(pos, row)
-        _push_two_phase(self._state, _bump(cur, tuple(rows)))
+        _push_two_phase(self._state, _bump(cur, tuple(rows), self._v0()))
 
     def delete(self, primary: K) -> None:
         cur = self._state.get()
@@ -424,11 +450,11 @@ class ReactiveIndexBundle[K]:
         rows = [r for r in prev if r.primary != primary]
         if len(rows) == len(prev):
             return
-        _push_two_phase(self._state, _bump(cur, tuple(rows)))
+        _push_two_phase(self._state, _bump(cur, tuple(rows), self._v0()))
 
     def clear(self) -> None:
         cur = self._state.get()
-        _push_two_phase(self._state, _bump(cur, ()))
+        _push_two_phase(self._state, _bump(cur, (), self._v0()))
 
 
 def reactive_index(*, name: str | None = None) -> ReactiveIndexBundle[Any]:
@@ -492,10 +518,13 @@ class ReactiveListBundle:
         raw = self._state.get()
         return raw.value if isinstance(raw, Versioned) else (raw or ())
 
+    def _v0(self) -> dict[str, Any] | None:
+        return _v0_from_node(self._state)
+
     def append(self, value: Any) -> None:
         cur = self._state.get()
         t = self._cur_tuple()
-        _push_two_phase(self._state, _bump(cur, (*t, value)))
+        _push_two_phase(self._state, _bump(cur, (*t, value), self._v0()))
 
     def insert(self, index: int, value: Any) -> None:
         cur = self._state.get()
@@ -503,7 +532,7 @@ class ReactiveListBundle:
         if index < 0 or index > len(t):
             msg = "index out of range"
             raise IndexError(msg)
-        _push_two_phase(self._state, _bump(cur, (*t[:index], value, *t[index:])))
+        _push_two_phase(self._state, _bump(cur, (*t[:index], value, *t[index:]), self._v0()))
 
     def pop(self, index: int = -1) -> Any:
         cur = self._state.get()
@@ -516,12 +545,12 @@ class ReactiveListBundle:
             msg = "index out of range"
             raise IndexError(msg)
         v = t[i]
-        _push_two_phase(self._state, _bump(cur, (*t[:i], *t[i + 1 :])))
+        _push_two_phase(self._state, _bump(cur, (*t[:i], *t[i + 1 :]), self._v0()))
         return v
 
     def clear(self) -> None:
         cur = self._state.get()
-        _push_two_phase(self._state, _bump(cur, ()))
+        _push_two_phase(self._state, _bump(cur, (), self._v0()))
 
 
 def reactive_list(

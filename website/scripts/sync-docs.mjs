@@ -21,13 +21,7 @@ const SHARED_FILES = [
 	["GRAPHREFLY-SPEC.md", "spec.md", "Specification"],
 ];
 
-const LOCAL_FILES = [
-	["roadmap.md", "roadmap.md", "Roadmap"],
-	["optimizations.md", "optimizations.md", "Optimizations"],
-	["benchmark.md", "benchmark.md", "Benchmark"],
-	["test-guidance.md", "test-guidance.md", "Test guidance"],
-	["docs-guidance.md", "docs-guidance.md", "Docs guidance"],
-];
+const LOCAL_FILES = [];
 
 function titleFromBody(src) {
 	const line = src.split(/\r?\n/).find((l) => l.startsWith("# "));

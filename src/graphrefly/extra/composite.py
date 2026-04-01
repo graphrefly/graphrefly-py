@@ -49,7 +49,9 @@ def verifiable(
         initial_verified: Initial value for the verification companion.
     """
     source_node = from_any(source)
-    verified_node = state(initial_verified)
+    has_source_versioning = source_node.v is not None
+    meta_opts: dict[str, Any] = {"source_version": None} if has_source_versioning else {}
+    verified_node = state(initial_verified, **({"meta": meta_opts} if meta_opts else {}))
 
     trigger_node: Node[Any] | None = None
     if trigger is not None and auto_verify:
@@ -63,9 +65,21 @@ def verifiable(
         verify_stream = switch_map(
             lambda _t: _coerce_node_input(verify_fn(source_node.get())),
         )(trigger_node)
+
+        def _on_verified(value: Any) -> None:
+            with batch():
+                verified_node.down([(MessageType.DATA, value)])
+                # V0 backfill: stamp which source version was verified (§6.0b).
+                if has_source_versioning:
+                    sv = source_node.v
+                    if sv is not None:
+                        verified_node.meta["source_version"].down(
+                            [(MessageType.DATA, {"id": sv.id, "version": sv.version})]
+                        )
+
         for_each(
             verify_stream,
-            lambda value: verified_node.down([(MessageType.DATA, value)]),
+            _on_verified,
             on_error=lambda _err: None,
         )
 

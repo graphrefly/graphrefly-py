@@ -1,9 +1,9 @@
 ---
 title: 'sample'
-description: "Emit the primary's latest ``get()`` whenever ``notifier`` settles with ``DATA``."
+description: "Emit the primary's latest value whenever ``notifier`` settles with ``DATA``."
 ---
 
-Emit the primary's latest ``get()`` whenever ``notifier`` settles with ``DATA``.
+Emit the primary's latest value whenever ``notifier`` settles with ``DATA``.
 
 ## Signature
 
@@ -13,7 +13,22 @@ def sample(notifier: Node[Any]) -> PipeOperator
 
 ## Documentation
 
-Emit the primary's latest ``get()`` whenever ``notifier`` settles with ``DATA``.
+Emit the primary's latest value whenever ``notifier`` settles with ``DATA``.
 
-A mirror node follows the primary so ``get()`` on the output reflects the last sampled
-value; the latest primary value before a sample is read via an internal pass-through node.
+Source messages are intercepted via ``on_message``; only notifier ``DATA``
+(dep index 1) triggers ``src.get()`` emission. Matches TS ``sample`` architecture.
+
+Args:
+    notifier: Node whose ``DATA`` triggers sampling of the primary's latest value.
+
+Returns:
+    A unary pipe operator ``(Node) -&gt; Node``.
+
+Example:
+    ```python
+    from graphrefly import state, pipe
+    from graphrefly.extra.tier2 import sample
+    src = state(0)
+    tick = state(None)
+    out = pipe(src, sample(tick))
+    ```

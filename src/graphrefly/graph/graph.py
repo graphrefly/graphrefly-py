@@ -313,6 +313,8 @@ class Graph:
 
     __slots__ = (
         "_annotations",
+        "_auto_checkpoint_disposers",
+        "_default_versioning_level",
         "_edges",
         "_lock",
         "_mounts",
@@ -320,7 +322,6 @@ class Graph:
         "_nodes",
         "_thread_safe",
         "_trace_ring",
-        "_auto_checkpoint_disposers",
     )
 
     def __init__(self, name: str, opts: dict[str, Any] | None = None) -> None:
@@ -341,6 +342,7 @@ class Graph:
         self._annotations: dict[str, str] = {}
         self._trace_ring: deque[TraceEntry] = deque(maxlen=1000)
         self._auto_checkpoint_disposers: set[Callable[[], None]] = set()
+        self._default_versioning_level: int | None = None
 
     @property
     def name(self) -> str:
@@ -410,7 +412,28 @@ class Graph:
                     raise ValueError(f"node instance already registered as {existing_name!r}")
             if n._name is None:
                 object.__setattr__(n, "_name", node_name)
+            if self._default_versioning_level is not None:
+                n._apply_versioning(self._default_versioning_level)
             self._nodes[node_name] = n
+
+    def set_versioning(self, level: int | None) -> None:
+        """Set default versioning level for all nodes in this graph (roadmap §6.0).
+
+        Retroactively upgrades already-registered nodes. Nodes added later via
+        :meth:`add` inherit this level unless they already have versioning.
+
+        **Scope:** Does not propagate to mounted subgraphs. Call
+        ``set_versioning`` on each child graph separately if needed.
+
+        Args:
+            level: ``0`` for V0, ``1`` for V1, or ``None`` to clear.
+        """
+        self._default_versioning_level = level
+        if level is None:
+            return
+        with self._locked():
+            for n in self._nodes.values():
+                n._apply_versioning(level)
 
     def mount(self, mount_name: str, child: Graph) -> None:
         """Embed a child graph under ``mount_name`` (GRAPHREFLY-SPEC §3.4).
@@ -1104,13 +1127,19 @@ class Graph:
                         event = _base_event("data", data=val)
                         if causal and last_run_dep_values is not None:
                             event["trigger_dep_index"] = last_trigger_dep_index
+                            trigger_dep = None
                             if (
                                 isinstance(last_trigger_dep_index, int)
                                 and last_trigger_dep_index >= 0
                                 and isinstance(n, NodeImpl)
                                 and last_trigger_dep_index < len(n._deps)
                             ):
-                                event["trigger_dep_name"] = n._deps[last_trigger_dep_index].name
+                                trigger_dep = n._deps[last_trigger_dep_index]
+                                event["trigger_dep_name"] = trigger_dep.name
+                            # V0 backfill: include triggering dep's version (§6.0b).
+                            tv = trigger_dep.v if trigger_dep is not None else None
+                            if tv is not None:
+                                event["trigger_version"] = {"id": tv.id, "version": tv.version}
                             event["dep_values"] = list(last_run_dep_values)
                         result.events.append(event)
                     elif t is MessageType.DIRTY:
@@ -1121,13 +1150,19 @@ class Graph:
                         event = _base_event("resolved")
                         if causal and last_run_dep_values is not None:
                             event["trigger_dep_index"] = last_trigger_dep_index
+                            trigger_dep = None
                             if (
                                 isinstance(last_trigger_dep_index, int)
                                 and last_trigger_dep_index >= 0
                                 and isinstance(n, NodeImpl)
                                 and last_trigger_dep_index < len(n._deps)
                             ):
-                                event["trigger_dep_name"] = n._deps[last_trigger_dep_index].name
+                                trigger_dep = n._deps[last_trigger_dep_index]
+                                event["trigger_dep_name"] = trigger_dep.name
+                            # V0 backfill: include triggering dep's version (§6.0b).
+                            tv = trigger_dep.v if trigger_dep is not None else None
+                            if tv is not None:
+                                event["trigger_version"] = {"id": tv.id, "version": tv.version}
                             event["dep_values"] = list(last_run_dep_values)
                         result.events.append(event)
                     elif t is MessageType.COMPLETE:
@@ -1805,6 +1840,21 @@ class Graph:
             if not isinstance(na, dict) or not isinstance(nb, dict):
                 if na != nb:
                     changed_nodes.append({"path": p, "field": "node", "from": na, "to": nb})
+                continue
+            # V0 optimization: skip value comparison when both nodes have matching versions.
+            av = na.get("v")
+            bv = nb.get("v")
+            if (
+                av is not None
+                and bv is not None
+                and av.get("id") == bv.get("id")
+                and av.get("version") == bv.get("version")
+            ):
+                for key in ("type", "status"):
+                    va = na.get(key)
+                    vb = nb.get(key)
+                    if va != vb:
+                        changed_nodes.append({"path": p, "field": key, "from": va, "to": vb})
                 continue
             for key in ("type", "status", "value"):
                 va = na.get(key)

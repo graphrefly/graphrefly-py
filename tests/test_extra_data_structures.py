@@ -117,6 +117,16 @@ def test_reactive_list_ops() -> None:
     assert _val(lst.items.get()) == (0,)
 
 
+def test_reactive_list_snapshot_includes_v0_when_backing_node_versioned() -> None:
+    lst = reactive_list()
+    lst.items._apply_versioning(0)
+    lst.append(1)
+    snap = lst.items.get()
+    assert isinstance(snap, Versioned)
+    assert snap.v0 is not None
+    assert isinstance(snap.v0["id"], str)
+
+
 def test_pubsub_lazy_topic() -> None:
     hub = pubsub()
     t = hub.topic("x")

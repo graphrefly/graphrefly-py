@@ -1,37 +1,37 @@
-/* GraphReFly PY — A-water-ink theme (Starlight tokens) */
+/* GraphReFly PY — Obsidian Scroll theme (Starlight tokens) */
 
 @import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Noto+Serif+SC:wght@400;600;700;900&family=Source+Sans+3:wght@300;400;500;600;700&display=swap");
 
 :root {
-	--gr-ink: #0a0a0f;
-	--gr-ink-raised: #0e0e14;
-	--gr-aqua: #4de8c2;
-	--gr-aqua-dim: #2bb89a;
-	--gr-warm: #c4a882;
-	--gr-stone: #6b7280;
-	--gr-parchment: #f5f0e8;
-	--gr-purple: #a78bfa;
-	--gr-border: #1a1a24;
-	--gr-border-subtle: #141418;
+	--gr-ink: #050508;
+	--gr-ink-raised: #080a0c;
+	--gr-aqua: #00d4e8;
+	--gr-aqua-dim: #00a8c0;
+	--gr-warm: #407888;
+	--gr-stone: #5a7a88;
+	--gr-parchment: #d8e4e8;
+	--gr-purple: #0098b0;
+	--gr-border: #10181c;
+	--gr-border-subtle: #0c1418;
 }
 
-/* Starlight dark shell — ink palette */
+/* Starlight dark shell — obsidian palette */
 :root[data-theme="dark"] {
 	--sl-color-white: var(--gr-parchment);
-	--sl-color-gray-1: #e8e2d8;
+	--sl-color-gray-1: #c0d0d8;
 	--sl-color-gray-2: var(--gr-stone);
-	--sl-color-gray-3: #555b66;
-	--sl-color-gray-4: #3d424d;
+	--sl-color-gray-3: #4a6068;
+	--sl-color-gray-4: #2a3840;
 	--sl-color-gray-5: var(--gr-border);
 	--sl-color-gray-6: var(--gr-ink-raised);
 	--sl-color-black: var(--gr-ink);
 
-	--sl-color-accent-low: #0d3d35;
+	--sl-color-accent-low: #0a2830;
 	--sl-color-accent: var(--gr-aqua);
-	--sl-color-accent-high: #7df0d5;
+	--sl-color-accent-high: #40e8f8;
 
 	--sl-color-bg: var(--gr-ink);
-	--sl-color-bg-nav: rgba(10, 10, 15, 0.88);
+	--sl-color-bg-nav: rgba(5, 5, 8, 0.88);
 	--sl-color-bg-sidebar: var(--gr-ink);
 	--sl-color-hairline: var(--gr-border-subtle);
 	--sl-color-hairline-shade: var(--gr-border-subtle);
@@ -44,14 +44,14 @@
 header.sl-header {
 	backdrop-filter: blur(16px) saturate(1.2);
 	-webkit-backdrop-filter: blur(16px) saturate(1.2);
-	border-bottom: 1px solid rgba(77, 232, 194, 0.06);
+	border-bottom: 1px solid rgba(0, 212, 232, 0.06);
 }
 
 @media (max-width: 50rem) {
 	header.sl-header {
 		backdrop-filter: none;
 		-webkit-backdrop-filter: none;
-		background: rgba(10, 10, 15, 0.95);
+		background: rgba(5, 5, 8, 0.95);
 	}
 }
 
@@ -95,7 +95,7 @@ nav.sidebar .large {
 }
 
 .sl-markdown-content a:hover {
-	color: #7df0d5;
+	color: #40e8f8;
 }
 
 .sl-markdown-content :not(pre) > code {
@@ -108,7 +108,7 @@ nav.sidebar .large {
 }
 
 .sl-markdown-content pre {
-	border: 1px solid rgba(196, 168, 130, 0.12);
+	border: 1px solid rgba(0, 212, 232, 0.1);
 	border-radius: 10px;
 	box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25);
 }
@@ -172,8 +172,8 @@ html:has(.gr-home) {
 }
 
 html:not([data-has-sidebar]) .page > header.header {
-	background: rgba(10, 10, 15, 0.42) !important;
-	border-bottom: 1px solid rgba(77, 232, 194, 0.06);
+	background: rgba(5, 5, 8, 0.42) !important;
+	border-bottom: 1px solid rgba(0, 212, 232, 0.06);
 }
 
 .content-panel:has(.gr-home) > .sl-container > .hero {
@@ -184,8 +184,8 @@ html:not([data-has-sidebar]) .page > header.header {
 	margin: 0;
 	padding: 1rem 1.1rem;
 	border-radius: 10px;
-	border: 1px solid rgba(196, 168, 130, 0.12);
-	background: rgba(10, 10, 15, 0.8);
+	border: 1px solid rgba(0, 212, 232, 0.1);
+	background: rgba(5, 5, 8, 0.8);
 	font-family: var(--sl-font-mono);
 	font-size: 0.85rem;
 	line-height: 1.5;
@@ -213,6 +213,6 @@ body::after {
 
 /* Selection */
 ::selection {
-	background: rgba(77, 232, 194, 0.22);
+	background: rgba(0, 212, 232, 0.22);
 	color: #fff;
 }

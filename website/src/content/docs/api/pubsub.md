@@ -1,9 +1,9 @@
 ---
 title: 'pubsub'
-description: 'Returns a new :class:`PubSubHub` (empty topic registry).'
+description: 'Create a new :class:`PubSubHub` with an empty topic registry.'
 ---
 
-Returns a new :class:`PubSubHub` (empty topic registry).
+Create a new :class:`PubSubHub` with an empty topic registry.
 
 ## Signature
 
@@ -13,4 +13,15 @@ def pubsub() -> PubSubHub
 
 ## Documentation
 
-Returns a new :class:`PubSubHub` (empty topic registry).
+Create a new :class:`PubSubHub` with an empty topic registry.
+
+Returns:
+    A fresh :class:`PubSubHub` instance.
+
+Example:
+    ```python
+    from graphrefly.extra import pubsub
+    hub = pubsub()
+    hub.publish("topic", 1)
+    assert hub.topic("topic").get() == 1
+    ```

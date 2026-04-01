@@ -352,12 +352,12 @@ Design reference: `archive/docs/SESSION-serialization-memory-footprint.md`, `~/s
 - [x] `advance_version()` on every DATA handled in local lifecycle (derived skips bump via RESOLVED when unchanged)
 - [x] `describe_node()` includes `{ id, version }` when V0 active
 - [x] `graph.snapshot()` / describe path includes per-node `v` when versioning enabled
-- [ ] `Graph.diff()` uses version counters to skip unchanged nodes — O(changes) not O(graph size)
-- [ ] `graph.set_versioning(level)` — default versioning level for new nodes in this graph
+- [x] `Graph.diff()` uses version counters to skip unchanged nodes — O(changes) not O(graph size)
+- [x] `graph.set_versioning(level)` — default versioning level for new nodes in this graph
 
 #### 6.0b — V0 backfill (post-implementation)
 
-- [ ] **Phase 5.4** (LLM tool integration): `gauges_as_context()` delta by version; `knobs_as_tools()` include version for conflict detection — plus Appendix B / describe schema updates for optional `v` as needed
+- [x] **Phase 5.4** (LLM tool integration): `gauges_as_context()` delta by version; `knobs_as_tools()` include version for conflict detection — plus Appendix B / describe schema updates for optional `v` as needed
 
 ### 6.1 — V1: + cid + prev (content addressing, linked history)
 

@@ -18,6 +18,11 @@ from graphrefly.core.guard import (
     record_mutation,
 )
 from graphrefly.core.protocol import Messages, MessageType, emit_with_batch, propagates_to_meta
+from graphrefly.core.subgraph_locks import (
+    acquire_subgraph_write_lock_with_defer,
+    ensure_registered,
+    union_nodes,
+)
 from graphrefly.core.versioning import (
     HashFn,
     NodeVersionInfo,
@@ -25,11 +30,6 @@ from graphrefly.core.versioning import (
     advance_version,
     create_versioning,
     default_hash,
-)
-from graphrefly.core.subgraph_locks import (
-    acquire_subgraph_write_lock_with_defer,
-    ensure_registered,
-    union_nodes,
 )
 
 # --- Status & typing (graphrefly-ts node.ts) ---------------------------------
@@ -739,6 +739,32 @@ class NodeImpl[T]:
     def v(self) -> NodeVersionInfo | None:
         """Versioning info (GRAPHREFLY-SPEC §7). ``None`` when versioning is not enabled."""
         return self._versioning
+
+    def _apply_versioning(
+        self,
+        level: VersioningLevel,
+        *,
+        id: str | None = None,
+        hash_fn: HashFn | None = None,
+    ) -> None:
+        """Retroactively apply versioning to a node created without it.
+
+        No-op if versioning is already enabled. Version starts at 0 regardless
+        of prior DATA emissions — it tracks changes from the moment versioning
+        is enabled, not historical ones.
+
+        Used by :meth:`Graph.set_versioning`.
+        """
+        if self._versioning is not None:
+            return
+        if hash_fn is not None:
+            self._hash_fn = hash_fn
+        self._versioning = create_versioning(
+            level,
+            self._cached,
+            id=id,
+            hash_fn=self._hash_fn,
+        )
 
     def _guard_and_record(
         self,

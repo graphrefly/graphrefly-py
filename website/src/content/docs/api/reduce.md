@@ -18,6 +18,9 @@ def reduce(  # noqa: A001 — roadmap API name
 
 Reduce to one value emitted when the source completes.
 
+Unlike RxJS, seed is always required. If the source completes without emitting DATA,
+the seed value is emitted (RxJS would throw without a seed).
+
 On an empty completion (no prior ``DATA``), emits ``seed``.
 
 Args:

@@ -22,28 +22,25 @@ def emit_with_batch(
 
 Deliver *messages* to *sink* with batch-aware phase-2 deferral.
 
-**Strategies** (single implementation; see ``docs/optimizations.md``):
+Args:
+    sink: Callable receiving a :class:`~graphrefly.core.protocol.Messages` list.
+    messages: The messages to deliver.
+    strategy: ``"partition"`` (default for :class:`~graphrefly.core.node.NodeImpl`)
+        splits messages into immediate vs phase-2 groups; ``"sequential"`` walks
+        each message in order and handles ``COMPLETE``/``ERROR`` after phase-2.
+    defer_when: ``"batching"`` (default) defers phase-2 while
+        :func:`is_batching` (depth or drain in progress); ``"depth"`` defers
+        only while batch depth &gt; 0.
+    subgraph_lock: When set, re-acquires the subgraph write lock around deferred
+        phase-2 calls to serialize batch drains with other writers.
 
-- ``strategy="partition"`` — graphrefly-ts ``emitWithBatch``: split the array
-  into immediate vs phase-2 groups; emit immediate once, then defer or emit
-  the phase-2 block. Used by :class:`~graphrefly.core.node.NodeImpl` ``down``.
-
-- ``strategy="sequential"`` — walk tuples in order; each COMPLETE/ERROR drains
-  pending phase-2 first (spec §1.3 #4). Used by tests and low-level protocol
-  helpers.
-
-**Defer predicate** (when to queue DATA/RESOLVED instead of calling *sink*):
-
-- ``defer_when="batching"`` — defer while :func:`is_batching` (depth **or**
-  flush-in-progress). Matches TS ``emitWithBatch`` behavior: during drain,
-  further phase-2 emissions are re-deferred to preserve strict DIRTY-before-DATA
-  ordering across the entire flush. Used by node hot path.
-
-- ``defer_when="depth"`` — defer only while ``batch`` depth &gt; 0 (not while
-  draining). Nested work during flush emits immediately. Use only when
-  re-deferral is explicitly unwanted.
-
-**Concurrency:** when *subgraph_lock* is the owning node (or any registry member
-in the same component), deferred phase-2 deliveries re-acquire
-:func:`~graphrefly.core.subgraph_locks.acquire_subgraph_write_lock_with_defer`
-around the sink call so batch drains stay serialized with other writers (roadmap 0.4).
+Example:
+    ```python
+    from graphrefly.core.protocol import emit_with_batch, MessageType, batch
+    received = []
+    sink = lambda msgs: received.extend(msgs)
+    with batch():
+        emit_with_batch(sink, [("DATA", 1), ("DATA", 2)])
+    # Both DATA messages flushed together after batch exits
+    assert len(received) == 2
+    ```

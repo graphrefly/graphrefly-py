@@ -1,16 +1,15 @@
 """Tests for node versioning (GRAPHREFLY-SPEC §7) — V0 and V1."""
 
-from graphrefly import node, state, derived, batch, describe_node
+from graphrefly import Graph, batch, derived, describe_node, node, state
 from graphrefly.core.protocol import MessageType
 from graphrefly.core.versioning import (
     V0,
     V1,
-    create_versioning,
     advance_version,
+    create_versioning,
     default_hash,
     is_v1,
 )
-
 
 # ---------------------------------------------------------------------------
 # Unit: versioning module
@@ -174,7 +173,9 @@ class TestNodeV1Versioning:
         unsub()
 
     def test_custom_hash_function(self):
-        custom_hash = lambda v: f"custom-{v}"
+        def custom_hash(v):
+            return f"custom-{v}"
+
         s = state(42, versioning=1, versioning_hash=custom_hash)
         assert s.v.cid == "custom-42"
 
@@ -233,3 +234,65 @@ class TestVersioningEffect:
         # Effects don't emit DATA, so version doesn't advance
         assert e.v.version == 0
         unsub()
+
+
+class TestApplyVersioning:
+    def test_retroactively_adds_v0_to_node_without_versioning(self):
+        s = state(42)
+        assert s.v is None
+        s._apply_versioning(0)
+        assert s.v is not None
+        assert s.v.version == 0
+        assert isinstance(s.v.id, str)
+
+    def test_noop_when_versioning_already_enabled(self):
+        s = state(42, versioning=0, versioning_id="keep-me")
+        s._apply_versioning(0, id="overwrite")
+        assert s.v is not None
+        assert s.v.id == "keep-me"
+
+    def test_retroactively_adds_v1_with_cid(self):
+        s = state("hello")
+        s._apply_versioning(1)
+        assert s.v is not None
+        assert is_v1(s.v)
+        assert isinstance(s.v.cid, str)
+
+
+class TestGraphVersioning:
+    def test_set_versioning_retroactively_applies_to_existing_nodes(self):
+        g = Graph("test")
+        a = state(1, name="a")
+        b = state(2, name="b")
+        g.add("a", a)
+        g.add("b", b)
+        assert a.v is None
+        assert b.v is None
+
+        g.set_versioning(0)
+
+        assert a.v is not None
+        assert a.v.version == 0
+        assert b.v is not None
+
+    def test_set_versioning_applies_to_newly_added_nodes(self):
+        g = Graph("test")
+        g.set_versioning(0)
+        c = state(3, name="c")
+        assert c.v is None
+        g.add("c", c)
+        assert c.v is not None
+
+    def test_graph_diff_skips_value_compare_when_versions_match(self):
+        node_a = {
+            "type": "state",
+            "status": "settled",
+            "value": {"big": "object"},
+            "deps": [],
+            "meta": {},
+            "v": {"id": "x", "version": 5},
+        }
+        a = {"name": "g", "nodes": {"n": node_a}, "edges": [], "subgraphs": []}
+        b = {"name": "g", "nodes": {"n": dict(node_a)}, "edges": [], "subgraphs": []}
+        result = Graph.diff(a, b)
+        assert result.nodesChanged == []

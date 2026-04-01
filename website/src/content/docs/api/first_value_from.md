@@ -1,9 +1,9 @@
 ---
 title: 'first_value_from'
-description: 'The synchronous bridge: block until the first ``DATA`` or terminal ``ERROR``.'
+description: 'Block until the first ``DATA`` value or a terminal ``ERROR`` arrives.'
 ---
 
-The synchronous bridge: block until the first ``DATA`` or terminal ``ERROR``.
+Block until the first ``DATA`` value or a terminal ``ERROR`` arrives.
 
 ## Signature
 
@@ -17,13 +17,26 @@ def first_value_from(
 
 ## Documentation
 
-The synchronous bridge: block until the first ``DATA`` or terminal ``ERROR``.
+Block until the first ``DATA`` value or a terminal ``ERROR`` arrives.
 
-On ``COMPLETE`` without prior ``DATA``, raises :class:`StopIteration`. With *timeout*,
-raises :class:`TimeoutError` if no terminal message arrives in time.
+On ``COMPLETE`` without prior ``DATA``, raises :exc:`StopIteration`. With
+*timeout*, raises :exc:`TimeoutError` if no terminal message arrives in time.
 
-## Cross-language note
+Args:
+    source: The node to await the first value from.
+    timeout: Optional timeout in seconds.
 
-**Cross-language note:** Python exposes `first_value_from` as a synchronous blocking call.
-The TypeScript equivalent `firstValueFrom` returns a `Promise`.
-Both escape-hatch semantics are equivalent; the implementation differs due to language concurrency models.
+Returns:
+    The first ``DATA`` payload received.
+
+Notes:
+    Python exposes this as a synchronous blocking call. The TypeScript equivalent
+    ``firstValueFrom`` returns a ``Promise``; both provide the same escape-hatch
+    semantics with implementation differences due to language concurrency models.
+
+Example:
+    ```python
+    from graphrefly.extra import of
+    from graphrefly.extra.sources import first_value_from
+    assert first_value_from(of(42)) == 42
+    ```

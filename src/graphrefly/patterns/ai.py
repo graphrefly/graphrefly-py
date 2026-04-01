@@ -94,6 +94,9 @@ class ToolDefinition:
     description: str
     parameters: dict[str, Any]  # JSON Schema
     handler: Callable[..., Any] = field(default=lambda args: None)
+    version: dict[str, Any] | None = field(default=None)
+    """V0 version of the backing node at ``knobs_as_tools()`` call time (§6.0b).
+    Snapshot — re-call ``knobs_as_tools()`` to refresh."""
 
 
 @runtime_checkable
@@ -1620,12 +1623,14 @@ def knobs_as_tools(
 
             return handler
 
+        nv = node_desc.get("v")
         definitions_list.append(
             ToolDefinition(
                 name=path,
                 description=description,
                 parameters=parameter_schema,
                 handler=_make_handler(_graph, _path, _actor),
+                version={"id": nv["id"], "version": nv["version"]} if nv is not None else None,
             )
         )
 
@@ -1642,6 +1647,7 @@ def gauges_as_context(
     *,
     group_by_tags: bool = True,
     separator: str = "\n",
+    since_version: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     """Format a graph's readable (gauge) nodes as a context string for LLM
     system prompts.
@@ -1654,6 +1660,10 @@ def gauges_as_context(
         actor: Optional actor for guard-scoped describe.
         group_by_tags: Group gauges by ``meta.tags`` (default ``True``).
         separator: Separator between gauge lines (default ``"\\n"``).
+        since_version: V0 delta mode (§6.0b): map of ``path → {"id", "version"}``.
+            Only include nodes whose ``v.version`` exceeds the stored version
+            AND whose ``v.id`` matches. Nodes without V0, not in the map, or
+            with a different id (replacement) are always included.
 
     Returns:
         A formatted string ready for system prompt injection.
@@ -1671,6 +1681,17 @@ def gauges_as_context(
         fmt = meta.get("format")
         if not desc and not fmt:
             continue
+        # V0 delta filter: skip nodes unchanged since last seen version (§6.0b).
+        if since_version is not None:
+            nv = node_desc.get("v")
+            if nv is not None:
+                last_seen = since_version.get(path)
+                if (
+                    last_seen is not None
+                    and last_seen.get("id") == nv.get("id")
+                    and nv.get("version", 0) <= last_seen.get("version", -1)
+                ):
+                    continue
 
         label = desc or path
         value = node_desc.get("value")

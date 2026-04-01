@@ -1,9 +1,9 @@
 ---
 title: 'PubSubHub'
-description: 'Lazy per-topic :func:`~graphrefly.core.sugar.state` nodes (created on first access).'
+description: 'Lazy per-topic source node registry for pub/sub messaging.'
 ---
 
-Lazy per-topic :func:`~graphrefly.core.sugar.state` nodes (created on first access).
+Lazy per-topic source node registry for pub/sub messaging.
 
 ## Signature
 
@@ -13,7 +13,20 @@ class PubSubHub
 
 ## Documentation
 
-Lazy per-topic :func:`~graphrefly.core.sugar.state` nodes (created on first access).
+Lazy per-topic source node registry for pub/sub messaging.
 
-Thread-safe topic registry. Each topic is an independent manual source node; use
-:meth:`publish` to push values with two-phase ``DIRTY`` then ``DATA``.
+Topics are created on first access as independent manual source nodes.
+Use :meth:`publish` to push values via the two-phase ``DIRTY`` then ``DATA``
+protocol. Thread-safe.
+
+Example:
+    ```python
+    from graphrefly.extra import pubsub
+    from graphrefly.extra.sources import for_each
+    hub = pubsub()
+    log = []
+    unsub = for_each(hub.topic("events"), log.append)
+    hub.publish("events", "hello")
+    unsub()
+    assert log == ["hello"]
+    ```

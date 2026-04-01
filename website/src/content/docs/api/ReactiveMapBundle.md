@@ -21,6 +21,15 @@ Attributes:
         Uses versioned snapshots for efficient ``RESOLVED`` deduplication.
 
 Notes:
-    TTL deadlines use :func:`time.monotonic` (seconds). Expired keys remain in the
-    internal store until the next mutation or :meth:`prune`. LRU order is updated on
+    TTL deadlines use :func:`~graphrefly.core.clock.monotonic_ns`
+    (nanoseconds). Expired keys remain in the internal store until the
+    next mutation or :meth:`prune`. LRU order is updated on
     ``set``, not on dict reads from ``data``.
+
+Example:
+    ```python
+    from graphrefly.extra import reactive_map
+    m = reactive_map(max_size=10)
+    m.set("a", 1)
+    assert m.data.get().value["a"] == 1
+    ```

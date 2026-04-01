@@ -139,6 +139,19 @@ def test_events_carry_timestamp_ns_and_seq() -> None:
     app.destroy()
 
 
+def test_events_carry_v0_identity_when_event_log_is_versioned() -> None:
+    app = cqrs("test")
+    app.event("order_placed")
+    app._event_logs["order_placed"]["log"].entries._apply_versioning(0)
+    app.command("place_order", lambda payload, actions: actions.emit("order_placed", payload))
+    app.dispatch("place_order", {"id": "1"})
+    entries = _snap_entries(app.event("order_placed").get())
+    evt = entries[0]
+    assert evt.v0 is not None
+    assert isinstance(evt.v0["id"], str)
+    app.destroy()
+
+
 def test_seq_increments_monotonically() -> None:
     app = cqrs("test")
     app.event("a")

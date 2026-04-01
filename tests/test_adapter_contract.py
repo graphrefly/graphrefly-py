@@ -8,14 +8,10 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any
 from unittest.mock import MagicMock
 
-import pytest
-
-from graphrefly.core import MessageType, node
+from graphrefly.core import MessageType
 from graphrefly.extra.sources import from_webhook, from_websocket
-
 
 # ---------------------------------------------------------------------------
 # Helpers

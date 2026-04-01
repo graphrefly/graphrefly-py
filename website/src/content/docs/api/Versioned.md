@@ -14,3 +14,7 @@ class Versioned(NamedTuple)
 ## Documentation
 
 Immutable snapshot paired with a monotonic version for ``equals``.
+
+When the backing node has V0 versioning (GRAPHREFLY-SPEC §7), ``v0``
+carries the node's identity (``id``) and version counter for
+diff-friendly observation and cross-snapshot dedup (roadmap §6.0b).

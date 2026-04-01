@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 from graphrefly.core.dynamic_node import DynamicNodeImpl
 from graphrefly.core.guard import access_hint_for_guard
 from graphrefly.core.node import NodeImpl  # noqa: TC001 — runtime type for describe_node
-from graphrefly.core.versioning import V1, is_v1
+from graphrefly.core.versioning import is_v1
 
 __all__ = ["describe_node", "meta_snapshot"]
 

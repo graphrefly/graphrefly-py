@@ -1,9 +1,9 @@
 ---
 title: 'state'
-description: 'Manual source: ``node([], null, { initial, ...opts })``.'
+description: 'Create a manually-settable source node with a fixed initial value.'
 ---
 
-Manual source: ``node([], null, { initial, ...opts })``.
+Create a manually-settable source node with a fixed initial value.
 
 ## Signature
 
@@ -13,4 +13,19 @@ def state(initial: Any, **opts: Any) -> Node[Any]
 
 ## Documentation
 
-Manual source: ``node([], null, { initial, ...opts })``.
+Create a manually-settable source node with a fixed initial value.
+
+Args:
+    initial: The initial cached value for the node.
+    **opts: Additional node options passed through to :func:`~graphrefly.core.node.node`.
+
+Returns:
+    A :class:`~graphrefly.core.node.Node` with no deps and no compute function.
+
+Example:
+    ```python
+    from graphrefly import state
+    counter = state(0, name="counter")
+    counter.down([("DATA", 1)])
+    assert counter.get() == 1
+    ```
