@@ -33,6 +33,7 @@ EXTRA_MODULES: list[tuple[str, Path]] = [
     ("checkpoint", REPO / "src/graphrefly/extra/checkpoint.py"),
     ("resilience", REPO / "src/graphrefly/extra/resilience.py"),
     ("data_structures", REPO / "src/graphrefly/extra/data_structures.py"),
+    ("reactive_layout", REPO / "src/graphrefly/extra/reactive_layout.py"),
 ]
 WEBSITE = Path(__file__).resolve().parent.parent
 OUT = WEBSITE / "src/content/docs/api"

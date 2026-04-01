@@ -262,7 +262,13 @@ Pulsar-inspired messaging features for topic retention, cursor consumers, and qu
 - [x] `agent_loop()` → Graph
 - [x] `from_llm()` (adapter)
 - [x] `tool_registry()` → Graph
-- [x] `agent_memory()` → Graph — `distill()` + store/compact/size; optional LLM hooks; in-factory `knowledge_graph` / `vector_index` / … composition is future work (compose externally today)
+- [x] `agent_memory()` → Graph — `distill()` + store/compact/size; optional LLM hooks; in-factory composition of `knowledge_graph` / `vector_index` / `light_collection` / `decay` / `auto_checkpoint`
+- [x] In-factory composition: opt-in via `vector_dimensions`/`embed_fn`, `enable_knowledge_graph`/`entity_fn`, `tiers` dict
+- [x] 3D admission filter: `admission_filter_3d(score_fn, persistence_threshold, personal_value_threshold, require_structured)` — pluggable into `admission_filter`
+- [x] 3-tier storage: permanent (`light_collection`, `permanent_filter`), active (with `decay()` scoring + `max_active`), archived (`auto_checkpoint` adapter)
+- [x] Default retrieval pipeline: vector search → knowledge_graph adjacency expansion → decay ranking → budget packing — reactive derived node via `retrieve(query)`
+- [x] Default reflection: periodic LLM consolidation via built-in `consolidate_trigger` from `from_timer(interval)` when `consolidate_fn` provided
+- [x] Memory observability: `retrieval_trace` node captures pipeline stages (vector_candidates, graph_expanded, ranked, packed)
 - [x] `llm_extractor(system_prompt, opts)` → `extract_fn` for `distill()` — handles structured and unstructured LLM output, deduplicates against existing memories
 - [x] `llm_consolidator(system_prompt, opts)` → `consolidate_fn` for `distill()` — clusters and merges related memories via LLM
 - [x] `system_prompt_builder()`
@@ -356,7 +362,33 @@ Connectors for the universal reduction layer (Phase 8). Each wraps an external p
 - [ ] Free-threaded Python 3.14 benchmark suite
 - [ ] Community launch
 
-### 7.1 — Showcase demos (Pyodide/WASM lab)
+### 7.1 — Reactive layout engine (Pretext-on-GraphReFly)
+
+Reactive text measurement and layout without DOM thrashing. Inspired by [Pretext](https://github.com/chenglou/pretext) but rebuilt as a GraphReFly graph — the layout is inspectable (`describe()`), snapshotable, and debuggable. Standalone reusable pattern, also powers the demo shell (7.3). Design reference: `graphrefly-ts/docs/demo-and-test-strategy.md` §2b.
+
+Two-tier DX: out-of-the-box `reactive_layout(adapter, text, font, line_height, max_width)` for common cases; advanced `MeasurementAdapter` protocol for custom content types and environments.
+
+#### Text layout (Pretext parity)
+
+- [x] `MeasurementAdapter` protocol: `measure_segment(text, font) → {"width": float}`, `clear_cache()` — pluggable measurement backend; tests use `MockMeasureAdapter` with deterministic widths
+- [x] `state("text")` → `derived("segments")` — text segmentation (words, graphemes, CJK); adapter `measure_segment()` for segment widths, cached per `dict[font, dict[segment, width]]`
+- [x] Text analysis pipeline (ported from Pretext): whitespace normalization, word segmentation, punctuation merging, CJK per-grapheme splitting, soft-hyphen/hard-break support
+- [x] `derived("line-breaks")` — segments + max-width → greedy line breaking (no DOM): trailing-space hang, `overflow-wrap: break-word` via grapheme widths, soft hyphens, hard breaks
+- [x] `derived("height")`, `derived("char-positions")` — total height, per-character `{x, y, width, height}` for hit testing
+- [x] Measurement cache with RESOLVED optimization — unchanged text/font → no re-measure
+- [x] `meta: { cache-hit-rate, segment-count, layout-time-ns }` for observability
+- [x] `reactive_layout(adapter, *, text, font, line_height, max_width)` → `ReactiveLayoutBundle` — convenience factory
+
+#### MeasurementAdapter implementations (pluggable backends)
+
+- [ ] `PillowMeasureAdapter` (default, server) — Pillow `ImageFont.getlength()`, font cache
+- [ ] `PrecomputedAdapter` (server/snapshot) — reads from pre-computed metrics dict, zero measurement at runtime
+
+#### Standalone extraction
+
+- [ ] Extractable as standalone pattern (`reactive-layout`) independent of demo shell
+
+### 7.2 — Showcase demos (Pyodide/WASM lab)
 
 Python demos run in Pyodide/WASM lab on the graphrefly-py docs site. Each mirrors the TS demo's graph logic (same topology, Python APIs) with a simplified visual layer. Detailed ACs in `graphrefly-ts/docs/demo-and-test-strategy.md`.
 
@@ -365,7 +397,7 @@ Python demos run in Pyodide/WASM lab on the graphrefly-py docs site. Each mirror
 - [ ] **Demo 3: Real-Time Monitoring Dashboard** — 4.1 + 4.2 + 4.3 + 3.1 + 3.2 (Pyodide)
 - [ ] **Demo 4: AI Documentation Assistant** — 4.3 + 4.4 + 3.2b + 3.2 + 3.1 (Pyodide, mock LLM)
 
-### 7.1b — Universal reduction demos
+### 7.2b — Universal reduction demos
 
 Demos exercising Phase 8 reduction layer patterns. Design reference: `~/src/graphrefly-ts/archive/docs/SESSION-universal-reduction-layer.md`.
 
@@ -373,7 +405,7 @@ Demos exercising Phase 8 reduction layer patterns. Design reference: `~/src/grap
 - [ ] **Demo 6: AI Agent Observatory** — 4.4 + 8.1 + 8.4 (instrument agent_loop with full tracing → LLM distills "why agent went off-track")
 - [ ] **Demo 7: Log Reduction Pipeline** — 5.3b + 8.1 + 8.2 (from_syslog 10K lines/sec → 4-layer reduction → 5 prioritized items/minute)
 
-### 7.2 — Scenario tests (headless demo logic)
+### 7.3 — Scenario tests (headless demo logic)
 
 Each demo has a headless scenario test mirroring TS demo AC lists — no UI, mock LLM.
 
@@ -382,7 +414,7 @@ Each demo has a headless scenario test mirroring TS demo AC lists — no UI, moc
 - [ ] `tests/scenarios/test_monitoring_dashboard.py`
 - [ ] `tests/scenarios/test_docs_assistant.py`
 
-### 7.3 — Inspection stress & adversarial tests
+### 7.4 — Inspection stress & adversarial tests
 
 - [ ] `describe()` consistency during batch drain
 - [ ] `observe()` structured/causal/timeline correctness under concurrent updates
@@ -396,7 +428,7 @@ Each demo has a headless scenario test mirroring TS demo AC lists — no UI, moc
 - [ ] `collection()` eviction during derived read (no stale refs)
 - [ ] Thread-safety: concurrent factory composition under per-subgraph locks
 
-### 7.4 — Foreseen building blocks (to be exposed by demos)
+### 7.5 — Foreseen building blocks (to be exposed by demos)
 
 Items expected to emerge during demo implementation. Validate need, then add to the appropriate phase.
 

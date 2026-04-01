@@ -45,6 +45,19 @@ from graphrefly.extra.data_structures import (
     reactive_log,
     reactive_map,
 )
+from graphrefly.extra.reactive_layout import (
+    CharPosition,
+    LayoutLine,
+    LineBreaksResult,
+    MeasurementAdapter,
+    PreparedSegment,
+    ReactiveLayoutBundle,
+    SegmentBreakKind,
+    analyze_and_measure,
+    compute_char_positions,
+    compute_line_breaks,
+    reactive_layout,
+)
 from graphrefly.extra.resilience import (
     CircuitBreaker,
     CircuitOpenError,
@@ -263,5 +276,16 @@ __all__ = [
     "VerifiableBundle",
     "distill",
     "verifiable",
+    "CharPosition",
+    "LayoutLine",
+    "LineBreaksResult",
+    "MeasurementAdapter",
+    "PreparedSegment",
+    "ReactiveLayoutBundle",
+    "SegmentBreakKind",
+    "analyze_and_measure",
+    "compute_char_positions",
+    "compute_line_breaks",
+    "reactive_layout",
     "zip",
 ]

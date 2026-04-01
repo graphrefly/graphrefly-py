@@ -8,19 +8,29 @@ from __future__ import annotations
 
 import inspect
 import json
+import math
 import threading
 from collections.abc import AsyncIterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from graphrefly.core.clock import monotonic_ns
 from graphrefly.core.node import Node
 from graphrefly.core.protocol import MessageType, batch
-from graphrefly.core.sugar import derived, producer, state
+from graphrefly.core.sugar import derived, effect, producer, state
 from graphrefly.extra.composite import distill
 from graphrefly.extra.data_structures import reactive_log
-from graphrefly.extra.sources import first_value_from, from_any
+from graphrefly.extra.sources import first_value_from, from_any, from_timer
 from graphrefly.extra.tier2 import switch_map
 from graphrefly.graph.graph import Graph
+from graphrefly.patterns.memory import (
+    KnowledgeGraph,
+    VectorIndex,
+    decay,
+    knowledge_graph,
+    light_collection,
+    vector_index,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -632,21 +642,112 @@ def llm_consolidator(
 
 
 # ---------------------------------------------------------------------------
+# 3D Admission Scoring
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class AdmissionScores:
+    """Scores for the three admission dimensions (each 0–1)."""
+
+    persistence: float
+    structure: float
+    personal_value: float
+
+
+def _default_admission_scorer(_raw: Any) -> AdmissionScores:
+    return AdmissionScores(persistence=0.5, structure=0.5, personal_value=0.5)
+
+
+def admission_filter_3d(
+    *,
+    score_fn: Callable[[Any], AdmissionScores] | None = None,
+    persistence_threshold: float = 0.3,
+    personal_value_threshold: float = 0.3,
+    require_structured: bool = False,
+) -> Callable[[Any], bool]:
+    """Create a 3D admission filter for ``agent_memory``'s ``admission_filter``."""
+    scorer = score_fn or _default_admission_scorer
+
+    def _filter(raw: Any) -> bool:
+        scores = scorer(raw)
+        if scores.persistence < persistence_threshold:
+            return False
+        if scores.personal_value < personal_value_threshold:
+            return False
+        if require_structured and scores.structure <= 0:
+            return False
+        return True
+
+    return _filter
+
+
+# ---------------------------------------------------------------------------
+# Memory Tiers
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalEntry:
+    """A single entry in a retrieval result, with causal trace metadata."""
+
+    key: str
+    value: Any
+    score: float
+    sources: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalTrace:
+    """Causal trace for a retrieval run."""
+
+    vector_candidates: tuple[Any, ...]
+    graph_expanded: tuple[str, ...]
+    ranked: tuple[RetrievalEntry, ...]
+    packed: tuple[RetrievalEntry, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalQuery:
+    """A retrieval query."""
+
+    text: str | None = None
+    vector: tuple[float, ...] | None = None
+    entity_ids: tuple[str, ...] | None = None
+
+
+_DEFAULT_DECAY_RATE = math.log(2) / (7 * 86_400)  # 7-day half-life
+
+
+# ---------------------------------------------------------------------------
 # agent_memory
 # ---------------------------------------------------------------------------
 
 
 class AgentMemoryGraph(Graph):
-    """Pre-wired agentic memory graph: ``distill()`` with store / compact / size.
+    """Pre-wired agentic memory graph.
 
-    Optional LLM-backed extraction and consolidation; optional ``admission_filter``.
-    Composing ``knowledge_graph``, ``vector_index``, ``collection``, ``decay``, and
-    checkpointing inside this factory is roadmap follow-up; compose them externally today.
+    Composes ``distill()`` with optional ``knowledge_graph()``,
+    ``vector_index()``, ``light_collection()`` (permanent tier),
+    ``decay()``, and ``auto_checkpoint()`` (archive tier). Supports 3D
+    admission scoring, a default retrieval pipeline, periodic reflection,
+    and retrieval observability traces.
     """
 
-    __slots__ = ("compact", "distill_bundle", "size_node")
+    __slots__ = (
+        "_keepalive_subs",
+        "compact",
+        "distill_bundle",
+        "kg",
+        "memory_tiers",
+        "retrieval",
+        "retrieval_trace",
+        "retrieve",
+        "size_node",
+        "vectors",
+    )
 
-    def __init__(
+    def __init__(  # noqa: C901, PLR0912, PLR0915
         self,
         name: str,
         source: Any,
@@ -662,11 +763,20 @@ class AgentMemoryGraph(Graph):
         budget: float = 2000,
         context: Any | None = None,
         admission_filter: Callable[[Any], bool] | None = None,
+        # New: in-factory composition
+        vector_dimensions: int | None = None,
+        embed_fn: Callable[[Any], tuple[float, ...] | None] | None = None,
+        enable_knowledge_graph: bool = False,
+        entity_fn: Callable[[str, Any], dict[str, Any] | None] | None = None,
+        tiers: dict[str, Any] | None = None,
+        retrieval_opts: dict[str, Any] | None = None,
+        reflection: dict[str, Any] | None = None,
         opts: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(name, opts)
+        self._keepalive_subs: list[Callable[[], None]] = []
 
-        # Resolve extract_fn — wrap with null guard so admission-filtered None skips extraction
+        # --- Extract function resolution ---
         raw_extract: Callable[[Any, Mapping[str, Any]], Any]
         if extract_fn is not None:
             raw_extract = extract_fn
@@ -681,7 +791,7 @@ class AgentMemoryGraph(Graph):
                 return {"upsert": []}
             return raw_extract(raw, existing)
 
-        # Optional admission filter
+        # --- Admission filter ---
         filtered_source = source
         if admission_filter is not None:
             src_node = from_any(source)
@@ -693,14 +803,24 @@ class AgentMemoryGraph(Graph):
 
             filtered_source = derived([src_node], _filter, name="admissionFilter")
 
-        # Resolve consolidate_fn
+        # --- Consolidation ---
         resolved_consolidate: Callable[[Mapping[str, Any]], Any] | None = None
         if consolidate_fn is not None:
             resolved_consolidate = consolidate_fn
         elif adapter is not None and consolidate_prompt is not None:
             resolved_consolidate = llm_consolidator(consolidate_prompt, adapter=adapter)
 
-        # Build distill bundle
+        # --- Reflection: default consolidate_trigger from from_timer ---
+        effective_trigger = consolidate_trigger
+        if (
+            effective_trigger is None
+            and resolved_consolidate is not None
+            and (reflection is None or reflection.get("enabled", True))
+        ):
+            interval_s = (reflection or {}).get("interval", 300.0)
+            effective_trigger = from_timer(interval_s, period=interval_s)
+
+        # --- Build distill bundle ---
         bundle = distill(
             filtered_source,
             resolved_extract,
@@ -709,19 +829,297 @@ class AgentMemoryGraph(Graph):
             budget=budget,
             context=context,
             consolidate=resolved_consolidate,
-            consolidate_trigger=consolidate_trigger,
+            consolidate_trigger=effective_trigger,
         )
 
         self.distill_bundle = bundle
         self.compact = bundle.compact
         self.size_node = bundle.size
 
-        # Register in graph
         self.add("store", bundle.store.data)
         self.add("compact", bundle.compact)
         self.add("size", bundle.size)
         self.connect("store", "compact")
         self.connect("store", "size")
+
+        # --- Vector index (optional) ---
+        self.vectors: VectorIndex[Any] | None = None
+        if vector_dimensions and vector_dimensions > 0 and embed_fn is not None:
+            self.vectors = vector_index(dimension=vector_dimensions)
+            self.add("vectorIndex", self.vectors.entries)
+
+        # --- Knowledge graph (optional) ---
+        self.kg: KnowledgeGraph[Any, str] | None = None
+        if enable_knowledge_graph:
+            self.kg = knowledge_graph(f"{name}-kg")
+            self.mount("kg", self.kg)
+
+        # --- 3-tier storage (optional) ---
+        self.memory_tiers: dict[str, Any] | None = None
+        if tiers is not None:
+            decay_rate = tiers.get("decay_rate", _DEFAULT_DECAY_RATE)
+            max_active = tiers.get("max_active", 1000)
+            archive_threshold = tiers.get("archive_threshold", 0.1)
+            permanent_filter_fn = tiers.get("permanent_filter", lambda _k, _m: False)
+
+            permanent = light_collection(name="permanent")
+            self.add("permanent", permanent.entries)
+            permanent_keys: set[str] = set()
+
+            def _tier_of(key: str) -> str:
+                if key in permanent_keys:
+                    return "permanent"
+                snap = bundle.store.data.get()
+                store_map = _extract_store_map(snap)
+                return "active" if key in store_map else "archived"
+
+            def _mark_permanent(key: str, value: Any) -> None:
+                permanent_keys.add(key)
+                permanent.upsert(key, value)
+
+            store_node = bundle.store.data
+            ctx_node = from_any(context) if context is not None else state(None)
+
+            # Track entry creation times for accurate decay age calculation
+            entry_created_at_ns: dict[str, int] = {}
+
+            def _classify_tiers(deps: list[Any], _actions: Any) -> None:
+                snap = deps[0]
+                ctx = deps[1]
+                store_map = _extract_store_map(snap)
+                now_ns = monotonic_ns()
+                to_archive: list[str] = []
+                to_permanent: list[tuple[str, Any]] = []
+
+                for key, mem in store_map.items():
+                    # Track creation time for new entries
+                    if key not in entry_created_at_ns:
+                        entry_created_at_ns[key] = now_ns
+
+                    if permanent_filter_fn(key, mem):
+                        to_permanent.append((key, mem))
+                        continue
+                    base_score = score(mem, ctx)
+                    created_ns = entry_created_at_ns.get(key, now_ns)
+                    age_seconds = (now_ns - created_ns) / 1e9
+                    decayed = decay(base_score, age_seconds, decay_rate)
+                    if decayed < archive_threshold:
+                        to_archive.append(key)
+
+                # Clean up creation times for removed entries
+                for key in list(entry_created_at_ns):
+                    if key not in store_map:
+                        del entry_created_at_ns[key]
+
+                for k, v in to_permanent:
+                    if k not in permanent_keys:
+                        _mark_permanent(k, v)
+
+                # Exclude permanent keys from active count
+                active_count = len(store_map) - len(permanent_keys)
+                if active_count > max_active:
+                    scored = sorted(
+                        ((k, score(m, ctx)) for k, m in store_map.items() if k not in permanent_keys),
+                        key=lambda x: x[1],
+                    )
+                    excess = active_count - max_active
+                    for i in range(min(excess, len(scored))):
+                        sk = scored[i][0]
+                        if sk not in to_archive:
+                            to_archive.append(sk)
+
+                if to_archive:
+                    with batch():
+                        for key in to_archive:
+                            bundle.store.delete(key)
+
+            tier_eff = effect([store_node, ctx_node], _classify_tiers)
+            self._keepalive_subs.append(tier_eff.subscribe(lambda _msgs: None))
+
+            archive_handle = None
+            if "archive_adapter" in tiers:
+                archive_handle = self.auto_checkpoint(
+                    tiers["archive_adapter"],
+                    **(tiers.get("archive_checkpoint_options") or {}),
+                )
+
+            self.memory_tiers = {
+                "permanent": permanent,
+                "tier_of": _tier_of,
+                "mark_permanent": _mark_permanent,
+                "archive_handle": archive_handle,
+            }
+
+        # --- Post-extraction hooks: vector + KG indexing ---
+        if self.vectors or self.kg:
+            _embed_fn = embed_fn
+            _entity_fn = entity_fn
+            _vectors = self.vectors
+            _kg = self.kg
+            store_node = bundle.store.data
+
+            def _index(deps: list[Any], _actions: Any) -> None:
+                snap = deps[0]
+                store_map = _extract_store_map(snap)
+                for key, mem in store_map.items():
+                    if _vectors and _embed_fn:
+                        vec = _embed_fn(mem)
+                        if vec is not None:
+                            _vectors.upsert(key, list(vec), mem)
+                    if _kg and _entity_fn:
+                        extracted = _entity_fn(key, mem)
+                        if extracted:
+                            for ent in extracted.get("entities", []):
+                                _kg.upsert_entity(ent["id"], ent["value"])
+                            for rel in extracted.get("relations", []):
+                                _kg.link(rel["from"], rel["to"], rel["relation"], rel.get("weight", 1.0))
+
+            idx_eff = effect([store_node], _index)
+            self._keepalive_subs.append(idx_eff.subscribe(lambda _msgs: None))
+
+        # --- Retrieval pipeline (optional) ---
+        self.retrieval: Node[Any] | None = None
+        self.retrieval_trace: Node[Any] | None = None
+        self.retrieve: Callable[[RetrievalQuery], tuple[RetrievalEntry, ...]] | None = None
+
+        if self.vectors or self.kg:
+            top_k = (retrieval_opts or {}).get("top_k", 20)
+            graph_depth = (retrieval_opts or {}).get("graph_depth", 1)
+            r_budget = budget
+            r_cost = cost
+            r_score = score
+            _vectors = self.vectors
+            _kg = self.kg
+
+            query_input: Node[Any] = state(None, name="retrievalQuery")
+            self.add("retrievalQuery", query_input)
+
+            ctx_node = from_any(context) if context is not None else state(None)
+            trace_state: Node[Any] = state(None, name="retrievalTrace")
+            self.add("retrievalTrace", trace_state)
+            self.retrieval_trace = trace_state
+
+            store_node = bundle.store.data
+
+            # Last trace captured during retrieval (no side-effect in derived)
+            last_trace: list[RetrievalTrace | None] = [None]
+
+            def _retrieve(deps: list[Any], _actions: Any) -> Any:
+                query = deps[0]
+                snap = deps[1]
+                ctx = deps[2]
+                if query is None:
+                    return ()
+                q: RetrievalQuery = query
+                store_map = _extract_store_map(snap)
+
+                candidate_map: dict[str, tuple[Any, set[str]]] = {}
+
+                # Stage 1: Vector search
+                vector_candidates: list[Any] = []
+                if _vectors and q.vector is not None:
+                    vector_candidates = list(_vectors.search(list(q.vector), top_k))
+                    for vc in vector_candidates:
+                        mem = store_map.get(vc.id)
+                        if mem is not None:
+                            candidate_map[vc.id] = (mem, {"vector"})
+
+                # Stage 2: KG expansion
+                graph_expanded: list[str] = []
+                if _kg:
+                    seed_ids = list(q.entity_ids or ()) + list(candidate_map.keys())
+                    visited: set[str] = set()
+                    frontier = seed_ids
+                    for _depth in range(graph_depth):
+                        next_frontier: list[str] = []
+                        for eid in frontier:
+                            if eid in visited:
+                                continue
+                            visited.add(eid)
+                            for edge in _kg.related(eid):
+                                tid = edge.to_id
+                                if tid not in visited:
+                                    next_frontier.append(tid)
+                                    mem = store_map.get(tid)
+                                    if mem is not None:
+                                        if tid in candidate_map:
+                                            candidate_map[tid][1].add("graph")
+                                        else:
+                                            candidate_map[tid] = (mem, {"graph"})
+                                        graph_expanded.append(tid)
+                        frontier = next_frontier
+
+                # Include remaining store entries
+                for key, mem in store_map.items():
+                    if key not in candidate_map:
+                        candidate_map[key] = (mem, {"store"})
+
+                # Stage 3: Score and rank
+                ranked: list[RetrievalEntry] = []
+                for key, (value, sources) in candidate_map.items():
+                    s = r_score(value, ctx)
+                    ranked.append(RetrievalEntry(key=key, value=value, score=s, sources=tuple(sources)))
+                ranked.sort(key=lambda e: e.score, reverse=True)
+
+                # Stage 4: Budget packing
+                packed: list[RetrievalEntry] = []
+                used_budget = 0.0
+                for entry in ranked:
+                    c = r_cost(entry.value)
+                    if used_budget + c > r_budget and packed:
+                        break
+                    packed.append(entry)
+                    used_budget += c
+
+                # Capture trace (no side-effect — stored for retrieval by _do_retrieve)
+                last_trace[0] = RetrievalTrace(
+                    vector_candidates=tuple(vector_candidates),
+                    graph_expanded=tuple(graph_expanded),
+                    ranked=tuple(ranked),
+                    packed=tuple(packed),
+                )
+
+                return tuple(packed)
+
+            retrieval_derived = derived(
+                [query_input, store_node, ctx_node],
+                _retrieve,
+                name="retrieval",
+                initial=(),
+            )
+            self.add("retrieval", retrieval_derived)
+            self.connect("retrievalQuery", "retrieval")
+            self.connect("store", "retrieval")
+            self._keepalive_subs.append(retrieval_derived.subscribe(lambda _msgs: None))
+            self.retrieval = retrieval_derived
+
+            def _do_retrieve(query: RetrievalQuery) -> tuple[RetrievalEntry, ...]:
+                query_input.down([(MessageType.DATA, query)])
+                result = retrieval_derived.get() or ()
+                # Update trace node outside derived callback (avoids reactive glitch)
+                if last_trace[0] is not None:
+                    trace_state.down([(MessageType.DATA, last_trace[0])])
+                return result
+
+            self.retrieve = _do_retrieve
+
+    def destroy(self) -> None:
+        for unsub in self._keepalive_subs:
+            unsub()
+        self._keepalive_subs.clear()
+        super().destroy()
+
+
+def _extract_store_map(snap: Any) -> dict[str, Any]:
+    """Extract the key→value mapping from a reactive_map snapshot."""
+    if snap is None:
+        return {}
+    if hasattr(snap, "value") and hasattr(snap.value, "map"):
+        m = snap.value.map
+        return dict(m) if m is not None else {}
+    if isinstance(snap, dict):
+        return snap
+    return {}
 
 
 
@@ -740,6 +1138,13 @@ def agent_memory(
     budget: float = 2000,
     context: Any | None = None,
     admission_filter: Callable[[Any], bool] | None = None,
+    vector_dimensions: int | None = None,
+    embed_fn: Callable[[Any], tuple[float, ...] | None] | None = None,
+    enable_knowledge_graph: bool = False,
+    entity_fn: Callable[[str, Any], dict[str, Any] | None] | None = None,
+    tiers: dict[str, Any] | None = None,
+    retrieval_opts: dict[str, Any] | None = None,
+    reflection: dict[str, Any] | None = None,
     opts: dict[str, Any] | None = None,
 ) -> AgentMemoryGraph:
     """Pre-wired agentic memory graph factory."""
@@ -757,6 +1162,13 @@ def agent_memory(
         budget=budget,
         context=context,
         admission_filter=admission_filter,
+        vector_dimensions=vector_dimensions,
+        embed_fn=embed_fn,
+        enable_knowledge_graph=enable_knowledge_graph,
+        entity_fn=entity_fn,
+        tiers=tiers,
+        retrieval_opts=retrieval_opts,
+        reflection=reflection,
         opts=opts,
     )
 

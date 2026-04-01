@@ -7,14 +7,17 @@ from typing import Any
 from graphrefly.core.protocol import MessageType
 from graphrefly.core.sugar import state
 from graphrefly.patterns.ai import (
+    AdmissionScores,
     AgentLoopGraph,
     ChatMessage,
     ChatStreamGraph,
     LLMInvokeOptions,
     LLMResponse,
+    RetrievalQuery,
     ToolCall,
     ToolDefinition,
     ToolRegistryGraph,
+    admission_filter_3d,
     agent_loop,
     agent_memory,
     chat_stream,
@@ -397,3 +400,177 @@ def test_agent_memory_requires_extract() -> None:
         assert False, "Should have raised"  # noqa: B011
     except ValueError as e:
         assert "extract_fn or adapter" in str(e)
+
+
+def test_agent_memory_optional_features_null() -> None:
+    mem = agent_memory(
+        "test-mem",
+        state("x"),
+        extract_fn=lambda _r, _e: {"upsert": []},
+        score=lambda _m, _c: 1.0,
+        cost=lambda _m: 1.0,
+    )
+    assert mem.vectors is None
+    assert mem.kg is None
+    assert mem.memory_tiers is None
+    assert mem.retrieval is None
+    assert mem.retrieval_trace is None
+    assert mem.retrieve is None
+    mem.destroy()
+
+
+def test_agent_memory_vector_index() -> None:
+    source = state("hello")
+    mem = agent_memory(
+        "vec-mem",
+        source,
+        extract_fn=lambda raw, _e: {"upsert": [{"key": "k1", "value": str(raw)}]},
+        score=lambda _m, _c: 1.0,
+        cost=lambda _m: 10.0,
+        budget=100,
+        vector_dimensions=3,
+        embed_fn=lambda _mem: (0.1, 0.2, 0.3),
+    )
+    assert mem.vectors is not None
+    desc = mem.describe()
+    assert "vectorIndex" in desc["nodes"]
+    mem.destroy()
+
+
+def test_agent_memory_knowledge_graph() -> None:
+    source = state("hello")
+    mem = agent_memory(
+        "kg-mem",
+        source,
+        extract_fn=lambda raw, _e: {"upsert": [{"key": "k1", "value": str(raw)}]},
+        score=lambda _m, _c: 1.0,
+        cost=lambda _m: 10.0,
+        enable_knowledge_graph=True,
+        entity_fn=lambda key, _mem: {"entities": [{"id": key, "value": {"name": key}}]},
+    )
+    assert mem.kg is not None
+    mem.destroy()
+
+
+def test_agent_memory_3_tier_storage() -> None:
+    source = state("hello")
+    mem = agent_memory(
+        "tier-mem",
+        source,
+        extract_fn=lambda raw, _e: {"upsert": [{"key": "core-profile", "value": str(raw)}]},
+        score=lambda _m, _c: 1.0,
+        cost=lambda _m: 10.0,
+        tiers={
+            "permanent_filter": lambda key, _mem: key.startswith("core-"),
+            "max_active": 100,
+        },
+    )
+    assert mem.memory_tiers is not None
+    assert mem.memory_tiers["permanent"] is not None
+    assert callable(mem.memory_tiers["tier_of"])
+    assert callable(mem.memory_tiers["mark_permanent"])
+    mem.destroy()
+
+
+def test_agent_memory_retrieval_pipeline() -> None:
+    source = state("test")
+    mem = agent_memory(
+        "retr-mem",
+        source,
+        extract_fn=lambda raw, _e: {"upsert": [{"key": "m1", "value": f"mem-{raw}"}]},
+        score=lambda _m, _c: 0.8,
+        cost=lambda _m: 10.0,
+        budget=100,
+        vector_dimensions=3,
+        embed_fn=lambda _mem: (1.0, 0.0, 0.0),
+        retrieval_opts={"top_k": 5},
+    )
+    assert mem.retrieve is not None
+    assert mem.retrieval_trace is not None
+    results = mem.retrieve(RetrievalQuery(vector=(1.0, 0.0, 0.0)))
+    assert isinstance(results, tuple)
+    mem.destroy()
+
+
+def test_agent_memory_retrieval_trace() -> None:
+    source = state("input")
+    mem = agent_memory(
+        "trace-mem",
+        source,
+        extract_fn=lambda raw, _e: {"upsert": [{"key": "k1", "value": str(raw)}]},
+        score=lambda _m, _c: 1.0,
+        cost=lambda _m: 5.0,
+        budget=100,
+        vector_dimensions=3,
+        embed_fn=lambda _mem: (0.5, 0.5, 0.0),
+    )
+    mem.retrieve(RetrievalQuery(vector=(0.5, 0.5, 0.0)))
+    trace = mem.retrieval_trace.get()
+    if trace is not None:
+        assert hasattr(trace, "vector_candidates")
+        assert hasattr(trace, "graph_expanded")
+        assert hasattr(trace, "ranked")
+        assert hasattr(trace, "packed")
+    mem.destroy()
+
+
+# ---------------------------------------------------------------------------
+# admission_filter_3d
+# ---------------------------------------------------------------------------
+
+
+def test_admission_filter_3d_admits() -> None:
+    f = admission_filter_3d(
+        score_fn=lambda _r: AdmissionScores(persistence=0.8, structure=0.5, personal_value=0.7),
+    )
+    assert f("test") is True
+
+
+def test_admission_filter_3d_rejects_persistence() -> None:
+    f = admission_filter_3d(
+        score_fn=lambda _r: AdmissionScores(persistence=0.1, structure=0.5, personal_value=0.7),
+        persistence_threshold=0.3,
+    )
+    assert f("test") is False
+
+
+def test_admission_filter_3d_rejects_personal_value() -> None:
+    f = admission_filter_3d(
+        score_fn=lambda _r: AdmissionScores(persistence=0.8, structure=0.5, personal_value=0.1),
+        personal_value_threshold=0.3,
+    )
+    assert f("test") is False
+
+
+def test_admission_filter_3d_rejects_unstructured() -> None:
+    f = admission_filter_3d(
+        score_fn=lambda _r: AdmissionScores(persistence=0.8, structure=0, personal_value=0.7),
+        require_structured=True,
+    )
+    assert f("test") is False
+
+
+def test_admission_filter_3d_default_scorer() -> None:
+    f = admission_filter_3d()
+    assert f("anything") is True
+
+
+def test_admission_filter_3d_integrates_with_agent_memory() -> None:
+    filt = admission_filter_3d(
+        score_fn=lambda raw: AdmissionScores(
+            persistence=0.8 if raw == "keep" else 0.1,
+            structure=0.5,
+            personal_value=0.5,
+        ),
+    )
+    source = state("keep")
+    mem = agent_memory(
+        "3d-mem",
+        source,
+        extract_fn=lambda raw, _e: {"upsert": [{"key": "k", "value": str(raw)}]},
+        score=lambda _m, _c: 1.0,
+        cost=lambda _m: 1.0,
+        admission_filter=filt,
+    )
+    assert mem is not None
+    mem.destroy()
