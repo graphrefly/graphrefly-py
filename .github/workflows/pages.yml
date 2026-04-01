@@ -35,11 +35,11 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "24"
-          cache: pnpm
-          cache-dependency-path: website/pnpm-lock.yaml
 
       - name: Enable Corepack (pnpm)
-        run: corepack enable
+        run: |
+          corepack enable
+          corepack prepare pnpm@latest --activate
 
       - name: Install uv
         run: |
