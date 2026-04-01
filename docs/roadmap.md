@@ -334,20 +334,43 @@ Connectors for the universal reduction layer (Phase 8). Each wraps an external p
 
 ### 5.4 — LLM tool integration
 
-- [ ] `knobs_as_tools(graph, actor=)` → OpenAI/MCP tool schemas from scoped describe()
-- [ ] `gauges_as_context(graph, actor=)` → formatted gauge values for system prompts
-- [ ] Graph builder validation
-- [ ] `graph_from_spec(natural_language, adapter, opts)` → LLM composes a Graph from natural language; validates topology; returns runnable graph
-- [ ] `suggest_strategy(graph, problem, adapter)` → LLM analyzes current graph + problem, suggests operator/topology changes
+- [x] `knobs_as_tools(graph, actor=)` → OpenAI/MCP tool schemas from scoped describe()
+- [x] `gauges_as_context(graph, actor=)` → formatted gauge values for system prompts
+- [x] Graph builder validation
+- [x] `graph_from_spec(natural_language, adapter, opts)` → LLM composes a Graph from natural language; validates topology; returns runnable graph
+- [x] `suggest_strategy(graph, problem, adapter)` → LLM analyzes current graph + problem, suggests operator/topology changes
 
 ---
 
 ## Phase 6: Node Versioning
 
-- [ ] V0: id + version (recommended minimum)
-- [ ] V1: + cid + prev (content addressing, linked history)
-- [ ] V2: + schema (type validation)
-- [ ] V3: + caps (serialized guard policy) + refs (cross-graph references) — runtime enforcement already in Phase 1.5; V3 adds the serialization/transport format
+Design reference: `archive/docs/SESSION-serialization-memory-footprint.md`, `~/src/graphrefly-ts/archive/docs/SESSION-serialization-memory-footprint.md`.
+
+### 6.0 — V0: id + version (done)
+
+- [x] Wire `create_versioning(0, ...)` into `node()` when `versioning` provided
+- [x] `advance_version()` on every DATA handled in local lifecycle (derived skips bump via RESOLVED when unchanged)
+- [x] `describe_node()` includes `{ id, version }` when V0 active
+- [x] `graph.snapshot()` / describe path includes per-node `v` when versioning enabled
+- [ ] `Graph.diff()` uses version counters to skip unchanged nodes — O(changes) not O(graph size)
+- [ ] `graph.set_versioning(level)` — default versioning level for new nodes in this graph
+
+#### 6.0b — V0 backfill (post-implementation)
+
+- [ ] **Phase 5.4** (LLM tool integration): `gauges_as_context()` delta by version; `knobs_as_tools()` include version for conflict detection — plus Appendix B / describe schema updates for optional `v` as needed
+
+### 6.1 — V1: + cid + prev (content addressing, linked history)
+
+- [x] V1: + cid + prev (content addressing, linked history)
+- [ ] Lazy CID computation — computed on first access after value change, not on every DATA
+
+### 6.2 — V2: + schema (type validation)
+
+- [ ] V2: + schema (type validation at node boundaries)
+
+### 6.3 — V3: + caps + refs (serialized capabilities, cross-graph references)
+
+- [ ] V3: + caps + refs — runtime enforcement already in Phase 1.5; V3 adds serialization/transport format
 - [ ] ~~Attribution~~ → Phase 1.5 (`node.last_mutation`)
 
 ---

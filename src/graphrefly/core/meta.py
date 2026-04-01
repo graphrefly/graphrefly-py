@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 from graphrefly.core.dynamic_node import DynamicNodeImpl
 from graphrefly.core.guard import access_hint_for_guard
 from graphrefly.core.node import NodeImpl  # noqa: TC001 — runtime type for describe_node
+from graphrefly.core.versioning import V1, is_v1
 
 __all__ = ["describe_node", "meta_snapshot"]
 
@@ -112,6 +113,9 @@ def describe_node(n: NodeImpl[Any] | DynamicNodeImpl[Any]) -> dict[str, Any]:
             if "access" not in meta:
                 meta["access"] = access_hint_for_guard(g)
             out["meta"] = meta
+        # Versioning (GRAPHREFLY-SPEC §7)
+        if hasattr(n, "v") and n.v is not None:
+            out["v"] = _versioning_dict(n.v)
         return out
 
     out = {
@@ -130,4 +134,16 @@ def describe_node(n: NodeImpl[Any] | DynamicNodeImpl[Any]) -> dict[str, Any]:
         if "access" not in meta:
             meta["access"] = access_hint_for_guard(g)
         out["meta"] = meta
+    # Versioning (GRAPHREFLY-SPEC §7)
+    if n.v is not None:
+        out["v"] = _versioning_dict(n.v)
     return out
+
+
+def _versioning_dict(v: Any) -> dict[str, Any]:
+    """Convert versioning info to a plain dict for JSON serialization."""
+    d: dict[str, Any] = {"id": v.id, "version": v.version}
+    if is_v1(v):
+        d["cid"] = v.cid
+        d["prev"] = v.prev
+    return d

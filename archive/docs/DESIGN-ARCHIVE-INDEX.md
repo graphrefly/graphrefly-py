@@ -113,6 +113,19 @@ Key sessions from the predecessor that directly informed GraphReFly:
 
 **Files:** `archive/docs/SESSION-universal-reduction-layer.md`
 
+### Session serialization-memory-footprint (March 31) — Adoption Blockers: Memory Footprint, DAG-CBOR Codec, Tiered Representation, NodeV0 Promotion
+**Topic:** Python companion to the canonical session in `~/src/graphrefly-ts/archive/docs/SESSION-serialization-memory-footprint.md`. Covers DAG-CBOR as default codec, tiered representation, five memory tuning strategies, delta checkpoints, and NodeV0 promotion.
+
+**Python-specific considerations:**
+- DAG-CBOR via `cbor2` (C-accelerated) with custom CID tag handler, or `dag-cbor` for strict IPLD interop; `zstandard` for compression
+- Python per-node overhead is ~1200-1500 bytes (vs ~800 in JS) — `__slots__`, lazy meta, numpy struct-of-arrays even more impactful
+- Per-subgraph `RLock` enables per-subgraph dormant eviction without global locks; free-threaded Python 3.14 enables background eviction threads
+- Arrow/Parquet ecosystem advantage: `pyarrow`, `polars` for cold-tier snapshots
+
+**Roadmap impact:** Same as TS — `GraphCodec` interface, delta checkpoints, lazy hydration, NodeV0 promotion to Phase 3.x.
+
+**Files:** `archive/docs/SESSION-serialization-memory-footprint.md`
+
 ---
 
 ## Reading Guide
@@ -137,4 +150,4 @@ Each session file contains:
 
 **Created:** March 27, 2026
 **Updated:** March 31, 2026
-**Archive Status:** Active — spec design + access control + cross-repo implementation audit (companion) + Tier 2 parity + demo & test strategy + universal reduction layer
+**Archive Status:** Active — spec design + access control + cross-repo implementation audit (companion) + Tier 2 parity + demo & test strategy + universal reduction layer + serialization/memory footprint

@@ -257,6 +257,11 @@ class DynamicNodeImpl[T]:
     def last_mutation(self) -> dict[str, Any] | None:
         return self._last_mutation
 
+    @property
+    def v(self) -> None:
+        """Versioning not yet supported on DynamicNodeImpl."""
+        return None
+
     def has_guard(self) -> bool:
         return self._guard is not None
 

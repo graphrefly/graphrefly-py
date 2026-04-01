@@ -18,6 +18,14 @@ from graphrefly.core.guard import (
     record_mutation,
 )
 from graphrefly.core.protocol import Messages, MessageType, emit_with_batch, propagates_to_meta
+from graphrefly.core.versioning import (
+    HashFn,
+    NodeVersionInfo,
+    VersioningLevel,
+    advance_version,
+    create_versioning,
+    default_hash,
+)
 from graphrefly.core.subgraph_locks import (
     acquire_subgraph_write_lock_with_defer,
     ensure_registered,
@@ -208,6 +216,9 @@ class NodeImpl[T]:
         "_thread_safe",
         "_upstream_unsubs",
         "_inspector_hook",
+        "_versioning",
+        "_versioning_level",
+        "_hash_fn",
     )
 
     def __init__(
@@ -240,6 +251,21 @@ class NodeImpl[T]:
         self._cache_lock = threading.Lock() if self._thread_safe else None
         self._cached: T | None = opts.get("initial")
         self._status: NodeStatus = "disconnected" if self._has_deps else "settled"
+
+        # Versioning (GRAPHREFLY-SPEC §7)
+        self._versioning_level: VersioningLevel | None = opts.get("versioning")
+        self._hash_fn: HashFn = opts.get("versioning_hash", default_hash)
+        self._versioning: NodeVersionInfo | None = (
+            create_versioning(
+                self._versioning_level,
+                self._cached,
+                id=opts.get("versioning_id"),
+                hash_fn=self._hash_fn,
+            )
+            if self._versioning_level is not None
+            else None
+        )
+
         self._terminal = False
         self._connected = False
         self._connecting = False
@@ -333,6 +359,8 @@ class NodeImpl[T]:
                         self._cached = m[1]  # type: ignore[misc]
                 else:
                     self._cached = m[1]  # type: ignore[misc]
+                if self._versioning is not None:
+                    advance_version(self._versioning, m[1], self._hash_fn)
             if t is MessageType.INVALIDATE:
                 # GRAPHREFLY-SPEC §1.2: clear cached state; do not auto-emit from here.
                 if self._cleanup is not None:
@@ -706,6 +734,11 @@ class NodeImpl[T]:
     def last_mutation(self) -> dict[str, Any] | None:
         """Last non-internal ``write`` attribution (``actor``, ``timestamp_ns``), if any."""
         return self._last_mutation
+
+    @property
+    def v(self) -> NodeVersionInfo | None:
+        """Versioning info (GRAPHREFLY-SPEC §7). ``None`` when versioning is not enabled."""
+        return self._versioning
 
     def _guard_and_record(
         self,

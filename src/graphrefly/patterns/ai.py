@@ -1455,3 +1455,669 @@ def agent_loop(
         max_tokens=max_tokens,
         opts=opts,
     )
+
+
+# ---------------------------------------------------------------------------
+# 5.4 — LLM tool integration
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class OpenAIToolSchema:
+    """OpenAI function-calling tool schema."""
+
+    type: str  # always "function"
+    function: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class McpToolSchema:
+    """MCP (Model Context Protocol) tool schema."""
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class KnobsAsToolsResult:
+    """Result of :func:`knobs_as_tools`."""
+
+    openai: tuple[OpenAIToolSchema, ...]
+    mcp: tuple[McpToolSchema, ...]
+    definitions: tuple[ToolDefinition, ...]
+
+
+def _meta_to_json_schema(meta: dict[str, Any]) -> dict[str, Any]:
+    """Build a JSON Schema ``value`` descriptor from a node's meta fields."""
+    schema: dict[str, Any] = {}
+
+    meta_type = meta.get("type")
+    if meta_type == "enum" and isinstance(meta.get("values"), (list, tuple)):
+        schema["type"] = "string"
+        schema["enum"] = list(meta["values"])
+    elif meta_type == "integer":
+        schema["type"] = "integer"
+    elif meta_type == "number":
+        schema["type"] = "number"
+    elif meta_type == "boolean":
+        schema["type"] = "boolean"
+    elif meta_type == "string":
+        schema["type"] = "string"
+    else:
+        schema["type"] = ["string", "number", "boolean"]
+
+    rng = meta.get("range")
+    if isinstance(rng, (list, tuple)) and len(rng) == 2:
+        schema["minimum"] = rng[0]
+        schema["maximum"] = rng[1]
+
+    fmt = meta.get("format")
+    if isinstance(fmt, str):
+        schema["description"] = f"Format: {fmt}"
+
+    unit = meta.get("unit")
+    if isinstance(unit, str):
+        if "description" in schema:
+            schema["description"] += f" ({unit})"
+        else:
+            schema["description"] = f"Unit: {unit}"
+
+    return schema
+
+
+def knobs_as_tools(
+    graph: Graph,
+    actor: Any | None = None,
+) -> KnobsAsToolsResult:
+    """Derive tool schemas from a graph's writable (knob) nodes.
+
+    Knobs are state nodes whose ``meta.access`` is ``"llm"``, ``"both"``, or
+    absent (default: writable). Each knob becomes a tool that calls
+    ``graph.set()``.
+
+    Speaks **domain language** (spec §5.4): the returned schemas use node names
+    and meta descriptions — no protocol internals exposed.
+
+    Args:
+        graph: The graph to introspect.
+        actor: Optional actor for guard-scoped describe.
+
+    Returns:
+        OpenAI, MCP, and GraphReFly tool schemas.
+    """
+    kwargs: dict[str, Any] = {}
+    if actor is not None:
+        kwargs["actor"] = actor
+    described = graph.describe(**kwargs)
+
+    openai_list: list[OpenAIToolSchema] = []
+    mcp_list: list[McpToolSchema] = []
+    definitions_list: list[ToolDefinition] = []
+
+    for path, node_desc in described["nodes"].items():
+        if node_desc.get("type") != "state":
+            continue
+        if "::__meta__::" in path:
+            continue
+
+        # Skip terminal-state nodes (§1.3.4)
+        status = node_desc.get("status")
+        if status in ("completed", "errored"):
+            continue
+
+        meta = node_desc.get("meta", {})
+        access = meta.get("access")
+        if access in ("human", "system"):
+            continue
+
+        description = meta.get("description") or f"Set the value of {path}"
+        value_schema = _meta_to_json_schema(meta)
+
+        parameter_schema: dict[str, Any] = {
+            "type": "object",
+            "required": ["value"],
+            "properties": {"value": value_schema},
+            "additionalProperties": False,
+        }
+
+        # OpenAI requires [a-zA-Z0-9_-] in function names
+        sanitized_name = path.replace("::", "__")
+
+        openai_list.append(
+            OpenAIToolSchema(
+                type="function",
+                function={
+                    "name": sanitized_name,
+                    "description": description,
+                    "parameters": parameter_schema,
+                },
+            )
+        )
+
+        mcp_list.append(
+            McpToolSchema(
+                name=path,
+                description=description,
+                input_schema=parameter_schema,
+            )
+        )
+
+        # Capture for closure
+        _graph = graph
+        _path = path
+        _actor = actor
+
+        def _make_handler(
+            g: Graph, p: str, a: Any | None
+        ) -> Callable[[dict[str, Any]], Any]:
+            def handler(args: dict[str, Any]) -> Any:
+                kwargs: dict[str, Any] = {}
+                if a is not None:
+                    kwargs["actor"] = a
+                g.set(p, args["value"], **kwargs)
+                return args["value"]
+
+            return handler
+
+        definitions_list.append(
+            ToolDefinition(
+                name=path,
+                description=description,
+                parameters=parameter_schema,
+                handler=_make_handler(_graph, _path, _actor),
+            )
+        )
+
+    return KnobsAsToolsResult(
+        openai=tuple(openai_list),
+        mcp=tuple(mcp_list),
+        definitions=tuple(definitions_list),
+    )
+
+
+def gauges_as_context(
+    graph: Graph,
+    actor: Any | None = None,
+    *,
+    group_by_tags: bool = True,
+    separator: str = "\n",
+) -> str:
+    """Format a graph's readable (gauge) nodes as a context string for LLM
+    system prompts.
+
+    Gauges are nodes with ``meta.description`` or ``meta.format``. Values are
+    formatted using ``meta.format`` and ``meta.unit`` hints.
+
+    Args:
+        graph: The graph to introspect.
+        actor: Optional actor for guard-scoped describe.
+        group_by_tags: Group gauges by ``meta.tags`` (default ``True``).
+        separator: Separator between gauge lines (default ``"\\n"``).
+
+    Returns:
+        A formatted string ready for system prompt injection.
+    """
+    kwargs: dict[str, Any] = {}
+    if actor is not None:
+        kwargs["actor"] = actor
+    described = graph.describe(**kwargs)
+
+    entries: list[tuple[str, str, str]] = []  # (path, description, formatted)
+
+    for path, node_desc in described["nodes"].items():
+        meta = node_desc.get("meta", {})
+        desc = meta.get("description")
+        fmt = meta.get("format")
+        if not desc and not fmt:
+            continue
+
+        label = desc or path
+        value = node_desc.get("value")
+        unit = meta.get("unit")
+
+        if fmt == "currency" and isinstance(value, (int, float)):
+            formatted = f"${value:.2f}"
+        elif fmt == "percentage" and isinstance(value, (int, float)):
+            formatted = f"{value * 100:.1f}%"
+        elif value is None:
+            formatted = "(no value)"
+        else:
+            formatted = str(value)
+
+        if unit and fmt not in ("currency", "percentage"):
+            formatted = f"{formatted} {unit}"
+
+        entries.append((path, label, formatted))
+
+    if not entries:
+        return ""
+
+    if group_by_tags:
+        tag_groups: dict[str, list[tuple[str, str, str]]] = {}
+        ungrouped: list[tuple[str, str, str]] = []
+
+        for entry in entries:
+            node_desc = described["nodes"][entry[0]]
+            tags = node_desc.get("meta", {}).get("tags")
+            if tags and len(tags) > 0:
+                # Use first tag for grouping to avoid duplicating entries
+                tag_groups.setdefault(tags[0], []).append(entry)
+            else:
+                ungrouped.append(entry)
+
+        if not tag_groups:
+            return separator.join(
+                f"- {e[1]}: {e[2]}" for e in entries
+            )
+
+        sections: list[str] = []
+        for tag in sorted(tag_groups):
+            group = tag_groups[tag]
+            lines = separator.join(f"- {e[1]}: {e[2]}" for e in group)
+            sections.append(f"[{tag}]{separator}{lines}")
+        if ungrouped:
+            sections.append(
+                separator.join(f"- {e[1]}: {e[2]}" for e in ungrouped)
+            )
+        return (separator + separator).join(sections)
+
+    return separator.join(f"- {e[1]}: {e[2]}" for e in entries)
+
+
+# ---------------------------------------------------------------------------
+# validateGraphDef
+# ---------------------------------------------------------------------------
+
+_VALID_NODE_TYPES = frozenset(
+    {"state", "derived", "producer", "operator", "effect"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class GraphDefValidation:
+    """Validation result from :func:`validate_graph_def`."""
+
+    valid: bool
+    errors: tuple[str, ...]
+
+
+def validate_graph_def(definition: Any) -> GraphDefValidation:
+    """Validate an LLM-generated graph definition before passing to
+    ``Graph.from_snapshot()``.
+
+    Checks required fields, node types, edge references, and duplicates.
+
+    Args:
+        definition: The graph definition to validate (parsed JSON).
+
+    Returns:
+        Validation result with errors tuple.
+    """
+    errors: list[str] = []
+
+    if definition is None or not isinstance(definition, dict):
+        return GraphDefValidation(valid=False, errors=("Definition must be a non-null dict",))
+
+    d: dict[str, Any] = definition
+
+    name = d.get("name")
+    if not isinstance(name, str) or len(name) == 0:
+        errors.append("Missing or empty 'name' field")
+
+    nodes = d.get("nodes")
+    if nodes is None or not isinstance(nodes, dict):
+        errors.append("Missing or invalid 'nodes' field (must be a dict)")
+        return GraphDefValidation(valid=False, errors=tuple(errors))
+
+    node_names = set(nodes.keys())
+
+    for nname, raw in nodes.items():
+        if raw is None or not isinstance(raw, dict):
+            errors.append(f'Node "{nname}": must be a dict')
+            continue
+        ntype = raw.get("type")
+        if not isinstance(ntype, str) or ntype not in _VALID_NODE_TYPES:
+            valid_str = ", ".join(sorted(_VALID_NODE_TYPES))
+            errors.append(
+                f'Node "{nname}": invalid type "{ntype}" (expected: {valid_str})'
+            )
+        deps = raw.get("deps")
+        if isinstance(deps, list):
+            for dep in deps:
+                if isinstance(dep, str) and dep not in node_names:
+                    errors.append(
+                        f'Node "{nname}": dep "{dep}" does not reference an existing node'
+                    )
+
+    edges = d.get("edges")
+    if edges is not None:
+        if not isinstance(edges, list):
+            errors.append("'edges' must be a list")
+        else:
+            seen: set[str] = set()
+            for i, edge in enumerate(edges):
+                if edge is None or not isinstance(edge, dict):
+                    errors.append(f"Edge [{i}]: must be a dict")
+                    continue
+                efrom = edge.get("from")
+                if not isinstance(efrom, str) or efrom not in node_names:
+                    errors.append(
+                        f'Edge [{i}]: \'from\' "{efrom}" does not reference an existing node'
+                    )
+                eto = edge.get("to")
+                if not isinstance(eto, str) or eto not in node_names:
+                    errors.append(
+                        f'Edge [{i}]: \'to\' "{eto}" does not reference an existing node'
+                    )
+                key = f"{efrom}->{eto}"
+                if key in seen:
+                    errors.append(f"Edge [{i}]: duplicate edge {key}")
+                seen.add(key)
+
+    return GraphDefValidation(valid=len(errors) == 0, errors=tuple(errors))
+
+
+# ---------------------------------------------------------------------------
+# graphFromSpec
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+_FENCE_PATTERN = _re.compile(
+    r"^```(?:json)?\s*([\s\S]*?)\s*```[\s\S]*$"
+)
+
+
+def _strip_fences(text: str) -> str:
+    """Strip markdown code fences, handling trailing commentary."""
+    m = _FENCE_PATTERN.match(text)
+    return m.group(1) if m else text
+
+
+_GRAPH_FROM_SPEC_SYSTEM_PROMPT = """\
+You are a graph architect for GraphReFly, a reactive graph protocol.
+
+Given a natural-language description, produce a JSON graph definition with this structure:
+
+{
+  "name": "<graph_name>",
+  "nodes": {
+    "<node_name>": {
+      "type": "state" | "derived" | "producer" | "operator" | "effect",
+      "value": <initial_value_or_null>,
+      "deps": ["<dep_node_name>", ...],
+      "meta": {
+        "description": "<human-readable purpose>",
+        "type": "string" | "number" | "boolean" | "integer" | "enum",
+        "range": [min, max],
+        "values": ["a", "b"],
+        "format": "currency" | "percentage" | "status",
+        "access": "human" | "llm" | "both" | "system",
+        "unit": "<unit>",
+        "tags": ["<tag>"]
+      }
+    }
+  },
+  "edges": [
+    { "from": "<source_node>", "to": "<target_node>" }
+  ]
+}
+
+Rules:
+- "state" nodes have no deps and hold user/LLM-writable values (knobs).
+- "derived" nodes have deps and compute from them.
+- "effect" nodes have deps but produce side effects (no return value).
+- "producer" nodes have no deps but generate values asynchronously.
+- Edges wire output of one node as input to another. They must match deps.
+- meta.description is required for every node.
+- Return ONLY valid JSON, no markdown fences or commentary."""
+
+
+def graph_from_spec(
+    natural_language: str,
+    adapter: LLMAdapter,
+    *,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    build: Callable[[Graph], None] | None = None,
+    system_prompt_extra: str | None = None,
+) -> Graph:
+    """Ask an LLM to compose a Graph from a natural-language description.
+
+    The LLM returns a JSON graph definition which is validated and then
+    constructed via ``Graph.from_snapshot()``.
+
+    Args:
+        natural_language: The problem/use-case description.
+        adapter: LLM adapter for the generation call.
+        model: Optional model override.
+        temperature: Optional temperature (default 0).
+        max_tokens: Optional max tokens.
+        build: Optional callback to construct topology before values are applied.
+        system_prompt_extra: Extra instructions appended to the system prompt.
+
+    Returns:
+        A constructed Graph.
+
+    Raises:
+        ValueError: On invalid LLM output or validation failure.
+    """
+    sys_prompt = _GRAPH_FROM_SPEC_SYSTEM_PROMPT
+    if system_prompt_extra:
+        sys_prompt = f"{sys_prompt}\n\n{system_prompt_extra}"
+
+    messages = [
+        ChatMessage(role="system", content=sys_prompt),
+        ChatMessage(role="user", content=natural_language),
+    ]
+
+    raw_result = adapter.invoke(
+        messages,
+        LLMInvokeOptions(
+            model=model,
+            temperature=temperature if temperature is not None else 0.0,
+            max_tokens=max_tokens,
+        ),
+    )
+
+    response = _resolve_node_input(raw_result)
+    if not isinstance(response, LLMResponse):
+        msg = f"graph_from_spec: expected LLMResponse, got {type(response).__name__}"
+        raise ValueError(msg)
+
+    content = response.content.strip()
+    if content.startswith("```"):
+        content = _strip_fences(content)
+
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as exc:
+        msg = f"graph_from_spec: LLM response is not valid JSON: {content[:200]}"
+        raise ValueError(msg) from exc
+
+    validation = validate_graph_def(parsed)
+    if not validation.valid:
+        detail = "\n".join(validation.errors)
+        msg = f"graph_from_spec: invalid graph definition:\n{detail}"
+        raise ValueError(msg)
+
+    # Ensure version and subgraphs fields for from_snapshot
+    if "version" not in parsed:
+        parsed["version"] = 1
+    if "subgraphs" not in parsed or not isinstance(parsed["subgraphs"], list):
+        parsed["subgraphs"] = []
+
+    return Graph.from_snapshot(parsed, build)
+
+
+# ---------------------------------------------------------------------------
+# suggestStrategy
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyOperation:
+    """A single operation in a strategy plan."""
+
+    type: str
+    name: str | None = None
+    node_type: str | None = None
+    meta: dict[str, Any] | None = None
+    initial: Any = None
+    from_node: str | None = None
+    to_node: str | None = None
+    value: Any = None
+    key: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyPlan:
+    """Structured strategy plan returned by :func:`suggest_strategy`."""
+
+    summary: str
+    operations: tuple[StrategyOperation, ...]
+    reasoning: str
+
+
+_SUGGEST_STRATEGY_SYSTEM_PROMPT = """\
+You are a reactive graph optimizer for GraphReFly.
+
+Given a graph's current structure (from describe()) and a problem statement, \
+suggest topology and parameter changes to solve the problem.
+
+Return ONLY valid JSON with this structure:
+{
+  "summary": "<one-line summary of the strategy>",
+  "reasoning": "<explanation of why these changes help>",
+  "operations": [
+    { "type": "add_node", "name": "<name>",
+      "nodeType": "state|derived|effect|producer|operator",
+      "meta": {...}, "initial": <value> },
+    { "type": "remove_node", "name": "<name>" },
+    { "type": "connect", "from": "<source>", "to": "<target>" },
+    { "type": "disconnect", "from": "<source>", "to": "<target>" },
+    { "type": "set_value", "name": "<name>", "value": <new_value> },
+    { "type": "update_meta", "name": "<name>",
+      "key": "<meta_key>", "value": <new_value> }
+  ]
+}
+
+Rules:
+- Only suggest operations that reference existing nodes
+  (for remove/disconnect/set_value/update_meta)
+  or new nodes you define (for add_node).
+- Keep changes minimal.
+- Return ONLY valid JSON, no markdown fences or commentary."""
+
+
+def _parse_strategy_operation(raw: dict[str, Any]) -> StrategyOperation:
+    """Parse a raw operation dict into a StrategyOperation."""
+    return StrategyOperation(
+        type=raw.get("type", ""),
+        name=raw.get("name"),
+        node_type=raw.get("nodeType"),
+        meta=raw.get("meta"),
+        initial=raw.get("initial"),
+        from_node=raw.get("from"),
+        to_node=raw.get("to"),
+        value=raw.get("value"),
+        key=raw.get("key"),
+    )
+
+
+def suggest_strategy(
+    graph: Graph,
+    problem: str,
+    adapter: LLMAdapter,
+    *,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    actor: Any | None = None,
+) -> StrategyPlan:
+    """Ask an LLM to analyze a graph and suggest topology/parameter changes
+    to solve a stated problem.
+
+    Returns a structured plan — does NOT auto-apply. The caller reviews
+    and selectively applies operations.
+
+    Args:
+        graph: The graph to analyze.
+        problem: Natural-language problem statement.
+        adapter: LLM adapter for the analysis call.
+        model: Optional model override.
+        temperature: Optional temperature (default 0).
+        max_tokens: Optional max tokens.
+        actor: Optional actor for guard-scoped describe.
+
+    Returns:
+        A structured strategy plan.
+
+    Raises:
+        ValueError: On invalid LLM output.
+    """
+    kwargs: dict[str, Any] = {}
+    if actor is not None:
+        kwargs["actor"] = actor
+    described = graph.describe(**kwargs)
+
+    messages = [
+        ChatMessage(role="system", content=_SUGGEST_STRATEGY_SYSTEM_PROMPT),
+        ChatMessage(
+            role="user",
+            content=json.dumps({"graph": described, "problem": problem}),
+        ),
+    ]
+
+    raw_result = adapter.invoke(
+        messages,
+        LLMInvokeOptions(
+            model=model,
+            temperature=temperature if temperature is not None else 0.0,
+            max_tokens=max_tokens,
+        ),
+    )
+
+    response = _resolve_node_input(raw_result)
+    if not isinstance(response, LLMResponse):
+        msg = f"suggest_strategy: expected LLMResponse, got {type(response).__name__}"
+        raise ValueError(msg)
+
+    content = response.content.strip()
+    if content.startswith("```"):
+        content = _strip_fences(content)
+
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as exc:
+        msg = f"suggest_strategy: LLM response is not valid JSON: {content[:200]}"
+        raise ValueError(msg) from exc
+
+    if not isinstance(parsed, dict):
+        msg = "suggest_strategy: expected a JSON object"
+        raise ValueError(msg)
+
+    summary = parsed.get("summary")
+    if not isinstance(summary, str):
+        msg = "suggest_strategy: missing 'summary' in response"
+        raise ValueError(msg)
+
+    reasoning = parsed.get("reasoning")
+    if not isinstance(reasoning, str):
+        msg = "suggest_strategy: missing 'reasoning' in response"
+        raise ValueError(msg)
+
+    ops_raw = parsed.get("operations")
+    if not isinstance(ops_raw, list):
+        msg = "suggest_strategy: missing 'operations' list in response"
+        raise ValueError(msg)
+
+    operations = tuple(_parse_strategy_operation(op) for op in ops_raw if isinstance(op, dict))
+
+    return StrategyPlan(
+        summary=summary,
+        operations=operations,
+        reasoning=reasoning,
+    )

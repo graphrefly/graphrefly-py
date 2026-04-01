@@ -57,6 +57,17 @@ from graphrefly.core.sugar import (
     producer,
     state,
 )
+from graphrefly.core.versioning import (
+    V0,
+    V1,
+    NodeVersionInfo,
+    VersioningLevel,
+    HashFn,
+    advance_version,
+    create_versioning,
+    default_hash,
+    is_v1,
+)
 
 __all__ = [
     "Actor",
@@ -109,4 +120,13 @@ __all__ = [
     "pipe",
     "producer",
     "state",
+    "V0",
+    "V1",
+    "NodeVersionInfo",
+    "VersioningLevel",
+    "HashFn",
+    "advance_version",
+    "create_versioning",
+    "default_hash",
+    "is_v1",
 ]

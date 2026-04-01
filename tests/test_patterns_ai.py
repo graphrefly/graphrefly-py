@@ -6,14 +6,17 @@ from typing import Any
 
 from graphrefly.core.protocol import MessageType
 from graphrefly.core.sugar import state
+from graphrefly.graph.graph import Graph
 from graphrefly.patterns.ai import (
     AdmissionScores,
     AgentLoopGraph,
     ChatMessage,
     ChatStreamGraph,
+    KnobsAsToolsResult,
     LLMInvokeOptions,
     LLMResponse,
     RetrievalQuery,
+    StrategyPlan,
     ToolCall,
     ToolDefinition,
     ToolRegistryGraph,
@@ -22,10 +25,15 @@ from graphrefly.patterns.ai import (
     agent_memory,
     chat_stream,
     from_llm,
+    gauges_as_context,
+    graph_from_spec,
+    knobs_as_tools,
     llm_consolidator,
     llm_extractor,
+    suggest_strategy,
     system_prompt_builder,
     tool_registry,
+    validate_graph_def,
 )
 
 # ---------------------------------------------------------------------------
@@ -574,3 +582,305 @@ def test_admission_filter_3d_integrates_with_agent_memory() -> None:
     )
     assert mem is not None
     mem.destroy()
+
+
+# ---------------------------------------------------------------------------
+# knobs_as_tools (5.4)
+# ---------------------------------------------------------------------------
+
+
+def test_knobs_as_tools_generates_schemas() -> None:
+    g = Graph("test")
+    temp = state(72, meta={
+        "description": "Room temperature", "type": "number",
+        "range": [60, 90], "unit": "°F", "access": "both",
+    })
+    mode = state("auto", meta={
+        "description": "HVAC mode", "type": "enum",
+        "values": ["auto", "cool", "heat", "off"], "access": "llm",
+    })
+    g.add("temperature", temp)
+    g.add("mode", mode)
+
+    result = knobs_as_tools(g)
+
+    assert isinstance(result, KnobsAsToolsResult)
+    assert len(result.openai) == 2
+    assert len(result.mcp) == 2
+    assert len(result.definitions) == 2
+
+    # Check OpenAI schema shape
+    temp_tool = next((t for t in result.openai if t.function["name"] == "temperature"), None)
+    assert temp_tool is not None
+    assert temp_tool.type == "function"
+    assert temp_tool.function["description"] == "Room temperature"
+    assert temp_tool.function["parameters"]["properties"]["value"]["type"] == "number"
+    assert temp_tool.function["parameters"]["properties"]["value"]["minimum"] == 60
+    assert temp_tool.function["parameters"]["properties"]["value"]["maximum"] == 90
+
+    # Check MCP schema
+    mode_mcp = next((t for t in result.mcp if t.name == "mode"), None)
+    assert mode_mcp is not None
+    assert mode_mcp.description == "HVAC mode"
+    assert mode_mcp.input_schema["properties"]["value"]["enum"] == ["auto", "cool", "heat", "off"]
+
+    # Handler calls graph.set
+    temp_def = next((d for d in result.definitions if d.name == "temperature"), None)
+    assert temp_def is not None
+    temp_def.handler({"value": 80})
+    assert temp.get() == 80
+
+    g.destroy()
+
+
+def test_knobs_as_tools_excludes_human_access() -> None:
+    g = Graph("test")
+    secret = state("pw", meta={"description": "Human-only secret", "access": "human"})
+    g.add("secret", secret)
+
+    result = knobs_as_tools(g)
+    assert len(result.openai) == 0
+    g.destroy()
+
+
+# ---------------------------------------------------------------------------
+# gauges_as_context (5.4)
+# ---------------------------------------------------------------------------
+
+
+def test_gauges_as_context_formats_values() -> None:
+    g = Graph("dashboard")
+    revenue = state(1234.5, meta={
+        "description": "Monthly revenue", "format": "currency",
+        "tags": ["finance"],
+    })
+    growth = state(0.15, meta={
+        "description": "Growth rate", "format": "percentage",
+        "tags": ["finance"],
+    })
+    status_node = state("healthy", meta={
+        "description": "System status", "format": "status",
+    })
+    g.add("revenue", revenue)
+    g.add("growth", growth)
+    g.add("status", status_node)
+
+    ctx = gauges_as_context(g)
+
+    assert "Monthly revenue: $1234.50" in ctx
+    assert "Growth rate: 15.0%" in ctx
+    assert "System status: healthy" in ctx
+    assert "[finance]" in ctx
+
+    g.destroy()
+
+
+def test_gauges_as_context_empty_when_no_gauges() -> None:
+    g = Graph("empty")
+    plain = state(42)
+    g.add("plain", plain)
+
+    assert gauges_as_context(g) == ""
+    g.destroy()
+
+
+# ---------------------------------------------------------------------------
+# validate_graph_def (5.4)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_graph_def_accepts_valid() -> None:
+    defn = {
+        "name": "test",
+        "nodes": {
+            "input": {"type": "state", "status": "settled", "deps": [], "meta": {}},
+            "compute": {"type": "derived", "status": "settled", "deps": ["input"], "meta": {}},
+        },
+        "edges": [{"from": "input", "to": "compute"}],
+        "subgraphs": [],
+    }
+    result = validate_graph_def(defn)
+    assert result.valid is True
+    assert len(result.errors) == 0
+
+
+def test_validate_graph_def_rejects_missing_name() -> None:
+    result = validate_graph_def({"nodes": {}, "edges": []})
+    assert result.valid is False
+    assert any("name" in e for e in result.errors)
+
+
+def test_validate_graph_def_rejects_invalid_type() -> None:
+    result = validate_graph_def({
+        "name": "test",
+        "nodes": {"a": {"type": "unknown_type", "deps": [], "meta": {}}},
+        "edges": [],
+    })
+    assert result.valid is False
+    assert any("invalid type" in e for e in result.errors)
+
+
+def test_validate_graph_def_rejects_bad_edge_ref() -> None:
+    result = validate_graph_def({
+        "name": "test",
+        "nodes": {"a": {"type": "state", "deps": [], "meta": {}}},
+        "edges": [{"from": "a", "to": "missing"}],
+    })
+    assert result.valid is False
+    assert any("missing" in e for e in result.errors)
+
+
+def test_validate_graph_def_detects_duplicate_edge() -> None:
+    result = validate_graph_def({
+        "name": "test",
+        "nodes": {
+            "a": {"type": "state", "deps": [], "meta": {}},
+            "b": {"type": "derived", "deps": ["a"], "meta": {}},
+        },
+        "edges": [
+            {"from": "a", "to": "b"},
+            {"from": "a", "to": "b"},
+        ],
+    })
+    assert result.valid is False
+    assert any("duplicate" in e for e in result.errors)
+
+
+def test_validate_graph_def_rejects_non_dict() -> None:
+    assert validate_graph_def(None).valid is False
+    assert validate_graph_def("string").valid is False
+    assert validate_graph_def(42).valid is False
+
+
+def test_validate_graph_def_rejects_bad_dep_ref() -> None:
+    result = validate_graph_def({
+        "name": "test",
+        "nodes": {"a": {"type": "derived", "deps": ["nonexistent"], "meta": {}}},
+        "edges": [],
+    })
+    assert result.valid is False
+    assert any("nonexistent" in e for e in result.errors)
+
+
+# ---------------------------------------------------------------------------
+# graph_from_spec (5.4)
+# ---------------------------------------------------------------------------
+
+import json  # noqa: E402
+
+
+def test_graph_from_spec_constructs_graph() -> None:
+    graph_def = {
+        "name": "calculator",
+        "nodes": {
+            "a": {"type": "state", "value": 10, "deps": [], "meta": {"description": "Input A"}},
+            "b": {"type": "state", "value": 20, "deps": [], "meta": {"description": "Input B"}},
+        },
+        "edges": [],
+        "subgraphs": [],
+    }
+    adapter = MockAdapter([LLMResponse(content=json.dumps(graph_def), finish_reason="end_turn")])
+
+    g = graph_from_spec("Build a calculator with two inputs", adapter)
+    assert g.name == "calculator"
+    assert g.get("a") == 10
+    assert g.get("b") == 20
+    g.destroy()
+
+
+def test_graph_from_spec_strips_markdown_fences() -> None:
+    graph_def = {
+        "name": "simple",
+        "nodes": {"x": {"type": "state", "value": 1, "deps": [], "meta": {"description": "X"}}},
+        "edges": [],
+        "subgraphs": [],
+    }
+    fenced = "```json\n" + json.dumps(graph_def) + "\n```"
+    adapter = MockAdapter([
+        LLMResponse(content=fenced, finish_reason="end_turn"),
+    ])
+
+    g = graph_from_spec("simple graph", adapter)
+    assert g.name == "simple"
+    g.destroy()
+
+
+def test_graph_from_spec_raises_on_invalid_json() -> None:
+    adapter = MockAdapter([LLMResponse(content="not json at all!", finish_reason="end_turn")])
+
+    import pytest
+
+    with pytest.raises(ValueError, match="not valid JSON"):
+        graph_from_spec("bad", adapter)
+
+
+def test_graph_from_spec_raises_on_validation_failure() -> None:
+    adapter = MockAdapter([
+        LLMResponse(content=json.dumps({"nodes": {}, "edges": []}), finish_reason="end_turn"),
+    ])
+
+    import pytest
+
+    with pytest.raises(ValueError, match="invalid graph definition"):
+        graph_from_spec("missing name", adapter)
+
+
+# ---------------------------------------------------------------------------
+# suggest_strategy (5.4)
+# ---------------------------------------------------------------------------
+
+
+def test_suggest_strategy_returns_plan() -> None:
+    plan = {
+        "summary": "Add a rate limiter node",
+        "reasoning": "The API calls node has no rate limiting, which could cause throttling.",
+        "operations": [
+            {
+                "type": "add_node", "name": "rate_limiter",
+                "nodeType": "derived",
+                "meta": {"description": "Rate limiter"},
+            },
+            {"type": "connect", "from": "rate_limiter", "to": "api_calls"},
+            {"type": "set_value", "name": "max_rate", "value": 100},
+        ],
+    }
+    adapter = MockAdapter([LLMResponse(content=json.dumps(plan), finish_reason="end_turn")])
+
+    g = Graph("api")
+    max_rate = state(50, meta={"description": "Max rate"})
+    g.add("max_rate", max_rate)
+
+    result = suggest_strategy(g, "API calls are being throttled", adapter)
+
+    assert isinstance(result, StrategyPlan)
+    assert result.summary == "Add a rate limiter node"
+    assert "rate limiting" in result.reasoning
+    assert len(result.operations) == 3
+    assert result.operations[0].type == "add_node"
+    assert result.operations[0].name == "rate_limiter"
+
+    g.destroy()
+
+
+def test_suggest_strategy_raises_on_invalid_json() -> None:
+    adapter = MockAdapter([LLMResponse(content="just some text", finish_reason="end_turn")])
+
+    import pytest
+
+    g = Graph("test")
+    with pytest.raises(ValueError, match="not valid JSON"):
+        suggest_strategy(g, "problem", adapter)
+    g.destroy()
+
+
+def test_suggest_strategy_raises_on_missing_summary() -> None:
+    adapter = MockAdapter([
+        LLMResponse(content=json.dumps({"operations": []}), finish_reason="end_turn"),
+    ])
+
+    import pytest
+
+    g = Graph("test")
+    with pytest.raises(ValueError, match="missing 'summary'"):
+        suggest_strategy(g, "problem", adapter)
+    g.destroy()
