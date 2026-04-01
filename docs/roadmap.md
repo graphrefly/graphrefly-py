@@ -277,14 +277,14 @@ Pulsar-inspired messaging features for topic retention, cursor consumers, and qu
 
 Composition layer over 3.2 (`reactive_log`), 4.1 (sagas), 4.2 (event bus), 4.3 (projections). Guards (1.5) enforce command/query boundary.
 
-- [ ] `cqrs(name, definition)` → Graph — top-level factory
-- [ ] `command(name, handler)` — write-only node; guard rejects `observe`
-- [ ] `event(name)` — backed by `reactive_log`; append-only, immutable
-- [ ] `projection(events, reducer)` — read-only derived node; guard rejects `write`
-- [ ] `saga(events, handler)` — event-driven side effects (delegates to `pipeline()`)
-- [ ] `event_store` adapter interface — pluggable persistence (in-memory, SQLite, Postgres)
-- [ ] Projection rebuilding: replay events to reconstruct read models
-- [ ] `describe()` output distinguishes command / event / projection / saga node roles
+- [x] `cqrs(name, definition)` → Graph — top-level factory
+- [x] `command(name, handler)` — write-only node; guard rejects `observe`
+- [x] `event(name)` — backed by `reactive_log`; append-only, immutable
+- [x] `projection(events, reducer)` — read-only derived node; guard rejects `write`
+- [x] `saga(events, handler)` — event-driven side effects
+- [x] `event_store` adapter interface — pluggable persistence (in-memory default)
+- [x] Projection rebuilding: replay events to reconstruct read models
+- [x] `describe()` output distinguishes command / event / projection / saga node roles
 
 ---
 

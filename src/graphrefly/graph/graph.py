@@ -2012,19 +2012,32 @@ def _signal_node_subtree(
 
 
 def _collect_observe_targets(g: Graph, prefix: str) -> list[tuple[str, NodeImpl[Any]]]:
-    """Mount-first DFS, then local nodes and meta subtrees (aligned with :meth:`Graph.signal`)."""
+    """Collect all observe targets and sort by full qualified path (code-point order).
+
+    Cross-language alignment: both Python and TypeScript use full-path code-point
+    sort so that ``observe()`` subscription order is deterministic and identical
+    across implementations.
+    """
     out: list[tuple[str, NodeImpl[Any]]] = []
+    _collect_observe_targets_unsorted(g, prefix, out)
+    out.sort(key=lambda pair: pair[0])
+    return out
+
+
+def _collect_observe_targets_unsorted(
+    g: Graph, prefix: str, out: list[tuple[str, NodeImpl[Any]]]
+) -> None:
+    """Recursively collect all targets without sorting (helper for full-path sort)."""
     with g._locked():
-        mounts = sorted(g._mounts.items())
-        node_items = sorted(g._nodes.items())
+        mounts = list(g._mounts.items())
+        node_items = list(g._nodes.items())
     for mn, ch in mounts:
         wp = f"{prefix}{mn}{PATH_SEP}" if prefix else f"{mn}{PATH_SEP}"
-        out.extend(_collect_observe_targets(ch, wp))
+        _collect_observe_targets_unsorted(ch, wp, out)
     for name, n in node_items:
         bp = f"{prefix}{name}" if prefix else name
         out.append((bp, n))
         _append_meta_observe_targets(n, bp, out)
-    return out
 
 
 def _append_meta_observe_targets(

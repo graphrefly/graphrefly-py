@@ -1375,6 +1375,27 @@ class AgentLoopGraph(Graph):
                 max_tokens=self._max_tokens,
             ),
         )
+        # Guard: None/null — reject before from_any
+        if result is None:
+            msg = "_invoke_llm: adapter.invoke() returned None"
+            raise RuntimeError(msg)
+        # Guard: str — from_any would iterate characters
+        if isinstance(result, str):
+            msg = "_invoke_llm: adapter.invoke() returned a string, expected LLMResponse"
+            raise RuntimeError(msg)
+        # Guard: dict/Mapping — iterating a dict yields keys, not values;
+        # normalize to LLMResponse if it has a 'content' key.
+        if isinstance(result, dict):
+            if "content" in result:
+                return LLMResponse(
+                    content=result.get("content", ""),
+                    tool_calls=result.get("tool_calls"),
+                    usage=result.get("usage"),
+                    finish_reason=result.get("finish_reason"),
+                    metadata=result.get("metadata"),
+                )
+            msg = "_invoke_llm: adapter.invoke() returned a dict without 'content' key"
+            raise RuntimeError(msg)
         if isinstance(result, LLMResponse):
             return result
         resolved = from_any(result)
