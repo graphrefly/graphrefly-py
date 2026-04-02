@@ -217,7 +217,6 @@ class NodeImpl[T]:
         "_upstream_unsubs",
         "_inspector_hook",
         "_versioning",
-        "_versioning_level",
         "_hash_fn",
     )
 
@@ -253,16 +252,16 @@ class NodeImpl[T]:
         self._status: NodeStatus = "disconnected" if self._has_deps else "settled"
 
         # Versioning (GRAPHREFLY-SPEC §7)
-        self._versioning_level: VersioningLevel | None = opts.get("versioning")
+        versioning_level: VersioningLevel | None = opts.get("versioning")
         self._hash_fn: HashFn = opts.get("versioning_hash", default_hash)
         self._versioning: NodeVersionInfo | None = (
             create_versioning(
-                self._versioning_level,
+                versioning_level,
                 self._cached,
                 id=opts.get("versioning_id"),
                 hash_fn=self._hash_fn,
             )
-            if self._versioning_level is not None
+            if versioning_level is not None
             else None
         )
 

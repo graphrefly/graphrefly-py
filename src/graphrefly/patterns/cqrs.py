@@ -13,7 +13,7 @@ projections (4.3). Guards (1.5) enforce command/query boundary.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from graphrefly.core.clock import wall_clock_ns
@@ -105,24 +105,36 @@ class CqrsEvent:
 # Event store adapter
 # ---------------------------------------------------------------------------
 
+type EventStoreCursor = dict[str, Any]
+"""Opaque cursor for resumable event loading."""
+
+
+@dataclass(frozen=True, slots=True)
+class LoadEventsResult:
+    """Result of :meth:`EventStoreAdapter.load_events`."""
+
+    events: list[CqrsEvent] = field(default_factory=list)
+    cursor: EventStoreCursor | None = None
+
 
 class EventStoreAdapter:
     """Interface for pluggable event persistence.
 
-    Async :meth:`load_events` backs :meth:`CqrsGraph.rebuild_projection`.
-
-    **Dispatch path:** :meth:`CqrsGraph.dispatch` calls :meth:`persist_sync` on
-    the adapter **only if** it defines that method (see :class:`MemoryEventStore`).
-    Adapters with **only** async :meth:`persist` are not invoked during
-    ``dispatch``; add a synchronous :meth:`persist_sync` or persist outside CQRS.
+    :meth:`persist` is **synchronous** — called inline during ``dispatch``.
+    :meth:`load_events` is async and backs :meth:`CqrsGraph.rebuild_projection`.
     """
 
-    async def persist(self, event: CqrsEvent) -> None:
+    def persist(self, event: CqrsEvent) -> None:
         raise NotImplementedError
 
-    async def load_events(self, event_type: str, since: int | None = None) -> list[CqrsEvent]:
-        """Load persisted events; if *since* is set, only ``timestamp_ns > since``."""
+    async def load_events(
+        self, event_type: str, cursor: EventStoreCursor | None = None
+    ) -> LoadEventsResult:
+        """Load persisted events; if *cursor* is set, resume from that position."""
         raise NotImplementedError
+
+    async def flush(self) -> None:
+        """Optional: flush buffered writes. Default is a no-op."""
 
 
 class MemoryEventStore(EventStoreAdapter):
@@ -131,21 +143,23 @@ class MemoryEventStore(EventStoreAdapter):
     def __init__(self) -> None:
         self._store: dict[str, list[CqrsEvent]] = {}
 
-    async def persist(self, event: CqrsEvent) -> None:
+    def persist(self, event: CqrsEvent) -> None:
         self._store.setdefault(event.type, []).append(event)
 
-    async def load_events(self, event_type: str, since: int | None = None) -> list[CqrsEvent]:
+    async def load_events(
+        self, event_type: str, cursor: EventStoreCursor | None = None
+    ) -> LoadEventsResult:
         events = list(self._store.get(event_type, []))
+        since: int | None = cursor.get("since") if cursor is not None else None
         if since is not None:
             events = [e for e in events if e.timestamp_ns > since]
-        return events
+        new_cursor: EventStoreCursor | None = (
+            {"since": events[-1].timestamp_ns} if events else cursor
+        )
+        return LoadEventsResult(events=events, cursor=new_cursor)
 
     def clear(self) -> None:
         self._store.clear()
-
-    # Sync convenience for dispatch-time persist (non-blocking in-memory)
-    def persist_sync(self, event: CqrsEvent) -> None:
-        self._store.setdefault(event.type, []).append(event)
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +258,11 @@ class CqrsGraph(Graph):
         if entry is None:
             self.event(event_name)
             entry = self._event_logs[event_name]
+        # Terminal guard: reject dispatch to completed/errored streams.
+        status = entry["node"].status
+        if status in ("completed", "errored"):
+            msg = f'Cannot dispatch to terminated event stream "{event_name}" (status: {status}).'
+            raise RuntimeError(msg)
         self._seq += 1
         nv = entry["log"].entries.v
         evt = CqrsEvent(
@@ -254,8 +273,8 @@ class CqrsGraph(Graph):
             v0={"id": nv.id, "version": nv.version} if nv is not None else None,
         )
         entry["log"].append(evt)
-        if self._event_store is not None and hasattr(self._event_store, "persist_sync"):
-            self._event_store.persist_sync(evt)
+        if self._event_store is not None:
+            self._event_store.persist(evt)
 
     # -- Commands -------------------------------------------------------------
 
@@ -449,7 +468,8 @@ class CqrsGraph(Graph):
             raise RuntimeError(msg)
         all_events: list[CqrsEvent] = []
         for ename in event_names:
-            all_events.extend(await self._event_store.load_events(ename))
+            result = await self._event_store.load_events(ename)
+            all_events.extend(result.events)
         all_events.sort(key=lambda e: (e.timestamp_ns, e.seq))
         return reducer(initial, all_events)
 

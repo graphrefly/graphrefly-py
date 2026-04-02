@@ -2,23 +2,23 @@
 
 ## Open design decisions
 
-- **`from_llm_stream` / `fromLLMStream` teardown (Phase 4.4, 2026-03-31):** The `fromLLMStream` (TS) / `from_llm_stream` (PY) helper keepalives an internal effect node but does not expose a dispose handle. The returned log entries node has no teardown path — the effect + log live for the process lifetime. This matches `from_llm` / `fromLLM` (also no teardown) and is acceptable pre-1.0. When a teardown API is needed, options: (a) return an object with a `dispose` method; (b) require callers to use the node inside a `Graph` whose `destroy()` handles lifecycle.
-
-- **CQRS terminal state handling (Phase 4.5, 2026-03-31):** The CQRS layer does not intercept or handle COMPLETE/ERROR on event streams. If an event node reaches a terminal state (e.g., via `graph.signal([[COMPLETE]])`), sagas and projections stop receiving updates but `dispatch()` still attempts to append (silently succeeding at the `reactive_log` level). This is consistent with other pattern layers (messaging, orchestration) which also do not handle terminal states. A cross-cutting terminal-state strategy for pattern-layer graphs should be designed when needed — not piecemeal per pattern.
-
-- **CQRS dispatch-time persistence (Phase 4.5 — open):** TypeScript always calls `EventStoreAdapter.persist` from the append path (sync or returning a `Promise`). Returned promises are **not** awaited; rejections are not centrally handled — durability relative to `batch()` is undefined for async adapters unless you implement sync persistence or out-of-band flushing. Python calls **`persist_sync`** during `dispatch` only when the adapter defines that method; an adapter with **only** async `persist` is not invoked on the hot dispatch path (use `MemoryEventStore`, add `persist_sync`, or persist outside CQRS). **Decision pending:** whether to align via documented fire-and-forget tasks (Python), narrow TS to sync-only in the type surface, or add an explicit async flush lifecycle.
-
-- **CQRS saga vs projection event ordering (Phase 4.5 — open):** Projections merge all subscribed event streams and sort **globally** by `(timestamp_ns, seq)`. Sagas iterate streams in the order given to `saga(..., event_names, ...)`, and within each stream only **new** tail entries since the last run — there is **no** global merge/sort before the handler. **Decision pending:** keep this intentional split (read models vs side-effect delivery) or introduce a shared ordering policy (e.g. collect-and-sort like projections).
-
-- **CQRS event store `since` / replay cursor (Phase 4.5 — open):** `loadEvents` / `load_events(..., since)` uses a **strict** lower bound: `timestampNs` / `timestamp_ns` **greater than** `since` (not `>=`). `seq` is not a store-level cursor. **Decision pending:** document-only vs extending the API with seq- or opaque-cursor replay.
-
-- **CQRS reactive log snapshot shape (Phase 4.5 — cross-language note):** The append-only log underneath CQRS events is `reactiveLog` in TypeScript (`Versioned<{ entries: readonly T[] }>`) and `reactive_log` in Python (`Versioned` wrapping a **tuple** of entries). The CQRS layer adapts locally when building projections and sagas. This is **not** a user-facing API mismatch for typical use.
-
-- **Cross-language V1 cid parity (Phase 6, 2026-03-31):** `default_hash` / `defaultHash` uses JSON serialization + SHA-256 truncated to 16 hex chars. Python uses `json.dumps(sort_keys=True)`; TS uses `JSON.stringify` with a sorted-key replacer. These produce identical output for pure JSON-safe values (strings, numbers, booleans, null, arrays, plain objects). However, cids may diverge for: (a) floats where TS and Python differ in serialization (e.g. `1.0` → `"1"` in JS, `"1.0"` in Python); (b) values with no JSON equivalent (`undefined`, `NaN`, `Infinity`). **Decision pending:** accept divergence and document it, or align on a canonical binary codec (e.g. DAG-CBOR) for the cid substrate. For now, cross-language cid equality is only guaranteed for values that round-trip cleanly through JSON.
-
-- **`_versioning_level` field stored but unused at runtime (Phase 6, 2026-03-31):** `NodeImpl` stores `_versioning_level` (the level passed at construction: `0` or `1`) but never reads it after initialization. The actual V0/V1 distinction is detected dynamically via `is_v1()` / `isinstance(info, V1)`. The field is retained for potential future use: `describe_node()` could emit the configured level, upgrade paths could read it to migrate V0→V1, and `graph.set_versioning(level)` (roadmap 6.0) may need to inspect it. Cross-language: same situation in TS (`_versioningLevel` field).
+*(No open design decisions at this time.)*
 
 ## Resolved design decisions (streaming + AI lifecycle)
+
+- **`from_llm_stream` / `fromLLMStream` teardown (Phase 4.4, resolved 2026-04-02):** TS `fromLLMStream` now returns `LLMStreamHandle { node, dispose }`. PY `from_llm_stream` (when implemented) should follow the same bundle pattern `{ node, dispose }`.
+
+- **CQRS terminal state handling (Phase 4.5, resolved 2026-04-02):** `dispatch()` / `_append_event` now raises `RuntimeError` if the event stream node is terminal (`completed`/`errored`). Fail-fast guard prevents silent data loss.
+
+- **CQRS dispatch-time persistence (Phase 4.5, resolved 2026-04-02):** `persist()` is now sync-only. `MemoryEventStore.persist_sync` removed (persist is sync). Adapters with async I/O buffer internally and expose optional `async flush()`. Cross-language: TS `persist` is also sync-only.
+
+- **CQRS saga vs projection event ordering (Phase 4.5, resolved 2026-04-02):** Keep the intentional split. Projections globally sort by `(timestamp_ns, seq)`. Sagas use per-stream causal ordering (new tail entries since last run). Different semantics for read models vs side-effect delivery.
+
+- **CQRS event store `since` / replay cursor (Phase 4.5, resolved 2026-04-02):** Opaque `EventStoreCursor` (dict). `load_events` returns `LoadEventsResult(events, cursor)`. Cross-language: same API shape.
+
+- **Cross-language V1 cid parity (Phase 6, resolved 2026-04-02):** `canonicalize_for_hash` normalizer applied before JSON serialization. Integer-valued floats to ints. Non-finite rejected. No external deps.
+
+- **`_versioning_level` field (Phase 6, resolved 2026-04-02):** Field deleted from `NodeImpl` `__slots__`. Inlined as local in `__init__`. `Graph._default_versioning_level` retained (actively used).
 
 - **Streaming token delivery (Phase 4.4, resolved 2026-03-31 — option (a) `reactive_log` internally):** `from_llm_stream(adapter, messages)` returns `Node[ReactiveLogSnapshot[str]]`, accumulating tokens via `reactive_log` internally. This reuses the existing Phase 3.2 data structure; `tail()` / `log_slice()` give natural windowed views; fully reactive (no polling); `describe()` / `observe()` / inspector work out of the box. Rejected alternatives: (b) `DATA` with `{ partial, chunk }` — loses composability and version dedup; (c) `stream_from` pattern — premature abstraction for a single use case.
 
@@ -26,7 +26,9 @@
 
 - **`agent_memory` in-factory composition scope (Phase 4.4, resolved 2026-03-31):** All primitives (`vector_index`, `knowledge_graph`, `light_collection`, `decay`, `auto_checkpoint`) are opt-in via options. Vector + KG indexing happens in a reactive `effect` that observes the distill store. Tier classification runs in a separate `effect`. This avoids monolithic coupling while keeping the factory ergonomic. Cross-language parity: TS uses `fromTimer(ms)` for reflection trigger, PY uses `from_timer(seconds)`.
 
-- **Reactive layout (roadmap §7.1, resolved 2026-03-31):** Cross-language parity target is **same graph shape + shared tests for ASCII/Latin** (not full ICU / `Intl` segmentation parity). Whitespace normalization matches TypeScript: collapse `[\t\n\r\f ]+` to a single ASCII space, then strip **at most one** leading and one trailing ASCII space (Python does **not** use full-Unicode :meth:`str.strip`). The ``segments`` meta field **``cache-hit-rate``** is ``hits / (hits + misses)`` over ``measure_segment`` / ``measureSegment`` lookups in that recompute (``1.0`` when there were zero lookups). Companion meta **``DATA``** for layout metrics is delivered **after** the parent ``segments`` node settles: Python uses ``defer_down``; TypeScript schedules meta ``.down`` via ``queueMicrotask`` after synchronous ``_emitAutoValue``. **``MeasurementAdapter``:** ``clear_cache`` / ``clearCache`` is optional on both sides.
+- **Reactive layout (roadmap §7.1, resolved 2026-03-31):** Cross-language parity target is **same graph shape + shared tests for ASCII/Latin** (not full ICU / `Intl` segmentation parity). Whitespace normalization matches TypeScript: collapse `[\t\n\r\f ]+` to a single ASCII space, then strip **at most one** leading and one trailing ASCII space (Python does **not** use full-Unicode :meth:`str.strip`). The ``segments`` meta field **``cache-hit-rate``** is ``hits / (hits + misses)`` over ``measure_segment`` / ``measureSegment`` lookups in that recompute (``1.0`` when there were zero lookups). Companion meta **``DATA``** for layout metrics is delivered **after** the parent ``segments`` node settles: Python uses ``defer_down``; TypeScript uses ``emitWithBatch``. Both ports defer via their batch systems. **``MeasurementAdapter``:** ``clear_cache`` / ``clearCache`` is optional on both sides.
+- **Reactive layout meta timing parity (Group 3 — FYI):** Both ports defer meta companion emissions via their batch systems: TS uses `emitWithBatch`, PY uses `defer_down`. No microtask dependency. If batching/lock semantics evolve, re-validate the relative ordering of `segments` vs its meta companion emissions.
+- **Reactive layout intentional divergences (Group 4 — FYI):** TS CLI width heuristics use hard-coded codepoint ranges and a terminal-like approximation of East Asian width/combining marks, while Py uses `unicodedata.east_asian_width()` + Unicode `category()` (so rare/ambiguous codepoints may differ). TS feeds the layout pipeline using `Intl.Segmenter` word segmentation, while Py seeds it via regex tokenization (full ICU parity is not guaranteed; current parity tests target ASCII/Latin). Runtime backend sets differ by environment: TS canvas/Node-canvas adapters vs Python Pillow-based measurement.
 
 - **Default node versioning ``id`` (Phase 6, resolved 2026-03-31):** Auto-generated V0/V1 ids are **RFC 4122 UUID strings with hyphens**, matching ``crypto.randomUUID()`` (TypeScript) and ``str(uuid.uuid4())`` (Python). For stable cross-session ids, set ``versioningId`` / ``versioning_id`` explicitly.
 
@@ -330,7 +332,11 @@ Cross-language: `graphrefly-ts/docs/optimizations.md` §15. **Python (shipped):*
 | Extra Phase 3.1 (resilience) | `graphrefly.extra.{backoff,resilience,checkpoint}`; see §6 below | `src/extra/{backoff,resilience,checkpoint}.ts`; see §6 below |
 | Extra Phase 3.2 (data structures) | `graphrefly.extra.data_structures` (`reactive_map`, …); see §17 | `reactiveMap` + `reactive-base` (`Versioned` snapshots); see §17 |
 
-### 18. Inspector causality hooks (Phase 3.3 observe extensions)
+### 18. CQRS reactive log snapshot shape (Phase 4.5 — cross-language note)
+
+The append-only log underneath CQRS events is `reactiveLog` in TypeScript (`Versioned<{ entries: readonly T[] }>`) and `reactive_log` in Python (`Versioned` wrapping a **tuple** of entries). The CQRS layer adapts locally when building projections and sagas. This is **not** a user-facing API mismatch for typical use.
+
+### 19. Inspector causality hooks (Phase 3.3 observe extensions)
 
 | Topic | Python | TypeScript |
 |-------|--------|------------|
@@ -340,7 +346,7 @@ Cross-language: `graphrefly-ts/docs/optimizations.md` §15. **Python (shipped):*
 
 Parity hardening (2026-03-30): both ports now keep `data` / `resolved` events under `causal` even when no trigger index is known yet, always emit `derived` on every `run`, and set `completed_cleanly` / `completedCleanly` only when no prior `ERROR` was seen. Structured timeline timestamps use `timestamp_ns` in both ports (nanoseconds). `ObserveResult.values` is latest-by-path map in both ports.
 
-### 19. Inspector helper parity (reasoning trace + diagram export)
+### 20. Inspector helper parity (reasoning trace + diagram export)
 
 | Topic | Python | TypeScript |
 |-------|--------|------------|
@@ -357,7 +363,7 @@ Parity hardening (2026-03-30): both ports now keep `data` / `resolved` events un
 | `spy` return shape | `Graph.spy(...)` returns `SpyHandle` with `.result` and `.dispose()` | `Graph.spy(...)` returns `{ result: ObserveResult, dispose() }` (`GraphSpyHandle`) |
 | `dump_graph` / `dumpGraph` JSON stability | Uses `json.dumps(..., sort_keys=True)` (byte-stable for same graph + options) | Uses recursively sorted keys before stringify (byte-stable for same graph + options) |
 
-### 20. `reachable(...)` parity decisions (2026-03-30)
+### 21. `reachable(...)` parity decisions (2026-03-30)
 
 | Topic | Python | TypeScript |
 |-------|--------|------------|
@@ -368,7 +374,7 @@ Parity hardening (2026-03-30): both ports now keep `data` / `resolved` events un
 | Traversal semantics | BFS over `deps` + `edges`; upstream = deps+incoming, downstream = reverse-deps+outgoing | Same |
 | Output ordering | Lexical code-point ordering via `sorted()` | Lexical code-point ordering (stable, locale-independent) |
 
-### 21. Centralised clock utilities (`core/clock`) — parity (2026-03-30)
+### 22. Centralised clock utilities (`core/clock`) — parity (2026-03-30)
 
 Both repos export two timestamp functions from `core/clock`:
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ __all__ = [
     "create_versioning",
     "advance_version",
     "default_hash",
+    "canonicalize_for_hash",
     "is_v1",
 ]
 
@@ -65,6 +67,44 @@ type NodeVersionInfo = V0 | V1
 
 
 # ---------------------------------------------------------------------------
+# Canonical normalizer
+# ---------------------------------------------------------------------------
+
+
+def canonicalize_for_hash(value: Any) -> Any:
+    """Normalize *value* into a JSON-safe canonical form for deterministic hashing.
+
+    - ``None`` → ``None``
+    - ``float``: rejects non-finite (``NaN``, ``±Inf``) with ``TypeError``;
+      normalizes integer-valued floats to ``int`` (``1.0`` → ``1``).
+    - ``int``, ``str``, ``bool``: pass through unchanged.
+    - ``list`` / ``tuple``: recursively canonicalize each element, return as ``list``.
+    - ``dict``: sort keys, recursively canonicalize values, return as sorted ``dict``.
+    - Fallback: return ``None``.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            msg = f"Cannot canonicalize non-finite float: {value}"
+            raise TypeError(msg)
+        if value == int(value):
+            return int(value)
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [canonicalize_for_hash(item) for item in value]
+    if isinstance(value, dict):
+        return {k: canonicalize_for_hash(v) for k, v in sorted(value.items())}
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Default hash
 # ---------------------------------------------------------------------------
 
@@ -72,9 +112,11 @@ type NodeVersionInfo = V0 | V1
 def default_hash(value: Any) -> str:
     """SHA-256 of deterministic JSON, truncated to 16 hex chars (~64-bit).
 
-    Object keys are sorted for determinism.
+    Object keys are sorted for determinism. Values are canonicalized first
+    via :func:`canonicalize_for_hash`.
     """
-    json_bytes = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
+    canonical = canonicalize_for_hash(value)
+    json_bytes = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(json_bytes).hexdigest()[:16]
 
 

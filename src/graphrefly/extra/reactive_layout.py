@@ -36,11 +36,16 @@ if TYPE_CHECKING:
 class MeasurementAdapter(Protocol):
     """Pluggable measurement backend.
 
-    Implementations may omit ``clear_cache`` (stateless / read-only measurement).
+    Implementations may omit ``clear_cache``; the layout engine treats it as an
+    optional no-op hook.
     """
 
     def measure_segment(self, text: str, font: str) -> dict[str, float]:
         """Return ``{"width": <px>}`` for *text* rendered in *font*."""
+        ...
+
+    def clear_cache(self) -> None:
+        """Optional hook to clear internal cached measurement state."""
         ...
 
 
@@ -771,6 +776,19 @@ def reactive_layout(
     # Shared measurement cache: {font: {segment: width}}
     measure_cache: dict[str, dict[str, float]] = {}
 
+    def _invalidate_measure_cache(
+        msg: Any,
+        cache: dict[str, dict[str, float]],
+        adapter: MeasurementAdapter,
+    ) -> bool:
+        """Clear layout measurement cache on INVALIDATE (spec §1.2)."""
+        if msg[0] is MessageType.INVALIDATE:
+            cache.clear()
+            clear_fn = getattr(adapter, "clear_cache", None)
+            if callable(clear_fn):
+                clear_fn()
+        return False
+
     # --- State nodes ---
     text_node: NodeImpl[str] = state(text, name="text")
     font_node: NodeImpl[str] = state(font, name="font")
@@ -824,6 +842,9 @@ def reactive_layout(
         name="segments",
         meta={"cache-hit-rate": 0, "segment-count": 0, "layout-time-ns": 0},
         equals=_segments_equals,
+        on_message=lambda msg, _dep_index, _actions: _invalidate_measure_cache(
+            msg, measure_cache, adapter
+        ),
     )
 
     # --- Derived: line-breaks (segments + max-width + font → LineBreaksResult) ---
@@ -839,7 +860,12 @@ def reactive_layout(
         if a.line_count != b.line_count:
             return False
         return all(
-            la.text == lb.text and la.width == lb.width
+            la.text == lb.text
+            and la.width == lb.width
+            and la.start_segment == lb.start_segment
+            and la.start_grapheme == lb.start_grapheme
+            and la.end_segment == lb.end_segment
+            and la.end_grapheme == lb.end_grapheme
             for la, lb in zip(a.lines, b.lines, strict=True)
         )
 

@@ -19,6 +19,7 @@ from graphrefly.extra.reactive_layout import (
     compute_line_breaks,
     reactive_layout,
 )
+from graphrefly.core.protocol import MessageType, batch
 
 # ---------------------------------------------------------------------------
 # Mock adapter: 8px per character (deterministic, no Canvas)
@@ -130,8 +131,12 @@ class AdapterNoClearCache:
     def measure_segment(self, text: str, font: str) -> dict[str, float]:
         return {"width": len(text) * CHAR_WIDTH}
 
+    def clear_cache(self) -> None:
+        # Optional hook: no-op for this test adapter.
+        return
 
-def test_measurement_adapter_without_clear_cache() -> None:
+
+def test_measurement_adapter_with_noop_clear_cache() -> None:
     a = AdapterNoClearCache()
     assert isinstance(a, MeasurementAdapter)
     segs = analyze_and_measure("hi", "16px mono", a, {})
@@ -333,6 +338,47 @@ class TestReactiveLayout:
 
             layout.set_max_width(40)
             assert layout.height.get() == 40  # 2 lines
+            unsub()
+        finally:
+            layout.graph.destroy()
+
+    def test_invalidate_clears_measurement_cache(self) -> None:
+        state = {"multiplier": 1, "clear_calls": 0}
+
+        class AdapterInvalidateAware:
+            def measure_segment(self, text: str, font: str) -> dict[str, float]:
+                return {"width": len(text) * CHAR_WIDTH * state["multiplier"]}
+
+            def clear_cache(self) -> None:
+                state["clear_calls"] += 1
+
+        layout = reactive_layout(
+            AdapterInvalidateAware(),
+            text="hello world",
+            font="16px mono",
+            line_height=20,
+            max_width=90,  # 88px fits initially, wraps after multiplier change
+        )
+        try:
+            seen: list[object] = []
+            unsub = layout.height.subscribe(lambda msgs: seen.extend(msgs))
+            assert layout.height.get() == 20
+
+            state["multiplier"] = 2
+            layout.graph.signal([(MessageType.INVALIDATE,)])
+
+            # INVALIDATE clears cached state of all nodes in the graph, including
+            # source nodes like `line-height` and `max-width`. Restore required
+            # inputs so recomputation yields deterministic, non-None values.
+            with batch():
+                layout.set_text("hello world")
+                layout.set_font("16px mono")
+                layout.set_line_height(20)
+                layout.set_max_width(90)
+            assert any(m[0] is MessageType.DATA and m[1] == 40 for m in seen), seen
+            assert layout.height.get() == 40
+            assert state["clear_calls"] >= 1
+
             unsub()
         finally:
             layout.graph.destroy()

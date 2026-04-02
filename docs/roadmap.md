@@ -404,8 +404,9 @@ Two-tier DX: out-of-the-box `reactive_layout(adapter, text, font, line_height, m
 
 #### MeasurementAdapter implementations (pluggable backends)
 
-- [ ] `PillowMeasureAdapter` (default, server) — Pillow `ImageFont.getlength()`, font cache
-- [ ] `PrecomputedAdapter` (server/snapshot) — reads from pre-computed metrics dict, zero measurement at runtime
+- [x] `PillowMeasureAdapter` (default, server) — Pillow `ImageFont.getlength()`, font cache; optional dep
+- [x] `PrecomputedAdapter` (server/snapshot) — reads from pre-computed metrics dict, zero measurement at runtime; per-char fallback or strict error mode
+- [x] `CliMeasureAdapter` (terminal) — monospace cell counting via `unicodedata.east_asian_width()` (CJK/fullwidth = 2 cells), configurable `cell_px`, no external deps
 
 #### Standalone extraction
 

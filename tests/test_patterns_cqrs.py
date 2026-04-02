@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import pytest
 
@@ -12,6 +13,7 @@ from graphrefly.patterns.cqrs import (
     CqrsEvent,
     CqrsGraph,
     EventStoreAdapter,
+    LoadEventsResult,
     MemoryEventStore,
     cqrs,
 )
@@ -347,27 +349,30 @@ def test_describe_shows_edges() -> None:
 # -- Event store -------------------------------------------------------------
 
 
-def test_dispatch_does_not_call_async_only_persist() -> None:
-    """Adapters without ``persist_sync`` are not invoked on the dispatch path."""
+def test_dispatch_calls_sync_persist() -> None:
+    """Adapters with sync ``persist`` are invoked on the dispatch path."""
 
-    class AsyncOnly(EventStoreAdapter):
+    class SyncStore(EventStoreAdapter):
         def __init__(self) -> None:
             self.called: list[CqrsEvent] = []
 
-        async def persist(self, event: CqrsEvent) -> None:
+        def persist(self, event: CqrsEvent) -> None:
             self.called.append(event)
 
-        async def load_events(self, event_type: str, since: int | None = None) -> list[CqrsEvent]:
-            return []
+        async def load_events(
+            self, event_type: str, cursor: dict[str, Any] | None = None
+        ) -> LoadEventsResult:
+            return LoadEventsResult()
 
-    store = AsyncOnly()
+    store = SyncStore()
     app = cqrs("test")
     app.use_event_store(store)
     app.command("c", lambda _p, a: a.emit("e", {}))
     app.dispatch("c", {})
     entries = _snap_entries(app.event("e").get())
     assert len(entries) == 1
-    assert store.called == []
+    assert len(store.called) == 1
+    assert store.called[0].type == "e"
     app.destroy()
 
 
@@ -381,9 +386,9 @@ def test_use_event_store_persists_events() -> None:
     app.dispatch("place_order", {"id": "1"})
     app.dispatch("place_order", {"id": "2"})
 
-    persisted = asyncio.run(store.load_events("order_placed"))
-    assert len(persisted) == 2
-    assert persisted[0].payload == {"id": "1"}
+    result = asyncio.run(store.load_events("order_placed"))
+    assert len(result.events) == 2
+    assert result.events[0].payload == {"id": "1"}
     app.destroy()
 
 
@@ -418,19 +423,19 @@ def test_memory_event_store_since_filter() -> None:
     store = MemoryEventStore()
     t1 = 1_000_000_000_000
     t2 = 2_000_000_000_000
-    store.persist_sync(CqrsEvent(type="a", payload=1, timestamp_ns=t1, seq=1))
-    store.persist_sync(CqrsEvent(type="a", payload=2, timestamp_ns=t2, seq=2))
+    store.persist(CqrsEvent(type="a", payload=1, timestamp_ns=t1, seq=1))
+    store.persist(CqrsEvent(type="a", payload=2, timestamp_ns=t2, seq=2))
 
-    all_events = asyncio.run(store.load_events("a"))
-    assert len(all_events) == 2
+    all_result = asyncio.run(store.load_events("a"))
+    assert len(all_result.events) == 2
 
-    recent = asyncio.run(store.load_events("a", since=t1))
-    assert len(recent) == 1
-    assert recent[0].payload == 2
+    recent_result = asyncio.run(store.load_events("a", cursor={"since": t1}))
+    assert len(recent_result.events) == 1
+    assert recent_result.events[0].payload == 2
 
 
 def test_memory_event_store_clear() -> None:
     store = MemoryEventStore()
-    store.persist_sync(CqrsEvent(type="a", payload=1, timestamp_ns=0, seq=1))
+    store.persist(CqrsEvent(type="a", payload=1, timestamp_ns=0, seq=1))
     store.clear()
-    assert asyncio.run(store.load_events("a")) == []
+    assert asyncio.run(store.load_events("a")).events == []

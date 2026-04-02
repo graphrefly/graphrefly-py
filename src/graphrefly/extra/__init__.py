@@ -45,6 +45,11 @@ from graphrefly.extra.data_structures import (
     reactive_log,
     reactive_map,
 )
+from graphrefly.extra.measurement_adapters import (
+    CliMeasureAdapter,
+    PrecomputedAdapter,
+    PillowMeasureAdapter,
+)
 from graphrefly.extra.reactive_layout import (
     CharPosition,
     LayoutLine,
@@ -288,4 +293,7 @@ __all__ = [
     "compute_line_breaks",
     "reactive_layout",
     "zip",
+    "CliMeasureAdapter",
+    "PrecomputedAdapter",
+    "PillowMeasureAdapter",
 ]
