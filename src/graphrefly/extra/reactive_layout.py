@@ -19,8 +19,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from graphrefly.core.clock import monotonic_ns
-from graphrefly.core.protocol import MessageType
-from graphrefly.core.subgraph_locks import defer_down
+from graphrefly.core.protocol import MessageType, emit_with_batch
 from graphrefly.core.sugar import derived, state
 from graphrefly.graph.graph import Graph
 
@@ -782,7 +781,7 @@ def reactive_layout(
         adapter: MeasurementAdapter,
     ) -> bool:
         """Clear layout measurement cache on INVALIDATE (spec §1.2)."""
-        if msg[0] is MessageType.INVALIDATE:
+        if msg[0] == MessageType.INVALIDATE:
             cache.clear()
             clear_fn = getattr(adapter, "clear_cache", None)
             if callable(clear_fn):
@@ -810,19 +809,19 @@ def reactive_layout(
         lookups = measure_stats["hits"] + measure_stats["misses"]
         hit_rate = 1.0 if lookups == 0 else measure_stats["hits"] / lookups
 
-        # Defer meta updates so they settle after the parent node's own DATA,
-        # avoiding mid-propagation temporal ordering violations (QA P1).
+        # Phase-3 deferral: meta companion values arrive after parent's own
+        # DATA has propagated through phase-2 (parity with TS emitWithBatchPhase3).
         meta = segments_node.meta
         if meta:
             cr = meta.get("cache-hit-rate")
             if cr is not None:
-                defer_down(cr, [(MessageType.DATA, hit_rate)])
+                emit_with_batch(cr.down, [(MessageType.DATA, hit_rate)], phase=3)
             sc = meta.get("segment-count")
             if sc is not None:
-                defer_down(sc, [(MessageType.DATA, len(result))])
+                emit_with_batch(sc.down, [(MessageType.DATA, len(result))], phase=3)
             lt = meta.get("layout-time-ns")
             if lt is not None:
-                defer_down(lt, [(MessageType.DATA, elapsed)])
+                emit_with_batch(lt.down, [(MessageType.DATA, elapsed)], phase=3)
 
         return result
 

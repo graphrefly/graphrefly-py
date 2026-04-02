@@ -91,9 +91,22 @@ def canonicalize_for_hash(value: Any) -> Any:
             msg = f"Cannot canonicalize non-finite float: {value}"
             raise TypeError(msg)
         if value == int(value):
-            return int(value)
+            iv = int(value)
+            if abs(iv) > 2**53 - 1:
+                msg = (
+                    f"Cannot hash integer outside safe range (|n| > 2^53-1): {value}. "
+                    "Cross-language cid parity is not guaranteed for unsafe integers."
+                )
+                raise TypeError(msg)
+            return iv
         return value
     if isinstance(value, int):
+        if abs(value) > 2**53 - 1:
+            msg = (
+                f"Cannot hash integer outside safe range (|n| > 2^53-1): {value}. "
+                "Cross-language cid parity is not guaranteed for unsafe integers."
+            )
+            raise TypeError(msg)
         return value
     if isinstance(value, str):
         return value

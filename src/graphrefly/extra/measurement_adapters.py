@@ -7,11 +7,7 @@ protocol.  Sync constructors, sync ``measure_segment()`` — no async, no pollin
 from __future__ import annotations
 
 import unicodedata
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    pass
-
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Shared: East Asian Width detection for CLI adapter

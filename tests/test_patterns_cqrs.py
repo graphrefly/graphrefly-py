@@ -429,7 +429,7 @@ def test_memory_event_store_since_filter() -> None:
     all_result = asyncio.run(store.load_events("a"))
     assert len(all_result.events) == 2
 
-    recent_result = asyncio.run(store.load_events("a", cursor={"since": t1}))
+    recent_result = asyncio.run(store.load_events("a", cursor={"timestamp_ns": t1, "seq": 1}))
     assert len(recent_result.events) == 1
     assert recent_result.events[0].payload == 2
 

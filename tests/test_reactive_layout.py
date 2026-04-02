@@ -6,6 +6,7 @@ so tests are environment-independent (no Canvas/DOM).
 
 from __future__ import annotations
 
+from graphrefly.core.protocol import MessageType, batch
 from graphrefly.extra.reactive_layout import (
     CharPosition,
     LayoutLine,
@@ -19,7 +20,6 @@ from graphrefly.extra.reactive_layout import (
     compute_line_breaks,
     reactive_layout,
 )
-from graphrefly.core.protocol import MessageType, batch
 
 # ---------------------------------------------------------------------------
 # Mock adapter: 8px per character (deterministic, no Canvas)

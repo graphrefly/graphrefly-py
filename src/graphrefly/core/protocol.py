@@ -99,12 +99,13 @@ _batch_tls = threading.local()
 
 
 class _BatchState:
-    __slots__ = ("depth", "flush_in_progress", "pending")
+    __slots__ = ("depth", "flush_in_progress", "pending", "pending_phase3")
 
     def __init__(self) -> None:
         self.depth = 0
         self.flush_in_progress = False
         self.pending: list[Callable[[], None]] = []
+        self.pending_phase3: list[Callable[[], None]] = []
 
 
 def _batch_state() -> _BatchState:
@@ -120,25 +121,50 @@ _MAX_DRAIN_ITERATIONS = 1000
 
 
 def _drain_pending(bs: _BatchState) -> None:
-    """Run all queued deferred callbacks until the queue is quiescent."""
+    """Run all queued deferred callbacks until the queue is quiescent.
+
+    Drain order: phase-2 (DATA/RESOLVED) until empty, then phase-3 (meta
+    companion emissions). If phase-3 callbacks enqueue new phase-2 work,
+    the outer loop catches it and drains phase-2 again before re-entering
+    phase-3.
+    """
     owns_flush = not bs.flush_in_progress
     if owns_flush:
         bs.flush_in_progress = True
     errors: list[Exception] = []
     iterations = 0
     try:
-        while bs.pending:
-            iterations += 1
-            if iterations > _MAX_DRAIN_ITERATIONS:
-                msg = f"batch drain exceeded {_MAX_DRAIN_ITERATIONS} iterations"
-                raise RuntimeError(msg)
-            batch = bs.pending
-            bs.pending = []
-            for fn in batch:
-                try:
-                    fn()
-                except Exception as e:
-                    errors.append(e)
+        while bs.pending or bs.pending_phase3:
+            # Phase-2: parent node settlements.
+            while bs.pending:
+                iterations += 1
+                if iterations > _MAX_DRAIN_ITERATIONS:
+                    bs.pending = []
+                    bs.pending_phase3 = []
+                    msg = f"batch drain exceeded {_MAX_DRAIN_ITERATIONS} iterations"
+                    raise RuntimeError(msg)
+                batch = bs.pending
+                bs.pending = []
+                for fn in batch:
+                    try:
+                        fn()
+                    except Exception as e:
+                        errors.append(e)
+            # Phase-3: meta companion emissions (after parent settlement).
+            if bs.pending_phase3:
+                iterations += 1
+                if iterations > _MAX_DRAIN_ITERATIONS:
+                    bs.pending = []
+                    bs.pending_phase3 = []
+                    msg = f"batch drain exceeded {_MAX_DRAIN_ITERATIONS} iterations"
+                    raise RuntimeError(msg)
+                batch = bs.pending_phase3
+                bs.pending_phase3 = []
+                for fn in batch:
+                    try:
+                        fn()
+                    except Exception as e:
+                        errors.append(e)
     finally:
         if owns_flush:
             bs.flush_in_progress = False
@@ -191,6 +217,7 @@ def batch() -> Generator[None]:
             if sys.exc_info()[1] is not None:
                 if not bs.flush_in_progress:
                     bs.pending.clear()
+                    bs.pending_phase3.clear()
             else:
                 _drain_pending(bs)
 
@@ -278,15 +305,18 @@ def emit_with_batch(
     sink: Callable[[Messages], None],
     messages: Messages,
     *,
+    phase: int = 2,
     strategy: EmitStrategy = "sequential",
     defer_when: DeferWhen = "batching",
     subgraph_lock: object | None = None,
 ) -> None:
-    """Deliver *messages* to *sink* with batch-aware phase-2 deferral.
+    """Deliver *messages* to *sink* with batch-aware deferral.
 
     Args:
         sink: Callable receiving a :class:`~graphrefly.core.protocol.Messages` list.
         messages: The messages to deliver.
+        phase: ``2`` (default) for standard DATA/RESOLVED deferral; ``3`` for
+            meta companion emissions that must arrive after parent settlements.
         strategy: ``"partition"`` (default for :class:`~graphrefly.core.node.NodeImpl`)
             splits messages into immediate vs phase-2 groups; ``"sequential"`` walks
             each message in order and handles ``COMPLETE``/``ERROR`` after phase-2.
@@ -309,10 +339,11 @@ def emit_with_batch(
     """
     if not messages:
         return
+    queue_attr = "pending_phase3" if phase == 3 else "pending"
     if strategy == "partition":
-        _emit_partition(sink, messages, defer_when, subgraph_lock)
+        _emit_partition(sink, messages, defer_when, subgraph_lock, queue_attr)
     else:
-        _emit_sequential(sink, messages, defer_when, subgraph_lock)
+        _emit_sequential(sink, messages, defer_when, subgraph_lock, queue_attr)
 
 
 def _emit_partition(
@@ -320,30 +351,31 @@ def _emit_partition(
     messages: Messages,
     defer_when: DeferWhen,
     subgraph_lock: object | None,
+    queue_attr: str = "pending",
 ) -> None:
     bs = _batch_state()
+    queue: list[Callable[[], None]] = getattr(bs, queue_attr)
     # Fast path: single-message batches (most common in graph-internal propagation)
     # skip partition_for_batch allocation entirely.
     if len(messages) == 1:
         t = messages[0][0]
         if t is MessageType.DATA or t is MessageType.RESOLVED:
-            # Phase-2: defer when batching.
             if _should_defer_phase2(bs, defer_when):
 
                 def _emit_single() -> None:
                     sink(messages)
 
-                bs.pending.append(_wrap_deferred_subgraph(_emit_single, subgraph_lock))
+                queue.append(_wrap_deferred_subgraph(_emit_single, subgraph_lock))
             else:
                 sink(messages)
         elif is_terminal_message(t):
-            # Terminal single message: defer when batching so preceding phase-2 flushes first.
+            # Terminal single message: defer when batching so preceding deferred flushes first.
             if _should_defer_phase2(bs, defer_when):
 
                 def _emit_terminal_single() -> None:
                     sink(messages)
 
-                bs.pending.append(_wrap_deferred_subgraph(_emit_terminal_single, subgraph_lock))
+                queue.append(_wrap_deferred_subgraph(_emit_terminal_single, subgraph_lock))
             else:
                 sink(messages)
         else:
@@ -357,20 +389,20 @@ def _emit_partition(
     if immediate:
         sink(immediate)
 
-    # 2. Phase-2 (tier 2) + 3. Terminal (tier 3) — canonical order preserved.
+    # 2. Deferred (tier 2) + Terminal (tier 3) — canonical order preserved.
     if _should_defer_phase2(bs, defer_when):
         if deferred:
 
             def _emit_deferred() -> None:
                 sink(deferred)
 
-            bs.pending.append(_wrap_deferred_subgraph(_emit_deferred, subgraph_lock))
+            queue.append(_wrap_deferred_subgraph(_emit_deferred, subgraph_lock))
         if terminal:
 
             def _emit_terminal() -> None:
                 sink(terminal)
 
-            bs.pending.append(_wrap_deferred_subgraph(_emit_terminal, subgraph_lock))
+            queue.append(_wrap_deferred_subgraph(_emit_terminal, subgraph_lock))
     else:
         if deferred:
             sink(deferred)
@@ -378,13 +410,16 @@ def _emit_partition(
             sink(terminal)
 
 
+
 def _emit_sequential(
     sink: Callable[[Messages], None],
     messages: Messages,
     defer_when: DeferWhen,
     subgraph_lock: object | None,
+    queue_attr: str = "pending",
 ) -> None:
     bs = _batch_state()
+    queue: list[Callable[[], None]] = getattr(bs, queue_attr)
     for msg in messages:
         kind = msg[0]
         if kind in _BATCH_DEFER_TYPES and _should_defer_phase2(bs, defer_when):
@@ -392,13 +427,13 @@ def _emit_sequential(
             def _emit(m: Message = msg, s: Callable[[Messages], None] = sink) -> None:
                 s([m])
 
-            bs.pending.append(_wrap_deferred_subgraph(_emit, subgraph_lock))
+            queue.append(_wrap_deferred_subgraph(_emit, subgraph_lock))
         elif kind in _TERMINAL_TYPES and _should_defer_phase2(bs, defer_when):
-            # Terminal: defer so preceding phase-2 flushes first.
+            # Terminal: defer so preceding deferred flushes first.
             def _emit_term(m: Message = msg, s: Callable[[Messages], None] = sink) -> None:
                 s([m])
 
-            bs.pending.append(_wrap_deferred_subgraph(_emit_term, subgraph_lock))
+            queue.append(_wrap_deferred_subgraph(_emit_term, subgraph_lock))
         else:
             sink([msg])
 

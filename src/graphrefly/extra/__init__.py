@@ -47,8 +47,8 @@ from graphrefly.extra.data_structures import (
 )
 from graphrefly.extra.measurement_adapters import (
     CliMeasureAdapter,
-    PrecomputedAdapter,
     PillowMeasureAdapter,
+    PrecomputedAdapter,
 )
 from graphrefly.extra.reactive_layout import (
     CharPosition,

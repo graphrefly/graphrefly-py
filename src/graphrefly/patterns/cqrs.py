@@ -150,11 +150,22 @@ class MemoryEventStore(EventStoreAdapter):
         self, event_type: str, cursor: EventStoreCursor | None = None
     ) -> LoadEventsResult:
         events = list(self._store.get(event_type, []))
-        since: int | None = cursor.get("since") if cursor is not None else None
-        if since is not None:
-            events = [e for e in events if e.timestamp_ns > since]
+        since_ts: int | None = cursor.get("timestamp_ns") if cursor is not None else None
+        since_seq: int | None = cursor.get("seq") if cursor is not None else None
+        if since_ts is not None:
+            events = [
+                e
+                for e in events
+                if e.timestamp_ns > since_ts
+                or (
+                    e.timestamp_ns == since_ts
+                    and e.seq > (since_seq if since_seq is not None else -1)
+                )
+            ]
         new_cursor: EventStoreCursor | None = (
-            {"since": events[-1].timestamp_ns} if events else cursor
+            {"timestamp_ns": events[-1].timestamp_ns, "seq": events[-1].seq}
+            if events
+            else cursor
         )
         return LoadEventsResult(events=events, cursor=new_cursor)
 
