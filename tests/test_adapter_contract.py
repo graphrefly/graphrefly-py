@@ -11,7 +11,7 @@ import time
 from unittest.mock import MagicMock
 
 from graphrefly.core import MessageType
-from graphrefly.extra.sources import from_webhook, from_websocket
+from graphrefly.extra.adapters import from_webhook, from_websocket
 
 # ---------------------------------------------------------------------------
 # Helpers

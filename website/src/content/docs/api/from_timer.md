@@ -21,7 +21,7 @@ def from_timer(
 Emit a value after a delay, then optionally tick at a fixed period (like Rx ``timer``).
 
 If *period* is ``None``, emit *first* once then ``COMPLETE``. If *period* is
-set, emit *first*, *first+1*, *first+2*, … every *period* seconds. Timer
+set, emit *first*, *first+1*, *first+2*, ... every *period* seconds. Timer
 threads are daemonized and cancelled on unsubscribe.
 
 Args:

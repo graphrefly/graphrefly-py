@@ -15,6 +15,16 @@ import pytest
 from graphrefly.core import MessageType
 from graphrefly.core.node import NodeImpl
 from graphrefly.core.sugar import producer, state
+from graphrefly.extra.adapters import (
+    from_event_emitter,
+    from_fs_watch,
+    from_git_hook,
+    from_mcp,
+    from_webhook,
+    from_websocket,
+    to_sse,
+    to_websocket,
+)
 from graphrefly.extra.sources import (
     cached,
     empty,
@@ -24,14 +34,8 @@ from graphrefly.extra.sources import (
     from_async_iter,
     from_awaitable,
     from_cron,
-    from_event_emitter,
-    from_fs_watch,
-    from_git_hook,
     from_iter,
-    from_mcp,
     from_timer,
-    from_webhook,
-    from_websocket,
     never,
     of,
     replay,
@@ -40,8 +44,6 @@ from graphrefly.extra.sources import (
     throw_error,
     to_array,
     to_list,
-    to_sse,
-    to_websocket,
 )
 
 
@@ -371,7 +373,7 @@ def test_from_fs_watch_debounce_without_polling(monkeypatch: pytest.MonkeyPatch)
         _ = on_error
         return [], lambda: None
 
-    monkeypatch.setattr("graphrefly.extra.sources._build_watchdog_backend", fake_backend)
+    monkeypatch.setattr("graphrefly.extra.adapters._build_watchdog_backend", fake_backend)
     sink: list[Any] = []
     node = from_fs_watch(
         "/tmp/project",
@@ -407,7 +409,7 @@ def test_from_fs_watch_runtime_backend_error_emits_error(monkeypatch: pytest.Mon
         error_callbacks.append(on_error)
         return [], lambda: None
 
-    monkeypatch.setattr("graphrefly.extra.sources._build_watchdog_backend", fake_backend)
+    monkeypatch.setattr("graphrefly.extra.adapters._build_watchdog_backend", fake_backend)
     sink: list[Any] = []
     node = from_fs_watch("/tmp/project", debounce=0.03)
     unsub = node.subscribe(sink.append)
@@ -431,7 +433,7 @@ def test_from_fs_watch_setup_failure_emits_error(monkeypatch: pytest.MonkeyPatch
         _ = (paths, recursive, on_event, on_error)
         raise RuntimeError("setup-failed")
 
-    monkeypatch.setattr("graphrefly.extra.sources._build_watchdog_backend", fake_backend)
+    monkeypatch.setattr("graphrefly.extra.adapters._build_watchdog_backend", fake_backend)
     sink: list[Any] = []
     node = from_fs_watch("/tmp/project", debounce=0.03)
     unsub = node.subscribe(sink.append)

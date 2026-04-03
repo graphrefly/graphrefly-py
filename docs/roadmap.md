@@ -302,6 +302,7 @@ Composition layer over 3.2 (`reactive_log`), 4.1 (sagas), 4.2 (event bus), 4.3 (
 - [ ] SQLAlchemy ORM integration
 - [ ] Django ORM integration
 - [ ] Tortoise ORM integration
+- [ ] `from_sqlite(db, query)` / `to_sqlite(db, table)` — SQLite via sqlite3/better-sqlite interface
 
 ### 5.3 — Adapters
 
@@ -315,14 +316,17 @@ Composition layer over 3.2 (`reactive_log`), 4.1 (sagas), 4.2 (event bus), 4.3 (
 
 Connectors for the universal reduction layer (Phase 8). Each wraps an external protocol/system as a reactive `producer` node.
 
-- [ ] `from_otel(opts)` — OTLP/HTTP receiver; accepts traces, metrics, logs as nodes. Bridges `opentelemetry-sdk` SpanProcessor/MetricReader/LogEmitterProvider.
-- [ ] `from_syslog(opts)` — RFC 5424 syslog receiver (UDP/TCP)
-- [ ] `from_statsd(opts)` — StatsD/DogStatsD UDP receiver
-- [ ] `from_prometheus(endpoint, opts)` — scrape Prometheus /metrics as reactive source
-- [ ] `from_kafka(topic, opts)` / `to_kafka(topic, opts)` — Kafka consumer/producer (via `confluent-kafka` or `aiokafka`)
-- [ ] `from_redis_stream(key, opts)` / `to_redis_stream(key, opts)` — Redis Streams
-- [ ] `from_csv(path, opts)` / `from_ndjson(stream)` — file/stream ingest for batch replay
-- [ ] `from_clickhouse_watch(query, opts)` — live materialized view as reactive source (via `clickhouse-connect`)
+- [x] `from_otel(register)` — OTLP/HTTP receiver; accepts traces, metrics, logs as separate nodes. Returns `OTelBundle(traces, metrics, logs)`.
+- [x] `from_syslog(register)` + `parse_syslog(raw)` — RFC 5424 syslog receiver; register-callback pattern.
+- [x] `from_statsd(register)` + `parse_statsd(line)` — StatsD/DogStatsD receiver; register-callback pattern.
+- [x] `from_prometheus(endpoint, opts)` — scrape Prometheus /metrics as reactive source; timer-driven HTTP scrape with `parse_prometheus_text`.
+- [x] `from_kafka(consumer, topic, opts)` / `to_kafka(source, producer, topic, opts)` — Kafka consumer/producer (duck-typed `KafkaConsumerLike`).
+- [x] `from_redis_stream(client, key, opts)` / `to_redis_stream(source, client, key, opts)` — Redis Streams (duck-typed `RedisClientLike`).
+- [x] `from_csv(source, opts)` / `from_ndjson(source)` — `Iterable[str]` ingest for batch replay; threaded drain.
+- [x] `from_clickhouse_watch(client, query, opts)` — timer-driven query polling as reactive source.
+- [ ] `from_pulsar(consumer, topic, opts)` / `to_pulsar(source, producer, topic, opts)` — Apache Pulsar native client
+- [ ] `from_nats(consumer, subject, opts)` / `to_nats(source, client, subject, opts)` — NATS consumer/producer
+- [ ] `from_rabbitmq(channel, queue, opts)` / `to_rabbitmq(source, channel, exchange, opts)` — RabbitMQ consumer/producer
 
 ### 5.3c — Storage & sink adapters
 
@@ -332,6 +336,8 @@ Connectors for the universal reduction layer (Phase 8). Each wraps an external p
 - [ ] `to_loki(opts)` / `to_tempo(opts)` — Grafana stack sinks
 - [ ] `checkpoint_to_s3(bucket, opts)` — graph snapshot persistence to object storage
 - [ ] `checkpoint_to_redis(prefix, opts)` — fast checkpoint for ephemeral infra
+- [ ] `to_file(path, opts)` — file sink
+- [ ] `to_csv(path, opts)` — CSV file sink
 
 ### 5.4 — LLM tool integration
 

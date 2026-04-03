@@ -299,6 +299,27 @@ Cross-language: `graphrefly-ts/docs/optimizations.md` §15. **Python (shipped):*
 | `to_json` return type | `to_json()` → `str` (no universal `__json__` hook in Python) | `toJSON()` → plain object (ECMAScript `JSON.stringify` protocol) | Language idiom |
 | `_parse_snapshot_envelope` | Validates `version`, `name`, `nodes`, `edges`, `subgraphs` types | Only validates `data.name` match | Python is stricter; both correct |
 
+### Ingest adapters (roadmap 5.2c / 5.3b) — deferred items (QA)
+
+Applies to `src/extra/adapters.ts` and `graphrefly.extra.adapters`. **Keep the table below identical in both repos' `docs/optimizations.md`.**
+
+| Item | Status | Notes |
+|------|--------|-------|
+| **`fromRedisStream` / `from_redis_stream` never emits COMPLETE** | Documented limitation (2026-04-03) | Long-lived stream consumers intentionally never complete. The consumer loop runs until teardown. This is expected behavior for persistent stream sources (same as Kafka). Document in JSDoc/docstrings. |
+| **`fromRedisStream` / `from_redis_stream` does not disconnect client** | Documented limitation (2026-04-03) | The caller owns the Redis client lifecycle. The adapter does not call `disconnect()` on teardown — the caller is responsible for closing the connection. Same contract as `fromKafka` (caller owns `consumer.connect()`/`disconnect()`). |
+| **PY `from_csv` / `from_ndjson` thread not joined on cleanup** | Documented limitation (2026-04-03) | Python file-ingest adapters run in a daemon thread. On teardown, `active[0] = False` signals the thread to exit but does not `join()` it. The daemon flag ensures the thread does not block process exit. A future optimization could add optional `join(timeout)` on cleanup for stricter resource control. |
+
+### Ingest adapters — intentional cross-language divergences (parity review 2026-04-03)
+
+| Aspect | TypeScript | Python | Rationale |
+|--------|-----------|--------|-----------|
+| **`KafkaConsumerLike` protocol** | KafkaJS shape: `subscribe({topic, fromBeginning})`, `run({eachMessage})`, `disconnect()` | confluent-kafka shape: `subscribe(topics: list)`, `run(callback)` | Each port targets its ecosystem's dominant Kafka client library. Both are duck-typed; users plug in their library's consumer directly. |
+| **`RedisClientLike` protocol** | ioredis shape: `xadd(key, id, ...fieldsAndValues)`, `xread(...args)` — variadic positional | redis-py shape: `xadd(name, fields: dict)`, `xread(streams: dict)` — dict-based | Same reasoning: each port matches the dominant Redis client for its ecosystem. Serialize defaults match (`string[]` vs `dict[str, str]`). |
+| **`toSSE` / `to_sse` return type** | `ReadableStream<Uint8Array>` (Web Streams API) | `Iterator[str]` (Python generator) | Language-native streaming idiom. TS uses Web Streams for SSE (compatible with `Response` constructor); PY uses generators (compatible with WSGI/ASGI streaming responses). |
+| **`fromPrometheus` / `fromClickHouseWatch` `signal` option** | `signal: AbortSignal` for external cancellation | No equivalent; uses `active[0]` flag on teardown | PY has no standard `AbortSignal`. External cancellation in PY is handled by unsubscribing (which triggers the cleanup/stop function). Both ports stop cleanly on teardown. |
+| **`SyslogMessage` field naming** | camelCase: `appName`, `procId`, `msgId` | snake_case: `app_name`, `proc_id`, `msg_id` | Language convention applied to output data structures. Each port follows its ecosystem's naming idiom. |
+| **`fromCSV` / `fromNDJSON` source type** | `AsyncIterable<string>` (async streams with chunk buffering) | `Iterable[str]` (sync iterators via threads) | PY uses threads for I/O concurrency; sync iterables are natural for `csv.reader` integration. TS uses async iteration for streaming I/O. |
+
 ---
 
 ## Summary

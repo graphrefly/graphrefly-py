@@ -8,7 +8,7 @@ Coerce a value into a :class:`~graphrefly.core.node.Node` using the best matchin
 ## Signature
 
 ```python
-def from_any(value: Any) -> Node[Any]
+def from_any(value: Any, *, runner: Any | None = None) -> Node[Any]
 ```
 
 ## Documentation
@@ -17,13 +17,15 @@ Coerce a value into a :class:`~graphrefly.core.node.Node` using the best matchin
 
 Dispatch rules:
 
-- Existing :class:`~graphrefly.core.node.Node` → returned as-is.
-- :class:`collections.abc.AsyncIterable` / async iterator → :func:`from_async_iter`.
-- Awaitable / :class:`asyncio.Future` / coroutine → :func:`from_awaitable`.
+- Existing :class:`~graphrefly.core.node.Node` -&gt; returned as-is.
+- :class:`collections.abc.AsyncIterable` / async iterator -&gt; :func:`from_async_iter`.
+- Awaitable / :class:`asyncio.Future` / coroutine -&gt; :func:`from_awaitable`.
 - Otherwise tries ``iter(value)``; if that fails uses :func:`of`.
 
 Args:
     value: Any value to coerce.
+    runner: Optional :class:`~graphrefly.core.runner.Runner` forwarded to
+        :func:`from_awaitable` / :func:`from_async_iter` when applicable.
 
 Returns:
     A :class:`~graphrefly.core.node.Node` wrapping *value*.

@@ -1,9 +1,9 @@
 ---
 title: 'emit_with_batch'
-description: 'Deliver *messages* to *sink* with batch-aware phase-2 deferral.'
+description: 'Deliver *messages* to *sink* with batch-aware deferral.'
 ---
 
-Deliver *messages* to *sink* with batch-aware phase-2 deferral.
+Deliver *messages* to *sink* with batch-aware deferral.
 
 ## Signature
 
@@ -12,6 +12,7 @@ def emit_with_batch(
     sink: Callable[[Messages], None],
     messages: Messages,
     *,
+    phase: int = 2,
     strategy: EmitStrategy = "sequential",
     defer_when: DeferWhen = "batching",
     subgraph_lock: object | None = None,
@@ -20,11 +21,13 @@ def emit_with_batch(
 
 ## Documentation
 
-Deliver *messages* to *sink* with batch-aware phase-2 deferral.
+Deliver *messages* to *sink* with batch-aware deferral.
 
 Args:
     sink: Callable receiving a :class:`~graphrefly.core.protocol.Messages` list.
     messages: The messages to deliver.
+    phase: ``2`` (default) for standard DATA/RESOLVED deferral; ``3`` for
+        meta companion emissions that must arrive after parent settlements.
     strategy: ``"partition"`` (default for :class:`~graphrefly.core.node.NodeImpl`)
         splits messages into immediate vs phase-2 groups; ``"sequential"`` walks
         each message in order and handles ``COMPLETE``/``ERROR`` after phase-2.

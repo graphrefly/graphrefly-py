@@ -193,7 +193,7 @@ def sse_response(
     internally.  Starlette runs sync iterators in a threadpool, so the event
     loop is never blocked.
     """
-    from graphrefly.extra.sources import to_sse
+    from graphrefly.extra.adapters import to_sse
 
     return StreamingResponse(
         to_sse(
@@ -625,7 +625,7 @@ def _observe_sse_response(
     when the consumer drains below *low_water_mark* (default:
     ``high_water_mark // 2``).
     """
-    from graphrefly.extra.sources import sse_frame
+    from graphrefly.extra.adapters import sse_frame
 
     q: queue.Queue[str | tuple[str, bool] | None] = queue.Queue()
     done = threading.Event()
