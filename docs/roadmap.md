@@ -387,15 +387,15 @@ Design reference: `archive/docs/SESSION-serialization-memory-footprint.md`, `~/s
 
 ### 7.1 — Reactive layout engine (Pretext-on-GraphReFly)
 
-Reactive text measurement and layout without DOM thrashing. Inspired by [Pretext](https://github.com/chenglou/pretext) but rebuilt as a GraphReFly graph — the layout is inspectable (`describe()`), snapshotable, and debuggable. Standalone reusable pattern, also powers the demo shell (7.3). Design reference: `graphrefly-ts/docs/demo-and-test-strategy.md` §2b.
+Reactive text measurement and layout without DOM thrashing. Inspired by [Pretext](https://github.com/chenglou/pretext) but rebuilt as a GraphReFly graph — the layout is inspectable (`describe()`), snapshotable, and debuggable. Standalone reusable pattern; graphrefly-ts wires the same engine into the three-pane demo shell (TS roadmap §7.2). Python uses it for server/CLI and Pyodide/docs demos (§7.2 below). Design reference: `graphrefly-ts/docs/demo-and-test-strategy.md` §2b.
 
-Two-tier DX: out-of-the-box `reactive_layout(adapter, text, font, line_height, max_width)` for common cases; advanced `MeasurementAdapter` protocol for custom content types and environments.
+Two-tier DX: out-of-the-box `reactive_layout(adapter, *, text=..., font=..., line_height=..., max_width=...)` for common cases; advanced `MeasurementAdapter` protocol for custom content types and environments.
 
 #### Text layout (Pretext parity)
 
-- [x] `MeasurementAdapter` protocol: `measure_segment(text, font) → {"width": float}`, `clear_cache()` — pluggable measurement backend; tests use `MockMeasureAdapter` with deterministic widths
-- [x] `state("text")` → `derived("segments")` — text segmentation (words, graphemes, CJK); adapter `measure_segment()` for segment widths, cached per `dict[font, dict[segment, width]]`
-- [x] Text analysis pipeline (ported from Pretext): whitespace normalization, word segmentation, punctuation merging, CJK per-grapheme splitting, soft-hyphen/hard-break support
+- [x] `MeasurementAdapter` protocol: `measure_segment(text, font) → {"width": float}`, optional `clear_cache()` — pluggable measurement backend; tests use deterministic mock adapters
+- [x] `state("text")` → `derived("segments")` — text segmentation; adapter `measure_segment()` for segment widths, cached per `dict[font, dict[segment, width]]` — **TS:** `Intl.Segmenter` word granularity; **Py:** Unicode `\w` word-token runs + grapheme merging (same merge/break pipeline; rare boundary differences vs ECMA-402)
+- [x] Text analysis pipeline (ported from Pretext): whitespace normalization, word segmentation, punctuation merging, CJK per-grapheme splitting, URL/numeric runs as word tokens (Py `\w` / TS `Intl` word-like segments), soft-hyphen/hard-break support
 - [x] `derived("line-breaks")` — segments + max-width → greedy line breaking (no DOM): trailing-space hang, `overflow-wrap: break-word` via grapheme widths, soft hyphens, hard breaks
 - [x] `derived("height")`, `derived("char-positions")` — total height, per-character `{x, y, width, height}` for hit testing
 - [x] Measurement cache with RESOLVED optimization — unchanged text/font → no re-measure
@@ -407,6 +407,13 @@ Two-tier DX: out-of-the-box `reactive_layout(adapter, text, font, line_height, m
 - [x] `PillowMeasureAdapter` (default, server) — Pillow `ImageFont.getlength()`, font cache; optional dep
 - [x] `PrecomputedAdapter` (server/snapshot) — reads from pre-computed metrics dict, zero measurement at runtime; per-char fallback or strict error mode
 - [x] `CliMeasureAdapter` (terminal) — monospace cell counting via `unicodedata.east_asian_width()` (CJK/fullwidth = 2 cells), configurable `cell_px`, no external deps
+
+#### Multi-content blocks (SVG, images, mixed)
+
+- [x] `reactive_block_layout(adapters, *, blocks=..., max_width=..., gap=...)` — mixed content layout: text + image + SVG blocks with per-type measurement (**TS:** `reactiveBlockLayout({ adapters, ... })` options object)
+- [x] `SvgBoundsAdapter` — viewBox/width/height parsing from SVG string (pure regex, no DOM)
+- [x] `ImageSizeAdapter` — pre-registered dimensions by src key (sync lookup)
+- [x] Block flow algorithm: vertical stacking with configurable gap, purely arithmetic over child sizes
 
 #### Standalone extraction
 

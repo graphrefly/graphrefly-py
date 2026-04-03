@@ -765,7 +765,7 @@ def reactive_layout(
         text: Initial text content.
         font: Initial CSS font string.
         line_height: Initial line height in px.
-        max_width: Initial max width constraint in px.
+        max_width: Initial max width constraint in px. Values ``< 0`` are clamped to ``0``.
 
     Returns:
         :class:`ReactiveLayoutBundle` with graph, setters, and node references.
@@ -792,7 +792,7 @@ def reactive_layout(
     text_node: NodeImpl[str] = state(text, name="text")
     font_node: NodeImpl[str] = state(font, name="font")
     line_height_node: NodeImpl[float] = state(line_height, name="line-height")
-    max_width_node: NodeImpl[float] = state(max_width, name="max-width")
+    max_width_node: NodeImpl[float] = state(max(0.0, max_width), name="max-width")
 
     # --- Derived: segments (text + font → PreparedSegment[]) ---
     def _compute_segments(deps: list[Any], _actions: Any) -> list[PreparedSegment]:
@@ -933,7 +933,7 @@ def reactive_layout(
         set_text=lambda t: g.set("text", t),
         set_font=lambda f: g.set("font", f),
         set_line_height=lambda lh: g.set("line-height", lh),
-        set_max_width=lambda mw: g.set("max-width", mw),
+        set_max_width=lambda mw: g.set("max-width", max(0.0, mw)),
         segments=segments_node,
         line_breaks=line_breaks_node,
         height=height_node,

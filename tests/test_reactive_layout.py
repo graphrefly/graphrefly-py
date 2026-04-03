@@ -342,6 +342,15 @@ class TestReactiveLayout:
         finally:
             layout.graph.destroy()
 
+    def test_negative_max_width_clamped(self) -> None:
+        layout = reactive_layout(mock_adapter(), text="hi", max_width=-50)
+        try:
+            assert layout.graph.get("max-width") == 0
+            layout.set_max_width(-20)
+            assert layout.graph.get("max-width") == 0
+        finally:
+            layout.graph.destroy()
+
     def test_invalidate_clears_measurement_cache(self) -> None:
         state = {"multiplier": 1, "clear_calls": 0}
 

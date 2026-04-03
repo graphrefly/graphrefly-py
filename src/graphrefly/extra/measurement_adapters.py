@@ -6,6 +6,8 @@ protocol.  Sync constructors, sync ``measure_segment()`` — no async, no pollin
 
 from __future__ import annotations
 
+import math
+import re
 import unicodedata
 from typing import Any
 
@@ -190,3 +192,88 @@ class PillowMeasureAdapter:
     def clear_cache(self) -> None:
         """Discard cached Pillow font objects."""
         self._cache.clear()
+
+
+# ---------------------------------------------------------------------------
+# SvgBoundsAdapter
+# ---------------------------------------------------------------------------
+
+_VIEWBOX_RE = re.compile(r'viewBox\s*=\s*["\']([^"\']+)["\']')
+_SVG_WIDTH_RE = re.compile(r"<svg[^>]*\bwidth\s*=\s*[\"']?([\d.]+)")
+_SVG_HEIGHT_RE = re.compile(r"<svg[^>]*\bheight\s*=\s*[\"']?([\d.]+)")
+
+
+class SvgBoundsAdapter:
+    """SVG measurement adapter — extracts dimensions from ``viewBox`` or
+    explicit ``width``/``height`` attributes in the SVG string.
+
+    Pure arithmetic: parses the SVG string for dimension attributes.
+    No DOM required. Works in any Python environment.
+    """
+
+    __slots__ = ()
+
+    def measure_svg(self, content: str) -> dict[str, float]:
+        """Return ``{"width": <px>, "height": <px>}`` parsed from the SVG."""
+        # Try viewBox first: viewBox="minX minY width height"
+        m = _VIEWBOX_RE.search(content)
+        if m:
+            parts = re.split(r"[\s,]+", m.group(1).strip())
+            if len(parts) >= 4:
+                w = float(parts[2])
+                h = float(parts[3])
+                if math.isfinite(w) and math.isfinite(h) and w > 0 and h > 0:
+                    return {"width": w, "height": h}
+                raise ValueError(
+                    "SvgBoundsAdapter: viewBox width/height are missing, "
+                    "non-finite, or not positive"
+                )
+
+        # Fall back to explicit width/height attributes
+        wm = _SVG_WIDTH_RE.search(content)
+        hm = _SVG_HEIGHT_RE.search(content)
+        if wm and hm:
+            w = float(wm.group(1))
+            h = float(hm.group(1))
+            if math.isfinite(w) and math.isfinite(h) and w > 0 and h > 0:
+                return {"width": w, "height": h}
+            raise ValueError(
+                "SvgBoundsAdapter: svg width/height attributes are "
+                "non-finite or not positive"
+            )
+
+        raise ValueError(
+            "SvgBoundsAdapter: cannot determine dimensions — "
+            "SVG has no viewBox or width/height attributes"
+        )
+
+
+# ---------------------------------------------------------------------------
+# ImageSizeAdapter
+# ---------------------------------------------------------------------------
+
+
+class ImageSizeAdapter:
+    """Image measurement adapter — returns pre-registered dimensions by src key.
+
+    Sync-only: dimensions must be provided upfront via the ``sizes`` dict.
+    No I/O, no polling, no async.
+
+    Parameters
+    ----------
+    sizes:
+        ``{src: {"width": <px>, "height": <px>}}`` mapping image sources to
+        their natural dimensions.
+    """
+
+    __slots__ = ("_sizes",)
+
+    def __init__(self, sizes: dict[str, dict[str, float]]) -> None:
+        self._sizes = dict(sizes)
+
+    def measure_image(self, src: str) -> dict[str, float]:
+        """Return ``{"width": <px>, "height": <px>}`` for a registered src."""
+        dims = self._sizes.get(src)
+        if dims is None:
+            raise KeyError(f"ImageSizeAdapter: no dimensions registered for {src!r}")
+        return dims
