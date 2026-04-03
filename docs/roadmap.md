@@ -294,7 +294,8 @@ Composition layer over 3.2 (`reactive_log`), 4.1 (sagas), 4.2 (event bus), 4.3 (
 
 - [ ] FastAPI integration
 - [ ] Django integration
-- [ ] asyncio / trio Runner protocol
+- [x] asyncio / trio Runner protocol
+- [x] Async utilities: `to_async_iter`, `first_value_from_async`, `settled`
 
 ### 5.2 — ORM Adapters
 

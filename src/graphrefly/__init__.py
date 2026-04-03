@@ -1,6 +1,6 @@
 """graphrefly — Reactive graph protocol for human and LLM co-operation."""
 
-from graphrefly import patterns
+from graphrefly import compat, patterns
 from graphrefly.core import (
     V0,
     V1,
@@ -22,6 +22,7 @@ from graphrefly.core import (
     NodeStatus,
     NodeVersionInfo,
     PipeOperator,
+    Runner,
     SubscribeHints,
     VersioningLevel,
     access_hint_for_guard,
@@ -41,6 +42,7 @@ from graphrefly.core import (
     effect,
     emit_with_batch,
     ensure_registered,
+    get_default_runner,
     is_batching,
     is_phase2_message,
     is_v1,
@@ -54,6 +56,8 @@ from graphrefly.core import (
     policy_from_rules,
     producer,
     record_mutation,
+    resolve_runner,
+    set_default_runner,
     state,
     system_actor,
     union_nodes,
@@ -94,7 +98,12 @@ __all__ = [
     "V1",
     "VersioningLevel",
     "reachable",
+    "compat",
     "patterns",
+    "Runner",
+    "get_default_runner",
+    "resolve_runner",
+    "set_default_runner",
     "Actor",
     "DeferWhen",
     "DynamicNodeImpl",

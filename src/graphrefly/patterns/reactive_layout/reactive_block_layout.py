@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from graphrefly.core.clock import monotonic_ns
 from graphrefly.core.protocol import MessageType, emit_with_batch
 from graphrefly.core.sugar import derived, state
+from graphrefly.graph.graph import Graph
 from graphrefly.patterns.reactive_layout.reactive_layout import (
     CharPosition,
     LineBreaksResult,
@@ -32,7 +33,6 @@ from graphrefly.patterns.reactive_layout.reactive_layout import (
     compute_char_positions,
     compute_line_breaks,
 )
-from graphrefly.graph.graph import Graph
 
 if TYPE_CHECKING:
     from graphrefly.core.node import NodeImpl

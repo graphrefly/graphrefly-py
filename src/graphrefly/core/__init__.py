@@ -41,6 +41,12 @@ from graphrefly.core.protocol import (
     partition_for_batch,
     propagates_to_meta,
 )
+from graphrefly.core.runner import (
+    Runner,
+    get_default_runner,
+    resolve_runner,
+    set_default_runner,
+)
 from graphrefly.core.subgraph_locks import (
     acquire_subgraph_write_lock,
     acquire_subgraph_write_lock_with_defer,
@@ -115,6 +121,10 @@ __all__ = [
     "system_actor",
     "union_nodes",
     "dynamic_node",
+    "Runner",
+    "get_default_runner",
+    "resolve_runner",
+    "set_default_runner",
     "derived",
     "effect",
     "pipe",

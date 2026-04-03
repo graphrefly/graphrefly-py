@@ -300,95 +300,98 @@ def from_cron(expr: str, *, tick_s: float = 60.0) -> Node[Any]:
 # --- async bridges ------------------------------------------------------------
 
 
-def from_awaitable(awaitable: Awaitable[Any]) -> Node[Any]:
-    """Resolve an awaitable on a worker thread; one ``DATA`` then ``COMPLETE``, or ``ERROR``."""
+def from_awaitable(
+    awaitable: Awaitable[Any],
+    *,
+    runner: Any | None = None,
+) -> Node[Any]:
+    """Resolve an awaitable via a :class:`~graphrefly.core.runner.Runner`.
+
+    Args:
+        awaitable: The awaitable/coroutine to resolve.
+        runner: Optional :class:`~graphrefly.core.runner.Runner`.  When ``None``,
+            uses the thread-local default runner (see
+            :func:`~graphrefly.core.runner.set_default_runner`).
+
+    Returns:
+        A :class:`~graphrefly.core.node.Node` that emits one ``DATA`` then
+        ``COMPLETE``, or ``ERROR`` on failure.
+    """
+    from graphrefly.core.runner import resolve_runner
 
     def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
         stopped = [False]
 
-        def run() -> None:
-            async def arun() -> None:
-                try:
-                    v = await awaitable
-                except BaseException as err:
-                    if not stopped[0]:
-                        actions.down([(MessageType.ERROR, err)])
-                    return
-                if not stopped[0]:
-                    actions.emit(v)
-                    actions.down([(MessageType.COMPLETE,)])
+        async def arun() -> Any:
+            return await awaitable
 
-            try:
-                asyncio.run(arun())
-            except RuntimeError as run_err:
-                # Only recover from nested ``asyncio.run`` / running-loop conflicts.
-                msg = str(run_err).lower()
-                if "asyncio.run()" not in msg and "running event loop" not in msg:
-                    raise
-                loop = asyncio.new_event_loop()
-                try:
-                    asyncio.set_event_loop(loop)
-                    loop.run_until_complete(arun())
-                finally:
-                    loop.close()
-                    asyncio.set_event_loop(None)
+        def on_result(v: Any) -> None:
+            if not stopped[0]:
+                actions.emit(v)
+                actions.down([(MessageType.COMPLETE,)])
 
-        t = threading.Thread(target=run, daemon=True)
-        t.start()
+        def on_error(err: BaseException) -> None:
+            if not stopped[0]:
+                actions.down([(MessageType.ERROR, err)])
+
+        cancel = resolve_runner(runner).schedule(arun(), on_result, on_error)
 
         def cleanup() -> None:
             stopped[0] = True
+            cancel()
 
         return cleanup
 
     return node(start, describe_kind="from_awaitable", complete_when_deps_complete=False)
 
 
-def from_async_iter(aiterable: AsyncIterable[Any]) -> Node[Any]:
-    """Iterate an async iterable on a worker thread; ``DATA`` per item, then ``COMPLETE``."""
+def from_async_iter(
+    aiterable: AsyncIterable[Any],
+    *,
+    runner: Any | None = None,
+) -> Node[Any]:
+    """Iterate an async iterable via a :class:`~graphrefly.core.runner.Runner`.
+
+    Args:
+        aiterable: The async iterable to drain.
+        runner: Optional :class:`~graphrefly.core.runner.Runner`.  When ``None``,
+            uses the thread-local default runner.
+
+    Returns:
+        A :class:`~graphrefly.core.node.Node` that emits ``DATA`` per item,
+        then ``COMPLETE``, or ``ERROR`` on failure.
+    """
+    from graphrefly.core.runner import resolve_runner
 
     def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
         stopped = [False]
 
-        def run() -> None:
-            async def arun() -> None:
-                try:
-                    async for item in aiterable:
-                        if stopped[0]:
-                            return
-                        actions.emit(item)
-                    if not stopped[0]:
-                        actions.down([(MessageType.COMPLETE,)])
-                except BaseException as err:
-                    if not stopped[0]:
-                        actions.down([(MessageType.ERROR, err)])
+        async def arun() -> None:
+            async for item in aiterable:
+                if stopped[0]:
+                    return
+                actions.emit(item)
 
-            try:
-                asyncio.run(arun())
-            except RuntimeError as run_err:
-                msg = str(run_err).lower()
-                if "asyncio.run()" not in msg and "running event loop" not in msg:
-                    raise
-                loop = asyncio.new_event_loop()
-                try:
-                    asyncio.set_event_loop(loop)
-                    loop.run_until_complete(arun())
-                finally:
-                    loop.close()
-                    asyncio.set_event_loop(None)
+        def on_result(_: Any) -> None:
+            if not stopped[0]:
+                actions.down([(MessageType.COMPLETE,)])
 
-        t = threading.Thread(target=run, daemon=True)
-        t.start()
+        def on_error(err: BaseException) -> None:
+            if not stopped[0]:
+                actions.down([(MessageType.ERROR, err)])
+
+        cancel = resolve_runner(runner).schedule(arun(), on_result, on_error)
 
         def cleanup() -> None:
             stopped[0] = True
+            cancel()
 
         return cleanup
 
     return node(start, describe_kind="from_async_iter", complete_when_deps_complete=False)
 
 
-def from_any(value: Any) -> Node[Any]:
+def from_any(value: Any, *, runner: Any | None = None) -> Node[Any]:
     """Coerce a value into a :class:`~graphrefly.core.node.Node` using the best matching source.
 
     Dispatch rules:
@@ -400,6 +403,8 @@ def from_any(value: Any) -> Node[Any]:
 
     Args:
         value: Any value to coerce.
+        runner: Optional :class:`~graphrefly.core.runner.Runner` forwarded to
+            :func:`from_awaitable` / :func:`from_async_iter` when applicable.
 
     Returns:
         A :class:`~graphrefly.core.node.Node` wrapping *value*.
@@ -415,9 +420,9 @@ def from_any(value: Any) -> Node[Any]:
     if isinstance(value, Node):
         return value
     if isinstance(value, AsyncIterable):
-        return from_async_iter(value)
+        return from_async_iter(value, runner=runner)
     if isinstance(value, Awaitable) or asyncio.isfuture(value) or asyncio.iscoroutine(value):
-        return from_awaitable(value)
+        return from_awaitable(value, runner=runner)
     try:
         it = iter(value)
     except TypeError:
