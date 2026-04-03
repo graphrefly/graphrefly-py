@@ -34,23 +34,29 @@ if TYPE_CHECKING:
 # Guards
 # ---------------------------------------------------------------------------
 
-COMMAND_GUARD: GuardFn = policy(lambda allow, deny: [
-    allow("write"),
-    allow("signal"),
-    deny("observe"),
-])
+COMMAND_GUARD: GuardFn = policy(
+    lambda allow, deny: [
+        allow("write"),
+        allow("signal"),
+        deny("observe"),
+    ]
+)
 
-PROJECTION_GUARD: GuardFn = policy(lambda allow, deny: [
-    allow("observe"),
-    allow("signal"),
-    deny("write"),
-])
+PROJECTION_GUARD: GuardFn = policy(
+    lambda allow, deny: [
+        allow("observe"),
+        allow("signal"),
+        deny("write"),
+    ]
+)
 
-EVENT_GUARD: GuardFn = policy(lambda allow, deny: [
-    allow("observe"),
-    allow("signal"),
-    deny("write"),
-])
+EVENT_GUARD: GuardFn = policy(
+    lambda allow, deny: [
+        allow("observe"),
+        allow("signal"),
+        deny("write"),
+    ]
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -163,9 +169,7 @@ class MemoryEventStore(EventStoreAdapter):
                 )
             ]
         new_cursor: EventStoreCursor | None = (
-            {"timestamp_ns": events[-1].timestamp_ns, "seq": events[-1].seq}
-            if events
-            else cursor
+            {"timestamp_ns": events[-1].timestamp_ns, "seq": events[-1].seq} if events else cursor
         )
         return LoadEventsResult(events=events, cursor=new_cursor)
 
@@ -376,10 +380,13 @@ class CqrsGraph(Graph):
             event_nodes,
             compute,
             name=name,
-            meta=_cqrs_meta("projection", {
-                "projection_name": name,
-                "source_events": list(event_names),
-            }),
+            meta=_cqrs_meta(
+                "projection",
+                {
+                    "projection_name": name,
+                    "source_events": list(event_names),
+                },
+            ),
             guard=PROJECTION_GUARD,
             initial=initial,
         )
@@ -443,10 +450,13 @@ class CqrsGraph(Graph):
             name=name,
             describe_kind="effect",
             meta={
-                **_cqrs_meta("saga", {
-                    "saga_name": name,
-                    "source_events": list(event_names),
-                }),
+                **_cqrs_meta(
+                    "saga",
+                    {
+                        "saga_name": name,
+                        "source_events": list(event_names),
+                    },
+                ),
                 "error": None,
             },
         )

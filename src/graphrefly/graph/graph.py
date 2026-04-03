@@ -2178,6 +2178,29 @@ class GraphObserveSource:
 
         return cleanup
 
+    def up(self, messages: Messages, path: str | None = None) -> None:
+        """Send messages upstream toward the observed node's sources.
+
+        For single-node observation (``self._path is not None``), *path* is
+        ignored and messages go to the observed node.  For graph-wide
+        observation, *path* must be provided to target a specific node.
+
+        If the target node's guard denies the action, the messages are
+        silently dropped (aligned with TS).  This prevents ``GuardDenied``
+        from propagating into backpressure controller callbacks.
+        """
+        target_path = path if self._path is None else self._path
+        if target_path is None:
+            msg = "up() on graph-wide observe requires a path argument"
+            raise ValueError(msg)
+        n = self._graph.node(target_path)
+        up_fn = getattr(n, "up", None)
+        if up_fn is not None:
+            try:
+                up_fn(messages)
+            except GuardDenied:
+                return
+
 
 def _teardown_mounted_graph(root: Graph) -> None:
     with root._locked():

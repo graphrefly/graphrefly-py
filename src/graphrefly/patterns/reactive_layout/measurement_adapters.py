@@ -116,9 +116,7 @@ class PrecomputedAdapter:
                 return {"width": w}
 
         if self._fallback == "error":
-            raise KeyError(
-                f"PrecomputedAdapter: no metrics for segment {text!r} in font {font!r}"
-            )
+            raise KeyError(f"PrecomputedAdapter: no metrics for segment {text!r} in font {font!r}")
 
         # per-char fallback: sum individual character widths
         total = 0.0
@@ -238,8 +236,7 @@ class SvgBoundsAdapter:
             if math.isfinite(w) and math.isfinite(h) and w > 0 and h > 0:
                 return {"width": w, "height": h}
             raise ValueError(
-                "SvgBoundsAdapter: svg width/height attributes are "
-                "non-finite or not positive"
+                "SvgBoundsAdapter: svg width/height attributes are non-finite or not positive"
             )
 
         raise ValueError(

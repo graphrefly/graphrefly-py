@@ -1,6 +1,6 @@
 """graphrefly — Reactive graph protocol for human and LLM co-operation."""
 
-from graphrefly import compat, patterns
+from graphrefly import compat, integrations, patterns
 from graphrefly.core import (
     V0,
     V1,
@@ -99,6 +99,7 @@ __all__ = [
     "VersioningLevel",
     "reachable",
     "compat",
+    "integrations",
     "patterns",
     "Runner",
     "get_default_runner",

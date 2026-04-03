@@ -1008,8 +1008,10 @@ def from_fs_watch(
         timer: list[threading.Timer | None] = [None]
         active = [True]
         generation = [0]
+
         def _noop_stop_backend() -> None:
             return
+
         stop_backend_ref: list[Callable[[], None]] = [_noop_stop_backend]
 
         def flush(token: int) -> None:
@@ -1648,9 +1650,7 @@ def from_mcp(
                     return
                 active[0] = False
                 error_value = err if err is not None else Exception("MCP client disconnected")
-                actions.down(
-                    [(MessageType.ERROR, error_value)]
-                )
+                actions.down([(MessageType.ERROR, error_value)])
 
             on_disconnect(_on_dc)
 

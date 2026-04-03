@@ -325,10 +325,12 @@ class TestReactiveBlockLayout:
         )
         unsub = bundle.total_height.subscribe(lambda _msgs: None)
         h1 = bundle.total_height.get()
-        bundle.set_blocks([
-            TextBlock(text="hello"),
-            ImageBlock(src="x.png", natural_width=100, natural_height=50),
-        ])
+        bundle.set_blocks(
+            [
+                TextBlock(text="hello"),
+                ImageBlock(src="x.png", natural_width=100, natural_height=50),
+            ]
+        )
         h2 = bundle.total_height.get()
         assert h2 > h1
         unsub()

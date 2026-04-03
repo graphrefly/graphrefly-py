@@ -264,9 +264,7 @@ class TestPillar4Idempotency:
         messages, unsub = collect(n)
         complete_fn[0]()
         error_fn[0](RuntimeError("late"))
-        terminals = [
-            m for m in messages if m[0] in (MessageType.COMPLETE, MessageType.ERROR)
-        ]
+        terminals = [m for m in messages if m[0] in (MessageType.COMPLETE, MessageType.ERROR)]
         assert len(terminals) == 1
         assert terminals[0][0] is MessageType.COMPLETE
         unsub()

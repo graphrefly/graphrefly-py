@@ -801,9 +801,7 @@ def reactive_layout(
 
         t0 = monotonic_ns()
         measure_stats: dict[str, int] = {"hits": 0, "misses": 0}
-        result = analyze_and_measure(
-            text_val, font_val, adapter, measure_cache, measure_stats
-        )
+        result = analyze_and_measure(text_val, font_val, adapter, measure_cache, measure_stats)
         elapsed = monotonic_ns() - t0
 
         lookups = measure_stats["hits"] + measure_stats["misses"]

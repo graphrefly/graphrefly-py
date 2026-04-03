@@ -410,7 +410,6 @@ def _emit_partition(
             sink(terminal)
 
 
-
 def _emit_sequential(
     sink: Callable[[Messages], None],
     messages: Messages,

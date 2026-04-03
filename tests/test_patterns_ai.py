@@ -141,12 +141,14 @@ def test_tool_registry_register_unregister() -> None:
 
 def test_tool_registry_execute() -> None:
     tr = tool_registry("test-tools")
-    tr.register(ToolDefinition(
-        name="greet",
-        description="Greet",
-        parameters={},
-        handler=lambda args: f"Hello, {args['name']}!",
-    ))
+    tr.register(
+        ToolDefinition(
+            name="greet",
+            description="Greet",
+            parameters={},
+            handler=lambda args: f"Hello, {args['name']}!",
+        )
+    )
     result = tr.execute("greet", {"name": "world"})
     assert result == "Hello, world!"
 
@@ -197,10 +199,12 @@ def test_tool_registry_execute_node_handler() -> None:
 
 
 def test_system_prompt_builder_assembles_sections() -> None:
-    prompt = system_prompt_builder([
-        "You are a helpful assistant.",
-        "Be concise.",
-    ])
+    prompt = system_prompt_builder(
+        [
+            "You are a helpful assistant.",
+            "Be concise.",
+        ]
+    )
     assert prompt.get() == "You are a helpful assistant.\n\nBe concise."
 
 
@@ -591,14 +595,25 @@ def test_admission_filter_3d_integrates_with_agent_memory() -> None:
 
 def test_knobs_as_tools_generates_schemas() -> None:
     g = Graph("test")
-    temp = state(72, meta={
-        "description": "Room temperature", "type": "number",
-        "range": [60, 90], "unit": "°F", "access": "both",
-    })
-    mode = state("auto", meta={
-        "description": "HVAC mode", "type": "enum",
-        "values": ["auto", "cool", "heat", "off"], "access": "llm",
-    })
+    temp = state(
+        72,
+        meta={
+            "description": "Room temperature",
+            "type": "number",
+            "range": [60, 90],
+            "unit": "°F",
+            "access": "both",
+        },
+    )
+    mode = state(
+        "auto",
+        meta={
+            "description": "HVAC mode",
+            "type": "enum",
+            "values": ["auto", "cool", "heat", "off"],
+            "access": "llm",
+        },
+    )
     g.add("temperature", temp)
     g.add("mode", mode)
 
@@ -661,17 +676,29 @@ def test_knobs_as_tools_includes_v0_version_metadata() -> None:
 
 def test_gauges_as_context_formats_values() -> None:
     g = Graph("dashboard")
-    revenue = state(1234.5, meta={
-        "description": "Monthly revenue", "format": "currency",
-        "tags": ["finance"],
-    })
-    growth = state(0.15, meta={
-        "description": "Growth rate", "format": "percentage",
-        "tags": ["finance"],
-    })
-    status_node = state("healthy", meta={
-        "description": "System status", "format": "status",
-    })
+    revenue = state(
+        1234.5,
+        meta={
+            "description": "Monthly revenue",
+            "format": "currency",
+            "tags": ["finance"],
+        },
+    )
+    growth = state(
+        0.15,
+        meta={
+            "description": "Growth rate",
+            "format": "percentage",
+            "tags": ["finance"],
+        },
+    )
+    status_node = state(
+        "healthy",
+        meta={
+            "description": "System status",
+            "format": "status",
+        },
+    )
     g.add("revenue", revenue)
     g.add("growth", growth)
     g.add("status", status_node)
@@ -734,37 +761,43 @@ def test_validate_graph_def_rejects_missing_name() -> None:
 
 
 def test_validate_graph_def_rejects_invalid_type() -> None:
-    result = validate_graph_def({
-        "name": "test",
-        "nodes": {"a": {"type": "unknown_type", "deps": [], "meta": {}}},
-        "edges": [],
-    })
+    result = validate_graph_def(
+        {
+            "name": "test",
+            "nodes": {"a": {"type": "unknown_type", "deps": [], "meta": {}}},
+            "edges": [],
+        }
+    )
     assert result.valid is False
     assert any("invalid type" in e for e in result.errors)
 
 
 def test_validate_graph_def_rejects_bad_edge_ref() -> None:
-    result = validate_graph_def({
-        "name": "test",
-        "nodes": {"a": {"type": "state", "deps": [], "meta": {}}},
-        "edges": [{"from": "a", "to": "missing"}],
-    })
+    result = validate_graph_def(
+        {
+            "name": "test",
+            "nodes": {"a": {"type": "state", "deps": [], "meta": {}}},
+            "edges": [{"from": "a", "to": "missing"}],
+        }
+    )
     assert result.valid is False
     assert any("missing" in e for e in result.errors)
 
 
 def test_validate_graph_def_detects_duplicate_edge() -> None:
-    result = validate_graph_def({
-        "name": "test",
-        "nodes": {
-            "a": {"type": "state", "deps": [], "meta": {}},
-            "b": {"type": "derived", "deps": ["a"], "meta": {}},
-        },
-        "edges": [
-            {"from": "a", "to": "b"},
-            {"from": "a", "to": "b"},
-        ],
-    })
+    result = validate_graph_def(
+        {
+            "name": "test",
+            "nodes": {
+                "a": {"type": "state", "deps": [], "meta": {}},
+                "b": {"type": "derived", "deps": ["a"], "meta": {}},
+            },
+            "edges": [
+                {"from": "a", "to": "b"},
+                {"from": "a", "to": "b"},
+            ],
+        }
+    )
     assert result.valid is False
     assert any("duplicate" in e for e in result.errors)
 
@@ -776,11 +809,13 @@ def test_validate_graph_def_rejects_non_dict() -> None:
 
 
 def test_validate_graph_def_rejects_bad_dep_ref() -> None:
-    result = validate_graph_def({
-        "name": "test",
-        "nodes": {"a": {"type": "derived", "deps": ["nonexistent"], "meta": {}}},
-        "edges": [],
-    })
+    result = validate_graph_def(
+        {
+            "name": "test",
+            "nodes": {"a": {"type": "derived", "deps": ["nonexistent"], "meta": {}}},
+            "edges": [],
+        }
+    )
     assert result.valid is False
     assert any("nonexistent" in e for e in result.errors)
 
@@ -819,9 +854,11 @@ def test_graph_from_spec_strips_markdown_fences() -> None:
         "subgraphs": [],
     }
     fenced = "```json\n" + json.dumps(graph_def) + "\n```"
-    adapter = MockAdapter([
-        LLMResponse(content=fenced, finish_reason="end_turn"),
-    ])
+    adapter = MockAdapter(
+        [
+            LLMResponse(content=fenced, finish_reason="end_turn"),
+        ]
+    )
 
     g = graph_from_spec("simple graph", adapter)
     assert g.name == "simple"
@@ -838,9 +875,11 @@ def test_graph_from_spec_raises_on_invalid_json() -> None:
 
 
 def test_graph_from_spec_raises_on_validation_failure() -> None:
-    adapter = MockAdapter([
-        LLMResponse(content=json.dumps({"nodes": {}, "edges": []}), finish_reason="end_turn"),
-    ])
+    adapter = MockAdapter(
+        [
+            LLMResponse(content=json.dumps({"nodes": {}, "edges": []}), finish_reason="end_turn"),
+        ]
+    )
 
     import pytest
 
@@ -859,7 +898,8 @@ def test_suggest_strategy_returns_plan() -> None:
         "reasoning": "The API calls node has no rate limiting, which could cause throttling.",
         "operations": [
             {
-                "type": "add_node", "name": "rate_limiter",
+                "type": "add_node",
+                "name": "rate_limiter",
                 "nodeType": "derived",
                 "meta": {"description": "Rate limiter"},
             },
@@ -897,9 +937,11 @@ def test_suggest_strategy_raises_on_invalid_json() -> None:
 
 
 def test_suggest_strategy_raises_on_missing_summary() -> None:
-    adapter = MockAdapter([
-        LLMResponse(content=json.dumps({"operations": []}), finish_reason="end_turn"),
-    ])
+    adapter = MockAdapter(
+        [
+            LLMResponse(content=json.dumps({"operations": []}), finish_reason="end_turn"),
+        ]
+    )
 
     import pytest
 

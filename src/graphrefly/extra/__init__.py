@@ -14,6 +14,11 @@ from graphrefly.extra.backoff import (
     resolve_backoff_preset,
     with_max_attempts,
 )
+from graphrefly.extra.backpressure import (
+    WatermarkController,
+    WatermarkOptions,
+    create_watermark_controller,
+)
 from graphrefly.extra.checkpoint import (
     CheckpointAdapter,
     DictCheckpointAdapter,
@@ -263,5 +268,8 @@ __all__ = [
     "VerifiableBundle",
     "distill",
     "verifiable",
+    "WatermarkController",
+    "WatermarkOptions",
+    "create_watermark_controller",
     "zip",
 ]

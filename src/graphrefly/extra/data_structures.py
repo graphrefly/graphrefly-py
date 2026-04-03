@@ -56,7 +56,9 @@ def _v0_from_node(n: Any) -> dict[str, Any] | None:
     return {"id": v.id, "version": v.version}
 
 
-def _bump(current: Versioned | None, next_value: Any, v0: dict[str, Any] | None = None) -> Versioned:
+def _bump(
+    current: Versioned | None, next_value: Any, v0: dict[str, Any] | None = None
+) -> Versioned:
     """Increment version. ``v0`` is captured before the backing node's DATA
     emission, so ``v0.version`` is one behind the node's post-emission value.
     This is intentional — ``v0`` records the node's version at snapshot
@@ -174,7 +176,11 @@ class ReactiveMapBundle:
         raw = self._state.get()
         snap = _visible_map(raw if raw is not None else _MapState.empty())
         cur = self.data.get()
-        next_snap = _bump(cur if isinstance(cur, Versioned) else Versioned(0, snap), snap, _v0_from_node(self.data))
+        next_snap = _bump(
+            cur if isinstance(cur, Versioned) else Versioned(0, snap),
+            snap,
+            _v0_from_node(self.data),
+        )
         self._version[0] = next_snap.version
         _push_two_phase(self.data, next_snap)
 

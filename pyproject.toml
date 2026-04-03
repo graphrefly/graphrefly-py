@@ -39,6 +39,8 @@ dev = [
 	"ruff>=0.9",
 	"mypy>=1.14",
 	"croniter>=2.0",
+	"fastapi>=0.100",
+	"httpx>=0.24",
 ]
 
 [tool.ruff]

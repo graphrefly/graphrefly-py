@@ -242,7 +242,6 @@ class ChatStreamGraph(Graph):
             [self.messages],
             compute_latest,
             name="latest",
-
             meta=_ai_meta("chat_latest"),
             initial=None,
         )
@@ -259,7 +258,6 @@ class ChatStreamGraph(Graph):
             [self.messages],
             compute_count,
             name="messageCount",
-
             meta=_ai_meta("chat_message_count"),
             initial=0,
         )
@@ -358,7 +356,6 @@ class ToolRegistryGraph(Graph):
             [self.definitions],
             compute_schemas,
             name="schemas",
-
             meta=_ai_meta("tool_schemas"),
             initial=(),
         )
@@ -922,7 +919,11 @@ class AgentMemoryGraph(Graph):
                 active_count = len(store_map) - len(permanent_keys)
                 if active_count > max_active:
                     scored = sorted(
-                        ((k, score(m, ctx)) for k, m in store_map.items() if k not in permanent_keys),
+                        (
+                            (k, score(m, ctx))
+                            for k, m in store_map.items()
+                            if k not in permanent_keys
+                        ),
                         key=lambda x: x[1],
                     )
                     excess = active_count - max_active
@@ -975,7 +976,9 @@ class AgentMemoryGraph(Graph):
                             for ent in extracted.get("entities", []):
                                 _kg.upsert_entity(ent["id"], ent["value"])
                             for rel in extracted.get("relations", []):
-                                _kg.link(rel["from"], rel["to"], rel["relation"], rel.get("weight", 1.0))
+                                _kg.link(
+                                    rel["from"], rel["to"], rel["relation"], rel.get("weight", 1.0)
+                                )
 
             idx_eff = effect([store_node], _index)
             self._keepalive_subs.append(idx_eff.subscribe(lambda _msgs: None))
@@ -1061,7 +1064,9 @@ class AgentMemoryGraph(Graph):
                 ranked: list[RetrievalEntry] = []
                 for key, (value, sources) in candidate_map.items():
                     s = r_score(value, ctx)
-                    ranked.append(RetrievalEntry(key=key, value=value, score=s, sources=tuple(sources)))
+                    ranked.append(
+                        RetrievalEntry(key=key, value=value, score=s, sources=tuple(sources))
+                    )
                 ranked.sort(key=lambda e: e.score, reverse=True)
 
                 # Stage 4: Budget packing
@@ -1123,7 +1128,6 @@ def _extract_store_map(snap: Any) -> dict[str, Any]:
     if isinstance(snap, dict):
         return snap
     return {}
-
 
 
 def agent_memory(
@@ -1342,9 +1346,7 @@ class AgentLoopGraph(Graph):
                             result = self.tools.execute(call.name, call.arguments)
                             self.chat.append_tool_result(call.id, json.dumps(result, default=str))
                         except Exception as err:
-                            self.chat.append_tool_result(
-                                call.id, json.dumps({"error": str(err)})
-                            )
+                            self.chat.append_tool_result(call.id, json.dumps({"error": str(err)}))
                 else:
                     # No tool calls and not explicitly stopped → done
                     self._status_state.down([(MessageType.DATA, "done")])
@@ -1611,9 +1613,7 @@ def knobs_as_tools(
         _path = path
         _actor = actor
 
-        def _make_handler(
-            g: Graph, p: str, a: Any | None
-        ) -> Callable[[dict[str, Any]], Any]:
+        def _make_handler(g: Graph, p: str, a: Any | None) -> Callable[[dict[str, Any]], Any]:
             def handler(args: dict[str, Any]) -> Any:
                 kwargs: dict[str, Any] = {}
                 if a is not None:
@@ -1728,9 +1728,7 @@ def gauges_as_context(
                 ungrouped.append(entry)
 
         if not tag_groups:
-            return separator.join(
-                f"- {e[1]}: {e[2]}" for e in entries
-            )
+            return separator.join(f"- {e[1]}: {e[2]}" for e in entries)
 
         sections: list[str] = []
         for tag in sorted(tag_groups):
@@ -1738,9 +1736,7 @@ def gauges_as_context(
             lines = separator.join(f"- {e[1]}: {e[2]}" for e in group)
             sections.append(f"[{tag}]{separator}{lines}")
         if ungrouped:
-            sections.append(
-                separator.join(f"- {e[1]}: {e[2]}" for e in ungrouped)
-            )
+            sections.append(separator.join(f"- {e[1]}: {e[2]}" for e in ungrouped))
         return (separator + separator).join(sections)
 
     return separator.join(f"- {e[1]}: {e[2]}" for e in entries)
@@ -1750,9 +1746,7 @@ def gauges_as_context(
 # validateGraphDef
 # ---------------------------------------------------------------------------
 
-_VALID_NODE_TYPES = frozenset(
-    {"state", "derived", "producer", "operator", "effect"}
-)
+_VALID_NODE_TYPES = frozenset({"state", "derived", "producer", "operator", "effect"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -1800,9 +1794,7 @@ def validate_graph_def(definition: Any) -> GraphDefValidation:
         ntype = raw.get("type")
         if not isinstance(ntype, str) or ntype not in _VALID_NODE_TYPES:
             valid_str = ", ".join(sorted(_VALID_NODE_TYPES))
-            errors.append(
-                f'Node "{nname}": invalid type "{ntype}" (expected: {valid_str})'
-            )
+            errors.append(f'Node "{nname}": invalid type "{ntype}" (expected: {valid_str})')
         deps = raw.get("deps")
         if isinstance(deps, list):
             for dep in deps:
@@ -1824,13 +1816,11 @@ def validate_graph_def(definition: Any) -> GraphDefValidation:
                 efrom = edge.get("from")
                 if not isinstance(efrom, str) or efrom not in node_names:
                     errors.append(
-                        f'Edge [{i}]: \'from\' "{efrom}" does not reference an existing node'
+                        f"Edge [{i}]: 'from' \"{efrom}\" does not reference an existing node"
                     )
                 eto = edge.get("to")
                 if not isinstance(eto, str) or eto not in node_names:
-                    errors.append(
-                        f'Edge [{i}]: \'to\' "{eto}" does not reference an existing node'
-                    )
+                    errors.append(f"Edge [{i}]: 'to' \"{eto}\" does not reference an existing node")
                 key = f"{efrom}->{eto}"
                 if key in seen:
                     errors.append(f"Edge [{i}]: duplicate edge {key}")
@@ -1845,9 +1835,7 @@ def validate_graph_def(definition: Any) -> GraphDefValidation:
 
 import re as _re
 
-_FENCE_PATTERN = _re.compile(
-    r"^```(?:json)?\s*([\s\S]*?)\s*```[\s\S]*$"
-)
+_FENCE_PATTERN = _re.compile(r"^```(?:json)?\s*([\s\S]*?)\s*```[\s\S]*$")
 
 
 def _strip_fences(text: str) -> str:

@@ -2,9 +2,25 @@
 
 ## Open design decisions
 
-*(No open design decisions at this time.)*
+- **`ObserveGateway._default_send` async/sync bridge (noted 2026-04-02):** `_default_send` wraps `client.send_text(json.dumps(m))` in a sync lambda. For Starlette/FastAPI `WebSocket`, `send_text` is a coroutine — calling synchronously returns an unawaited coroutine silently dropped by `_try_send`. Options: (a) remove `_default_send` and require callers always pass `send=`; (b) bridge with `anyio.from_thread.run`; (c) document as sync-transport-only.
+
+- **`ObserveGateway` thread safety (noted 2026-04-02):** `sink()` fires from the graph propagation thread; `handle_message`/`handle_disconnect` run from the async event loop thread. Both mutate `self._clients` and per-client `subs` dicts without synchronization. Under free-threaded Python this is a data race. Options: (a) add `threading.Lock` to protect `_clients`; (b) document single-threaded-only; (c) defer — solve alongside WatermarkController threading.
+
+- **`WatermarkController` cross-thread use in SSE (noted 2026-04-02):** `on_enqueue()` runs on the graph propagation thread (inside `sink`); `on_dequeue()` runs on Starlette's sync-iterator thread (inside `_iter`). The controller docstring says "purely synchronous" — correct for the controller itself, but the SSE integration uses it cross-thread without a lock. Options: (a) add lock inside controller; (b) wrap at SSE layer; (c) defer pre-1.0, document constraint.
+
+- **`_sse_frame` private import coupling (noted 2026-04-02):** `_observe_sse_response` imports `_sse_frame` (underscore-prefixed) from `graphrefly.extra.sources`. Fragile — any refactor of `sources.py` internals can break the integration. Options: make public, or duplicate in integration module.
+
+- **Graph-wide SSE per-node COMPLETE semantics (noted 2026-04-02):** Graph-wide SSE sends a `complete:{path}` frame per completed node but does not terminate the stream. Only `TEARDOWN` (via `graph.destroy()`) terminates. Intentional (graph-wide = wait for teardown), but asymmetric with single-node mode. If the graph is never destroyed the client hangs. May need documenting or an "all-completed" heuristic.
+
+- **`_normalize_graphs` key naming for positional graphs (noted 2026-04-02):** Single `Graph` maps to key `"default"`; multiple positional `Graph` objects map to `"0"`, `"1"`, etc. `get_graph()` defaults to `"default"` — works for single-graph but silently fails for multi-graph. Needs documentation or consistent key scheme.
 
 ## Resolved design decisions (streaming + AI lifecycle)
+
+- **Backpressure guard integration (resolved 2026-04-02):** `GraphObserveSource.up()` now catches `GuardDenied` and silently drops flow-control messages (PAUSE/RESUME) rather than raising into the watermark controller callback. Aligned with TS `GraphObserveOne.up()` / `GraphObserveAll.up()` which both catch `GuardDenied` and return silently. Non-`GuardDenied` exceptions still propagate.
+
+- **WatermarkController factory pattern (resolved 2026-04-02):** `create_watermark_controller(send_up, opts)` factory function returns a `WatermarkController` (Protocol). Lock IDs use `object()` (unforgeable identity, like TS `Symbol`). Messages are `list` to match the `Messages` type alias. Cross-language parity: TS `createWatermarkController`.
+
+- **Gateway backpressure (resolved 2026-04-02):** `_observe_sse_response` accepts `high_water_mark` / `low_water_mark` options. `ObserveGateway` class manages per-client WebSocket subscriptions with backpressure via client `ack` command (clamped to [0, 1024]). Default `low_water_mark = high_water_mark // 2`. Cross-language parity: TS `observeSSE`, `observeSubscription`, `ObserveGateway`.
 
 - **`from_llm_stream` / `fromLLMStream` teardown (Phase 4.4, resolved 2026-04-02):** TS `fromLLMStream` now returns `LLMStreamHandle { node, dispose }`. PY `from_llm_stream` (when implemented) should follow the same bundle pattern `{ node, dispose }`.
 
