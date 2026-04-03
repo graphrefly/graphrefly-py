@@ -97,14 +97,37 @@ def graphrefly_lifespan(
 def _normalize_graphs(
     graphs: tuple[Any, ...],
 ) -> dict[str, Any]:
+    if not graphs:
+        raise TypeError(
+            "graphrefly_lifespan() requires at least one Graph or "
+            'dict argument, e.g. graphrefly_lifespan(my_graph) or '
+            'graphrefly_lifespan({"main": g1}).'
+        )
     if len(graphs) == 1 and isinstance(graphs[0], dict):
         return dict(graphs[0])
+    if len(graphs) == 1:
+        return {"default": graphs[0]}
+    # Multiple args: require explicit dict keys.
     result: dict[str, Any] = {}
-    for i, g in enumerate(graphs):
+    positional_count = 0
+    for g in graphs:
         if isinstance(g, dict):
+            for key in g:
+                if key in result:
+                    raise TypeError(
+                        f"Duplicate graph key {key!r} across multiple dict arguments. "
+                        "Merge your dicts before passing to graphrefly_lifespan()."
+                    )
             result.update(g)
         else:
-            result[str(i) if i > 0 or len(graphs) > 1 else "default"] = g
+            positional_count += 1
+    if positional_count > 0:
+        noun = "argument" if positional_count == 1 else "arguments"
+        raise TypeError(
+            f"{positional_count} positional Graph {noun} cannot be auto-named. "
+            "Pass a dict mapping explicit names to Graph instances instead, e.g. "
+            'graphrefly_lifespan({"main": g1, "analytics": g2}).'
+        )
     return result
 
 
@@ -602,7 +625,7 @@ def _observe_sse_response(
     when the consumer drains below *low_water_mark* (default:
     ``high_water_mark // 2``).
     """
-    from graphrefly.extra.sources import _sse_frame
+    from graphrefly.extra.sources import sse_frame
 
     q: queue.Queue[str | tuple[str, bool] | None] = queue.Queue()
     done = threading.Event()
@@ -628,7 +651,7 @@ def _observe_sse_response(
                 t = msg[0]
                 if t is MessageType.DATA:
                     payload = msg[1] if len(msg) > 1 else None
-                    frame = _sse_frame(path, _json_encode(payload))
+                    frame = sse_frame(path, _json_encode(payload))
                     if wm is not None:
                         wm.on_enqueue()
                         q.put((frame, True))
@@ -636,9 +659,9 @@ def _observe_sse_response(
                         q.put(frame)
                 elif t is MessageType.ERROR:
                     payload = msg[1] if len(msg) > 1 else None
-                    q.put(_sse_frame(f"error:{path}", _json_encode(payload)))
+                    q.put(sse_frame(f"error:{path}", _json_encode(payload)))
                 elif t is MessageType.COMPLETE:
-                    q.put(_sse_frame(f"complete:{path}"))
+                    q.put(sse_frame(f"complete:{path}"))
                 elif t is MessageType.TEARDOWN:
                     done.set()
                     q.put(None)
@@ -652,7 +675,7 @@ def _observe_sse_response(
                 t = msg[0]
                 if t is MessageType.DATA:
                     payload = msg[1] if len(msg) > 1 else None
-                    frame = _sse_frame("data", _json_encode(payload))
+                    frame = sse_frame("data", _json_encode(payload))
                     if wm is not None:
                         wm.on_enqueue()
                         q.put((frame, True))
@@ -660,12 +683,12 @@ def _observe_sse_response(
                         q.put(frame)
                 elif t is MessageType.ERROR:
                     payload = msg[1] if len(msg) > 1 else None
-                    q.put(_sse_frame("error", _json_encode(payload)))
+                    q.put(sse_frame("error", _json_encode(payload)))
                     done.set()
                     q.put(None)
                     return
                 elif t is MessageType.COMPLETE:
-                    q.put(_sse_frame("complete"))
+                    q.put(sse_frame("complete"))
                     done.set()
                     q.put(None)
                     return

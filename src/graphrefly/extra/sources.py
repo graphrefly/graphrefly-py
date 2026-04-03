@@ -1477,7 +1477,7 @@ def to_array(source: Node[Any]) -> Node[list[Any]]:
     )
 
 
-def _sse_frame(event: str, data: str | None = None) -> str:
+def sse_frame(event: str, data: str | None = None) -> str:
     out = f"event: {event}\n"
     if data is not None:
         # Preserve trailing empty lines (matches TS split(/\r?\n/) framing behavior).
@@ -1530,15 +1530,15 @@ def to_sse(
         for msg in msgs:
             t = msg[0]
             if t is MessageType.DATA:
-                q.put(_sse_frame(data_event, encode(msg[1] if len(msg) > 1 else None)))
+                q.put(sse_frame(data_event, encode(msg[1] if len(msg) > 1 else None)))
                 continue
             if t is MessageType.ERROR:
-                q.put(_sse_frame(error_event, encode(msg[1] if len(msg) > 1 else None)))
+                q.put(sse_frame(error_event, encode(msg[1] if len(msg) > 1 else None)))
                 done.set()
                 q.put(None)
                 return
             if t is MessageType.COMPLETE:
-                q.put(_sse_frame(complete_event))
+                q.put(sse_frame(complete_event))
                 done.set()
                 q.put(None)
                 return
@@ -1548,7 +1548,7 @@ def to_sse(
                 continue
             event = event_name_resolver(t) if event_name_resolver is not None else str(t)
             data = encode(msg[1]) if len(msg) > 1 else None
-            q.put(_sse_frame(event, data))
+            q.put(sse_frame(event, data))
 
     unsub = source.subscribe(sink)
 

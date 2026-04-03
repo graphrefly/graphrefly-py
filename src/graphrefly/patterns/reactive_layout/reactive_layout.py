@@ -780,8 +780,12 @@ def reactive_layout(
         cache: dict[str, dict[str, float]],
         adapter: MeasurementAdapter,
     ) -> bool:
-        """Clear layout measurement cache on INVALIDATE (spec §1.2)."""
-        if msg[0] == MessageType.INVALIDATE:
+        """Clear closure-held cache on INVALIDATE/TEARDOWN.
+
+        Returns False so default dispatch still propagates the message
+        (TEARDOWN → meta/downstream, INVALIDATE → clear _cached).
+        """
+        if msg[0] == MessageType.INVALIDATE or msg[0] == MessageType.TEARDOWN:
             cache.clear()
             clear_fn = getattr(adapter, "clear_cache", None)
             if callable(clear_fn):

@@ -1,18 +1,16 @@
 # Optimizations and Open Decisions
 
-## Open design decisions
+## Resolved design decisions (gateway + SSE, 2026-04-03)
 
-- **`ObserveGateway._default_send` async/sync bridge (noted 2026-04-02):** `_default_send` wraps `client.send_text(json.dumps(m))` in a sync lambda. For Starlette/FastAPI `WebSocket`, `send_text` is a coroutine — calling synchronously returns an unawaited coroutine silently dropped by `_try_send`. Options: (a) remove `_default_send` and require callers always pass `send=`; (b) bridge with `anyio.from_thread.run`; (c) document as sync-transport-only.
+- **`ObserveGateway._default_send` removed (noted 2026-04-02, resolved 2026-04-03 — option (a)):** `_default_send` silently dropped unawaited coroutines for Starlette/FastAPI WebSocket (`send_text` is a coroutine). Resolved: remove `_default_send`; `send` is now a required parameter on `ObserveGateway`. A `starlette_send(ws)` convenience helper is provided that correctly wraps the coroutine via the channel-based architecture below. Usage: `ObserveGateway(graph, send=starlette_send(ws))`. Pre-1.0 — no backward compat.
 
-- **`ObserveGateway` thread safety (noted 2026-04-02):** `sink()` fires from the graph propagation thread; `handle_message`/`handle_disconnect` run from the async event loop thread. Both mutate `self._clients` and per-client `subs` dicts without synchronization. Under free-threaded Python this is a data race. Options: (a) add `threading.Lock` to protect `_clients`; (b) document single-threaded-only; (c) defer — solve alongside WatermarkController threading.
+- **`ObserveGateway` thread safety + `WatermarkController` cross-thread SSE (noted 2026-04-02, resolved 2026-04-03 — option (c) channel-based):** `sink()` fires from the graph propagation thread; `handle_message`/`handle_disconnect` from the async event loop thread. Resolved: channel-based architecture — graph thread pushes to a `queue.SimpleQueue`, event loop thread drains. No shared mutable dicts. The `WatermarkController` moves entirely to the consumer (event loop) side, eliminating cross-thread state. Solves both gateway thread safety and watermark cross-thread issues in one pass. No polling — queue drain uses `call_soon_threadsafe` or equivalent async bridge.
 
-- **`WatermarkController` cross-thread use in SSE (noted 2026-04-02):** `on_enqueue()` runs on the graph propagation thread (inside `sink`); `on_dequeue()` runs on Starlette's sync-iterator thread (inside `_iter`). The controller docstring says "purely synchronous" — correct for the controller itself, but the SSE integration uses it cross-thread without a lock. Options: (a) add lock inside controller; (b) wrap at SSE layer; (c) defer pre-1.0, document constraint.
+- **`_sse_frame` made public (noted 2026-04-02, resolved 2026-04-03):** Renamed `_sse_frame` → `sse_frame` and exported from `graphrefly.extra`. The integration module now imports the public symbol. Pre-1.0, no backward compat.
 
-- **`_sse_frame` private import coupling (noted 2026-04-02):** `_observe_sse_response` imports `_sse_frame` (underscore-prefixed) from `graphrefly.extra.sources`. Fragile — any refactor of `sources.py` internals can break the integration. Options: make public, or duplicate in integration module.
+- **Graph-wide SSE per-node COMPLETE semantics (noted 2026-04-02, resolved 2026-04-03 — option (b) explicit done signal):** Add optional `done: Node[bool]` to graph-wide SSE options. When the done node emits `DATA(True)`, the SSE stream sends a final `complete:*` frame and terminates. Reactive (no polling), explicit (no heuristic), composable — the user derives the done signal from any graph state. Fallback: `TEARDOWN` via `graph.destroy()` still terminates as before.
 
-- **Graph-wide SSE per-node COMPLETE semantics (noted 2026-04-02):** Graph-wide SSE sends a `complete:{path}` frame per completed node but does not terminate the stream. Only `TEARDOWN` (via `graph.destroy()`) terminates. Intentional (graph-wide = wait for teardown), but asymmetric with single-node mode. If the graph is never destroyed the client hangs. May need documenting or an "all-completed" heuristic.
-
-- **`_normalize_graphs` key naming for positional graphs (noted 2026-04-02):** Single `Graph` maps to key `"default"`; multiple positional `Graph` objects map to `"0"`, `"1"`, etc. `get_graph()` defaults to `"default"` — works for single-graph but silently fails for multi-graph. Needs documentation or consistent key scheme.
+- **`_normalize_graphs` key naming (noted 2026-04-02, resolved 2026-04-03):** Single `Graph` maps to `"default"` (unchanged). Multiple positional `Graph` arguments now raise `TypeError` with guidance to use an explicit dict instead. Eliminates the ambiguous `"0"`, `"1"` keys and silent `get_graph()` failures.
 
 ## Resolved design decisions (streaming + AI lifecycle)
 
@@ -608,6 +606,16 @@ Both ports now align on the following:
 
    **Resolved (2026-03-31):** When implemented, async sources (`from_timer`, `from_awaitable`, `from_async_iter`) will accept the same `CancellationToken` protocol from parity follow-up #7 (a small interface with `.is_cancelled` property and `.on_cancel(fn)` callback registration, backed by `threading.Event`). `TEARDOWN`-via-unsubscribe remains the primary cancellation path; the token is for external/cooperative cancellation. Implementation deferred until a concrete user hits the gap, but the cancellation token design is settled.
 
+## Resolved design decisions (cross-language, 2026-04-03)
+
+- **Per-factory `resubscribable` option (Phase 7.1+, resolved 2026-04-03 — option (b) per-factory opt-in):** Add `resubscribable: bool` to `reactive_layout` / `reactive_block_layout` options (default `False`). When true, adapter errors emit ERROR but the node can be re-triggered via INVALIDATE. Broader audit across all extra factories deferred — apply the option incrementally as use cases arise. Pre-1.0, no backward compat concern.
+
+- **`SvgBoundsAdapter` regex hardening (Phase 7.1, resolved 2026-04-03):** Strip `<!--...-->` and `<![CDATA[...]]>` from SVG content before viewBox/width/height extraction. Document that input should be a single root SVG element. Additionally, expose a `SvgParser` protocol so users can opt in their own parser for complex SVG inputs. Default: built-in regex parser. Cross-language: TS exposes equivalent `SvgParserAdapter` interface.
+
+- **`sample` + `undefined` as `T` (Tier 2, resolved 2026-04-03 — no action):** Documented limitation. TS-specific edge case (Python does not have the `undefined` ambiguity). No sentinel needed.
+
+- **`mergeMap` / `merge_map` + `ERROR` cascading (Tier 2, resolved 2026-04-03 — no action):** Documented limitation. Inner errors do not cascade to siblings. Current behavior (independent inner lifecycles) is more useful for parallel work. Document in docstrings.
+
 ---
 
 ## Design decisions (QA review)
@@ -797,7 +805,7 @@ Applies to `src/extra/operators.ts` and `graphrefly.extra.tier2`. **Keep the tab
 - **Block content model divergence:** TS uses discriminated union `ContentBlock = { type: "text" | "image" | "svg", ... }` with optional inline fields. PY uses typed dataclasses `TextBlock`, `ImageBlock`, `SvgBlock` with `ContentBlock = TextBlock | ImageBlock | SvgBlock`. SVG dimensions: TS uses `viewBox?: { width, height }` object, PY uses `view_box?: tuple[float, float]`. Image dimensions: TS uses `naturalWidth?/naturalHeight?`, PY uses `natural_width?/natural_height?`. These are language-idiomatic adaptations, not behavioral differences.
 - **SvgBoundsAdapter validation (Phase 7.1, resolved 2026-04-02):** Parsed viewBox width/height and fallback ``<svg>`` width/height must be finite and positive. TS uses ``Number.isFinite``; PY uses :func:`math.isfinite`. When attributes are present but numeric values are invalid, both ports raise a message distinct from the “no viewBox or width/height” case.
 - **Block layout INVALIDATE + text adapter cache (Phase 7.1, resolved 2026-04-02):** PY ``reactive_block_layout`` invokes ``clear_cache`` only when ``callable(getattr(adapters.text, "clear_cache", None))``, matching ``reactive_layout`` and TS ``clearCache?.()``.
-- **Block layout deferred items:** (1) Adapter throw inside `derived("measured-blocks")` fn produces terminal `[[ERROR, err]]` with no recovery — same pre-existing pattern as `reactive_layout`; adding `resubscribable=True` across all extra factories is a broader concern for a future pass. (2) Closure-held `measure_cache` (and adapter refs) survives `graph.destroy()` — same as `reactive_layout`; adding TEARDOWN cleanup to `on_message` is deferred as a batch improvement. (3) `SvgBoundsAdapter` regex may match nested `<svg>` elements or content inside XML comments/CDATA — inherent regex limitation; document that input should be a single root SVG element. (4) `ImageSizeAdapter` / `SvgBoundsAdapter` return mutable references — same pattern as `PrecomputedAdapter`; immutable return is deferred.
+- **Block layout deferred items (partially resolved 2026-04-03):** (1) Adapter throw inside `derived("measured-blocks")` fn produces terminal `[[ERROR, err]]` with no recovery — resolved: add per-factory `resubscribable: bool` option (default `False`) to `reactive_layout` / `reactive_block_layout`. When true, adapter errors emit ERROR but the node can be re-triggered via INVALIDATE. (2) ~~Closure-held `measure_cache` survives `graph.destroy()`~~ — **resolved 2026-04-03:** `on_message` now clears `measure_cache` and calls `clear_cache()` on both INVALIDATE and TEARDOWN. (3) `SvgBoundsAdapter` regex may match nested `<svg>` elements or content inside XML comments/CDATA — resolved: strip `<!--...-->` and `<![CDATA[...]]>` before viewBox extraction; document single-root-SVG constraint; expose `SvgParser` protocol so users can opt in their own parser. (4) ~~`ImageSizeAdapter` returns mutable references~~ — **resolved 2026-04-03:** `measure_image` now returns `dict(dims)` (shallow copy).
 
 ---
 

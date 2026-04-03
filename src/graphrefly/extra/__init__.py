@@ -89,6 +89,7 @@ from graphrefly.extra.sources import (
     throw_error,
     to_array,
     to_list,
+    sse_frame,
     to_sse,
     to_websocket,
 )
@@ -198,6 +199,7 @@ __all__ = [
     "share",
     "throw_error",
     "to_array",
+    "sse_frame",
     "to_websocket",
     "to_sse",
     "to_list",

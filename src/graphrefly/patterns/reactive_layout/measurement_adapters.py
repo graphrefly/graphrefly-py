@@ -273,4 +273,4 @@ class ImageSizeAdapter:
         dims = self._sizes.get(src)
         if dims is None:
             raise KeyError(f"ImageSizeAdapter: no dimensions registered for {src!r}")
-        return dims
+        return dict(dims)

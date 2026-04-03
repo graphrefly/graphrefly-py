@@ -327,7 +327,9 @@ def reactive_block_layout(
 
     # --- Derived: measured-blocks ---
     def _invalidate_cache(msg: tuple[Any, ...], _dep_index: int, _actions: Any) -> bool:
-        if msg[0] == MessageType.INVALIDATE:
+        if msg[0] == MessageType.INVALIDATE or msg[0] == MessageType.TEARDOWN:
+            # Local side-effect only; return False so default dispatch
+            # still propagates the message (TEARDOWN → meta/downstream).
             measure_cache.clear()
             clear_fn = getattr(adapters.text, "clear_cache", None)
             if callable(clear_fn):
