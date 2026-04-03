@@ -9,8 +9,8 @@ from __future__ import annotations
 import pytest
 
 from graphrefly.core.protocol import MessageType
-from graphrefly.extra.measurement_adapters import ImageSizeAdapter, SvgBoundsAdapter
-from graphrefly.extra.reactive_block_layout import (
+from graphrefly.patterns.reactive_layout.measurement_adapters import ImageSizeAdapter, SvgBoundsAdapter
+from graphrefly.patterns.reactive_layout.reactive_block_layout import (
     BlockAdapters,
     ImageBlock,
     MeasuredBlock,

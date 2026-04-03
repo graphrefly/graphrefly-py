@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from graphrefly.core.clock import monotonic_ns
 from graphrefly.core.protocol import MessageType, emit_with_batch
 from graphrefly.core.sugar import derived, state
-from graphrefly.extra.reactive_layout import (
+from graphrefly.patterns.reactive_layout.reactive_layout import (
     CharPosition,
     LineBreaksResult,
     MeasurementAdapter,

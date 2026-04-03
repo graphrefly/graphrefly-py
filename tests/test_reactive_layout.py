@@ -7,7 +7,7 @@ so tests are environment-independent (no Canvas/DOM).
 from __future__ import annotations
 
 from graphrefly.core.protocol import MessageType, batch
-from graphrefly.extra.reactive_layout import (
+from graphrefly.patterns.reactive_layout.reactive_layout import (
     CharPosition,
     LayoutLine,
     LineBreaksResult,

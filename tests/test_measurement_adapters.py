@@ -2,11 +2,11 @@
 
 import pytest
 
-from graphrefly.extra.measurement_adapters import (
+from graphrefly.patterns.reactive_layout.measurement_adapters import (
     CliMeasureAdapter,
     PrecomputedAdapter,
 )
-from graphrefly.extra.reactive_layout import (
+from graphrefly.patterns.reactive_layout.reactive_layout import (
     MeasurementAdapter,
     analyze_and_measure,
     reactive_layout,
@@ -153,7 +153,7 @@ class TestPillowMeasureAdapter:
     def test_import_and_construct(self) -> None:
         """PillowMeasureAdapter can be imported and constructed."""
         pytest.importorskip("PIL")
-        from graphrefly.extra.measurement_adapters import PillowMeasureAdapter
+        from graphrefly.patterns.reactive_layout.measurement_adapters import PillowMeasureAdapter
 
         adapter = PillowMeasureAdapter()
         assert isinstance(adapter, MeasurementAdapter)
@@ -161,7 +161,7 @@ class TestPillowMeasureAdapter:
     def test_default_font_measurement(self) -> None:
         """Measures with Pillow default font (no TTF required)."""
         pytest.importorskip("PIL")
-        from graphrefly.extra.measurement_adapters import PillowMeasureAdapter
+        from graphrefly.patterns.reactive_layout.measurement_adapters import PillowMeasureAdapter
 
         adapter = PillowMeasureAdapter()
         result = adapter.measure_segment("hello", "default")
@@ -169,7 +169,7 @@ class TestPillowMeasureAdapter:
 
     def test_clear_cache(self) -> None:
         pytest.importorskip("PIL")
-        from graphrefly.extra.measurement_adapters import PillowMeasureAdapter
+        from graphrefly.patterns.reactive_layout.measurement_adapters import PillowMeasureAdapter
 
         adapter = PillowMeasureAdapter()
         adapter.measure_segment("a", "default")

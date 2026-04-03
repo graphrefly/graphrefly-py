@@ -417,7 +417,7 @@ Two-tier DX: out-of-the-box `reactive_layout(adapter, *, text=..., font=..., lin
 
 #### Standalone extraction
 
-- [ ] Extractable as standalone pattern (`reactive-layout`) independent of demo shell
+- [x] Extractable as standalone pattern (`reactive-layout`) independent of demo shell — moved to `patterns/reactive_layout/`, importable via `from graphrefly.patterns.reactive_layout import ...`
 
 ### 7.2 — Showcase demos (Pyodide/WASM lab)
 
