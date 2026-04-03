@@ -1,12 +1,28 @@
 [project]
 name = "graphrefly-py"
 version = "0.1.0"
-description = "Reactive graph protocol for human and LLM co-operation"
+description = "Reactive graph protocol for human + LLM co-operation. Composable nodes, glitch-free diamond resolution, two-phase push, durable streaming. Zero dependencies."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
 authors = [{ name = "David Chen" }]
-keywords = ["reactive", "graph", "state-management", "orchestration", "llm"]
+keywords = [
+	"reactive",
+	"graph",
+	"state-management",
+	"signals",
+	"streaming",
+	"llm",
+	"ai-agents",
+	"observable",
+	"orchestration",
+	"durable-workflow",
+	"diamond-resolution",
+	"zero-dependency",
+	"asyncio",
+	"callbag",
+	"reactive-programming",
+]
 classifiers = [
 	"Development Status :: 3 - Alpha",
 	"Intended Audience :: Developers",
@@ -16,13 +32,15 @@ classifiers = [
 	"Programming Language :: Python :: 3.13",
 	"Programming Language :: Python :: 3.14",
 	"Topic :: Software Development :: Libraries :: Python Modules",
+	"Topic :: Scientific/Engineering :: Artificial Intelligence",
+	"Framework :: AsyncIO",
 	"Typing :: Typed",
 ]
 
 [project.urls]
-Homepage = "https://github.com/nicepkg/graphrefly-py"
-Repository = "https://github.com/nicepkg/graphrefly-py"
-Documentation = "https://github.com/nicepkg/graphrefly-py#readme"
+Homepage = "https://py.graphrefly.dev"
+Repository = "https://github.com/graphrefly/graphrefly-py"
+Documentation = "https://py.graphrefly.dev"
 
 [build-system]
 requires = ["hatchling"]
