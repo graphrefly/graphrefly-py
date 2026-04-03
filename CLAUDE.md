@@ -19,6 +19,15 @@ install dependencies.
 - Distribution name: `graphrefly-py`
 - Import path: `graphrefly`
 
+## Layout
+
+- `src/graphrefly/core/` — message protocol, `node` primitive, batch, sugar constructors (Phase 0)
+- `src/graphrefly/graph/` — `Graph` container, describe/observe, snapshot (Phase 1+)
+- `src/graphrefly/extra/` — operators, sources, data structures, resilience (Phase 2–3)
+- `src/graphrefly/patterns/` — domain-layer APIs: orchestration, messaging, memory, AI, CQRS, reactive layout (Phase 4+)
+- `src/graphrefly/compat/` — async runners: asyncio, trio (Phase 5+)
+- `src/graphrefly/integrations/` — framework integrations: FastAPI (Phase 5+)
+
 ## Key docs
 
 - `~/src/graphrefly/GRAPHREFLY-SPEC.md` — protocol and behavioral specification (shared with graphrefly-ts)
@@ -26,6 +35,16 @@ install dependencies.
 - `docs/docs-guidance.md` — how to write and maintain documentation here
 - `docs/test-guidance.md` — testing conventions and organization
 - `archive/docs/SESSION-graphrefly-spec-design.md` — design lineage and rationale vs callbag-recharge
+
+## Design invariants (spec §5.8–5.12)
+
+These are non-negotiable across all implementations. Validate every change against them.
+
+1. **No polling.** State changes propagate reactively via messages. Never poll a node's value on a timer or busy-wait for status. Use reactive timer sources (`from_timer`, `from_cron`) instead.
+2. **No imperative triggers.** All coordination uses reactive `NodeInput` signals and message flow through topology. No event emitters, callbacks, or `threading.Timer` + `set()` workarounds. If you need a trigger, it's a reactive source node.
+3. **No raw async primitives in the reactive layer.** Do not use bare `asyncio.ensure_future`, `asyncio.create_task`, `threading.Timer`, or raw coroutines to schedule reactive work. Async boundaries belong in sources (`from_awaitable`, `from_async_iter`) and the runner layer (`compat/asyncio_runner`, `compat/trio_runner`), not in node fns or operators.
+4. **Central timer and `message_tier` utilities.** Use `clock.py` for all timestamps (see rule below). Use `message_tier` utilities for tier classification — never hardcode type checks for checkpoint or batch gating.
+5. **Phase 4+ APIs must be developer-friendly.** Domain-layer APIs (orchestration, messaging, memory, AI, CQRS) use sensible defaults, minimal boilerplate, and clear errors. Protocol internals (`DIRTY`, `RESOLVED`, bitmask) never surface in primary APIs — accessible via `.node()` or `inner` when needed.
 
 ## Time utility rule
 

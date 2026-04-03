@@ -1,9 +1,8 @@
 # graphrefly-py
 
-Reactive graph protocol for human and LLM co-operation.
+Python implementation of **GraphReFly** — reactive graph protocol for human + LLM co-operation.
 
-Python implementation of GraphReFly, based on the shared behavior defined in
-`~/src/graphrefly/GRAPHREFLY-SPEC.md`.
+Based on the shared behavior spec: [`GRAPHREFLY-SPEC.md`](https://github.com/graphrefly/graphrefly).
 
 ## Install
 
@@ -49,6 +48,15 @@ next_val = first_value_from(count)
 print(next_val)  # 5 (current value emitted on subscribe)
 ```
 
+## Layout
+
+- `src/graphrefly/core/` — message protocol, node primitive, batch, sugar constructors
+- `src/graphrefly/graph/` — Graph container, describe/observe, snapshot, persistence
+- `src/graphrefly/extra/` — operators, sources, data structures, resilience, checkpoint
+- `src/graphrefly/patterns/` — domain-layer APIs: orchestration, messaging, memory, AI, CQRS, reactive layout
+- `src/graphrefly/compat/` — async runners (asyncio, trio)
+- `src/graphrefly/integrations/` — framework integrations (FastAPI)
+
 ## Dev setup
 
 ```bash
@@ -59,7 +67,7 @@ uv sync
 
 ## Status
 
-Early development. See `docs/roadmap.md` for the phased implementation plan.
+Early development (Phase 7 — polish and launch). See `docs/roadmap.md` for the phased plan.
 
 ## License
 

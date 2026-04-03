@@ -42,6 +42,11 @@ While planning, explicitly validate proposed changes against these invariants (s
 - Prefer **typed** message/type enums and clear protocols over ad-hoc integers
 - **Thread safety:** design for GIL and free-threaded Python where core APIs are documented as thread-safe (see roadmap Phase 0.4)
 - **Diamond resolution** via bitmask (Python `int`) at convergence nodes
+- **No polling** — never poll node values on a timer or busy-wait. Use reactive sources (`from_timer`, `from_cron`) instead (spec §5.8).
+- **No imperative triggers** — no event emitters, callbacks, or `threading.Timer` + `set()` workarounds. All coordination uses reactive `NodeInput` signals (spec §5.9).
+- **No raw async primitives** — no bare `asyncio.ensure_future`, `asyncio.create_task`, `threading.Timer`, or raw coroutines for reactive work. Async belongs in sources and the runner layer (spec §5.10).
+- **Central timer and `message_tier`** — use `core/clock.py` for timestamps, `message_tier` for tier classification. Never hardcode type checks (spec §5.11).
+- **Phase 4+ APIs must be developer-friendly** — sensible defaults, minimal boilerplate, clear errors. Protocol internals never surface in primary APIs (spec §5.12).
 
 Do NOT start implementing yet.
 

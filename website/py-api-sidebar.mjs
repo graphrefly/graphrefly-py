@@ -142,11 +142,31 @@ export const pyApiSidebar = [
 			{ label: "reactive_index()", link: "/api/reactive_index" },
 			{ label: "reactive_list()", link: "/api/reactive_list" },
 			{ label: "pubsub()", link: "/api/pubsub" },
+			{ label: "verifiable()", link: "/api/verifiable" },
+			{ label: "distill()", link: "/api/distill" },
 			{ label: "PubSubHub", link: "/api/pubsubhub" },
 			{ label: "ReactiveMapBundle", link: "/api/reactivemapbundle" },
 			{ label: "ReactiveLogBundle", link: "/api/reactivelogbundle" },
 			{ label: "ReactiveIndexBundle", link: "/api/reactiveindexbundle" },
 			{ label: "ReactiveListBundle", link: "/api/reactivelistbundle" },
+		],
+	},
+	{
+		label: "API — Backpressure & flow",
+		collapsed: true,
+		items: [
+			{ label: "create_watermark_controller()", link: "/api/create_watermark_controller" },
+		],
+	},
+	{
+		label: "API — Layout engine",
+		collapsed: true,
+		items: [
+			{ label: "reactive_layout()", link: "/api/reactive_layout" },
+			{ label: "reactive_block_layout()", link: "/api/reactive_block_layout" },
+			{ label: "analyze_and_measure()", link: "/api/analyze_and_measure" },
+			{ label: "compute_line_breaks()", link: "/api/compute_line_breaks" },
+			{ label: "compute_char_positions()", link: "/api/compute_char_positions" },
 		],
 	},
 ];

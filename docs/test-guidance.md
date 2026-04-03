@@ -63,6 +63,14 @@ Aligned with **GRAPHREFLY-SPEC** and **roadmap** Phase 0:
 - [ ] **Forward:** unknown message types pass through
 - [ ] **Threading:** where APIs claim thread-safe **get()** / propagation, stress with multiple threads (see roadmap 0.4)
 
+### Design invariant violations
+
+From **GRAPHREFLY-SPEC §5.8–5.12**:
+
+- [ ] **No polling:** Operators and sources must not use `time.sleep` loops or timer polling on node values. Test that reactive push propagation is the only update mechanism.
+- [ ] **No leaked internals:** Phase 4+ APIs must not expose protocol internals (`DIRTY`, `RESOLVED`, bitmask) in error messages or return types visible to end users.
+- [ ] **Async boundary isolation:** Async boundaries (`asyncio`, threading, I/O) belong in sources and runners, never inside node `fn` callbacks. Test that node fns remain synchronous.
+
 ---
 
 ## Diamond resolution pattern
