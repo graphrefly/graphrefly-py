@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.4.0 (2026-04-04)
+
+### Features
+
+- Fix readme badges
+  ([`c88a6ca`](https://github.com/graphrefly/graphrefly-py/commit/c88a6ca8312ab92b709c9d725da1583436318dd9))
+
+
 ## v0.3.0 (2026-04-04)
 
 ### Chores
