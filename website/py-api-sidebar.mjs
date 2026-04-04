@@ -16,7 +16,7 @@ export const pyApiSidebar = [
 		],
 	},
 	{
-		label: "API — Operators",
+		label: "Operators",
 		items: [
 			{ label: "map()", link: "/api/map" },
 			{ label: "filter()", link: "/api/filter" },
@@ -37,7 +37,7 @@ export const pyApiSidebar = [
 		],
 	},
 	{
-		label: "API — Combinators",
+		label: "Combinators",
 		collapsed: true,
 		items: [
 			{ label: "combine()", link: "/api/combine" },
@@ -49,7 +49,7 @@ export const pyApiSidebar = [
 		],
 	},
 	{
-		label: "API — Sources & factories",
+		label: "Sources",
 		collapsed: true,
 		items: [
 			{ label: "cached()", link: "/api/cached" },
@@ -74,7 +74,7 @@ export const pyApiSidebar = [
 		],
 	},
 	{
-		label: "API — Async & timers",
+		label: "Async & timers",
 		collapsed: true,
 		items: [
 			{ label: "switch_map()", link: "/api/switch_map" },
@@ -101,7 +101,7 @@ export const pyApiSidebar = [
 		],
 	},
 	{
-		label: "API — Resilience & checkpoints",
+		label: "Resilience & checkpoints",
 		collapsed: true,
 		items: [
 			{ label: "BackoffPreset", link: "/api/backoffpreset" },
@@ -133,7 +133,7 @@ export const pyApiSidebar = [
 		],
 	},
 	{
-		label: "API — Data structures",
+		label: "Data structures",
 		collapsed: true,
 		items: [
 			{ label: "reactive_map()", link: "/api/reactive_map" },
@@ -152,14 +152,14 @@ export const pyApiSidebar = [
 		],
 	},
 	{
-		label: "API — Backpressure & flow",
+		label: "Backpressure & flow",
 		collapsed: true,
 		items: [
 			{ label: "create_watermark_controller()", link: "/api/create_watermark_controller" },
 		],
 	},
 	{
-		label: "API — Layout engine",
+		label: "Layout engine",
 		collapsed: true,
 		items: [
 			{ label: "reactive_layout()", link: "/api/reactive_layout" },

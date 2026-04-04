@@ -1,0 +1,58 @@
+# Versions from conventional commits, GitHub releases + PyPI publish on main.
+# Secrets: PYPI_API_TOKEN (PyPI API token with upload scope) or configure trusted publishing separately.
+# python-semantic-release infers the last version from git tags; tag the current release line first
+# (e.g. v0.1.0) if it is not already tagged, so bumps continue from the right baseline.
+# Ensure GitHub Actions has workflow "Read and write" permissions (repo Settings → Actions → General).
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync dependencies
+        run: uv sync --group dev
+
+      - name: Test
+        run: uv run pytest
+
+      - name: Configure Git for release commits
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Semantic release (version, tag, GitHub release)
+        id: psr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: uv run semantic-release version
+
+      - name: Publish to PyPI
+        if: steps.psr.outputs.released == 'true'
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: uv publish
