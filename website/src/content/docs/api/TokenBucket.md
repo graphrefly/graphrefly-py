@@ -10,7 +10,3 @@ Protocol for token bucket instances (use :func:`token_bucket` to create).
 ```python
 class TokenBucket(Protocol)
 ```
-
-## Documentation
-
-Protocol for token bucket instances (use :func:`token_bucket` to create).

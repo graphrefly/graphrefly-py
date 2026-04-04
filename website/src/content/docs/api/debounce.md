@@ -5,28 +5,29 @@ description: 'Emit the latest upstream ``DATA`` only after ``seconds`` of silenc
 
 Emit the latest upstream ``DATA`` only after ``seconds`` of silence; flush on ``COMPLETE``.
 
+Timer is cancelled on upstream ``ERROR`` or unsubscribe.
+
 ## Signature
 
 ```python
 def debounce(seconds: float) -> PipeOperator
 ```
 
-## Documentation
+## Parameters
 
-Emit the latest upstream ``DATA`` only after ``seconds`` of silence; flush on ``COMPLETE``.
+| Parameter | Description |
+|-----------|-------------|
+| `seconds` | Silence window in seconds; timer resets on each upstream ``DATA``. |
 
-Timer is cancelled on upstream ``ERROR`` or unsubscribe.
+## Returns
 
-Args:
-    seconds: Silence window in seconds; timer resets on each upstream ``DATA``.
+A unary pipe operator ``(Node) -&gt; Node``.
 
-Returns:
-    A unary pipe operator ``(Node) -&gt; Node``.
+## Basic Usage
 
-Example:
-    ```python
-    from graphrefly import state, pipe
-    from graphrefly.extra.tier2 import debounce
-    src = state(0)
-    out = pipe(src, debounce(0.05))
-    ```
+```python
+from graphrefly import state, pipe
+from graphrefly.extra.tier2 import debounce
+src = state(0)
+out = pipe(src, debounce(0.05))
+```

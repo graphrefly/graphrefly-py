@@ -15,13 +15,13 @@ def reactive_list(
 ) -> ReactiveListBundle
 ```
 
-## Documentation
+## Parameters
 
-Creates a reactive list backed by an immutable tuple snapshot (versioned).
+| Parameter | Description |
+|-----------|-------------|
+| `initial` | Optional initial sequence. |
+| `name` | Optional registry name for ``describe()`` / debugging. |
 
-Args:
-    initial: Optional initial sequence.
-    name: Optional registry name for ``describe()`` / debugging.
+## Returns
 
-Returns:
-    A :class:`ReactiveListBundle` with ``append`` / ``insert`` / ``pop`` / ``clear``.
+A :class:`ReactiveListBundle` with ``append`` / ``insert`` / ``pop`` / ``clear``.

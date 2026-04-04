@@ -11,17 +11,20 @@ Emit at most ``n`` wire ``DATA`` values, then ``COMPLETE`` (``RESOLVED`` does no
 def take(n: int) -> PipeOperator
 ```
 
-## Documentation
+## Parameters
 
-Emit at most ``n`` wire ``DATA`` values, then ``COMPLETE`` (``RESOLVED`` does not count).
+| Parameter | Description |
+|-----------|-------------|
+| `n` | Maximum ``DATA`` emissions; ``n &lt;= 0`` completes immediately. |
 
-Args:
-    n: Maximum ``DATA`` emissions; ``n &lt;= 0`` completes immediately.
+## Returns
 
-Returns:
-    A :class:`~graphrefly.core.sugar.PipeOperator`.
+A :class:`~graphrefly.core.sugar.PipeOperator`.
 
-Examples:
-    &gt;&gt;&gt; from graphrefly import pipe, state
-    &gt;&gt;&gt; from graphrefly.extra import take as grf_take
-    &gt;&gt;&gt; n = pipe(state(0), grf_take(3))
+## Basic Usage
+
+```python
+from graphrefly import pipe, state
+from graphrefly.extra import take as grf_take
+n = pipe(state(0), grf_take(3))
+```

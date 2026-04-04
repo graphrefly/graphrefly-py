@@ -11,17 +11,20 @@ Merge ``DATA`` from any dependency; ``COMPLETE`` only after every source complet
 def merge(*sources: Node[Any]) -> Node[Any]
 ```
 
-## Documentation
+## Parameters
 
-Merge ``DATA`` from any dependency; ``COMPLETE`` only after every source completes.
+| Parameter | Description |
+|-----------|-------------|
+| `sources` | Upstreams to merge (empty → immediate ``COMPLETE`` node). |
 
-Args:
-    *sources: Upstreams to merge (empty → immediate ``COMPLETE`` node).
+## Returns
 
-Returns:
-    A :class:`~graphrefly.core.node.Node`.
+A :class:`~graphrefly.core.node.Node`.
 
-Examples:
-    &gt;&gt;&gt; from graphrefly.extra import merge
-    &gt;&gt;&gt; from graphrefly import state
-    &gt;&gt;&gt; n = merge(state(1), state(2))
+## Basic Usage
+
+```python
+from graphrefly.extra import merge
+from graphrefly import state
+n = merge(state(1), state(2))
+```

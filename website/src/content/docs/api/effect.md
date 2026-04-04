@@ -11,25 +11,25 @@ Create a side-effect leaf node; ``fn`` should return ``None`` (no auto-emit).
 def effect(deps: Sequence[Node[Any]], fn: NodeFn, **opts: Any) -> Node[Any]
 ```
 
-## Documentation
+## Parameters
 
-Create a side-effect leaf node; ``fn`` should return ``None`` (no auto-emit).
+| Parameter | Description |
+|-----------|-------------|
+| `deps` | Upstream nodes whose settled values trigger ``fn``. |
+| `fn` | Side-effect function receiving ``(dep_values, actions)``; return value is ignored unless it is a cleanup callable. |
+| `opts` | Additional node options passed through to :func:`~graphrefly.core.node.node`. |
 
-Args:
-    deps: Upstream nodes whose settled values trigger ``fn``.
-    fn: Side-effect function receiving ``(dep_values, actions)``; return value
-        is ignored unless it is a cleanup callable.
-    **opts: Additional node options passed through to :func:`~graphrefly.core.node.node`.
+## Returns
 
-Returns:
-    A :class:`~graphrefly.core.node.Node` that runs ``fn`` on each settlement
-    but does not emit reactive values downstream.
+A :class:`~graphrefly.core.node.Node` that runs ``fn`` on each settlement
+but does not emit reactive values downstream.
 
-Example:
-    ```python
-    from graphrefly import state, effect
-    x = state(0)
-    log = []
-    e = effect([x], lambda deps, _: log.append(deps[0]))
-    x.down([("DATA", 1)])
-    ```
+## Basic Usage
+
+```python
+from graphrefly import state, effect
+x = state(0)
+log = []
+e = effect([x], lambda deps, _: log.append(deps[0]))
+x.down([("DATA", 1)])
+```

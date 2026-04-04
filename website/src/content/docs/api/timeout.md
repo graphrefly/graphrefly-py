@@ -5,33 +5,34 @@ description: 'Emit ``ERROR`` if no ``DATA`` arrives within ``seconds`` after sub
 
 Emit ``ERROR`` if no ``DATA`` arrives within ``seconds`` after subscribe or last ``DATA``.
 
+Timer resets on each ``DATA``; unsubscribe cancels the watchdog.
+
 ## Signature
 
 ```python
 def timeout(seconds: float, *, error: BaseException | None = None) -> PipeOperator
 ```
 
-## Documentation
+## Parameters
 
-Emit ``ERROR`` if no ``DATA`` arrives within ``seconds`` after subscribe or last ``DATA``.
+| Parameter | Description |
+|-----------|-------------|
+| `seconds` | Timeout window in seconds. |
+| `error` | Exception to send as the ``ERROR`` payload (default: :exc:`TimeoutError`). |
 
-Timer resets on each ``DATA``; unsubscribe cancels the watchdog.
+## Returns
 
-Args:
-    seconds: Timeout window in seconds.
-    error: Exception to send as the ``ERROR`` payload (default: :exc:`TimeoutError`).
+A unary pipe operator ``(Node) -&gt; Node``.
 
-Returns:
-    A unary pipe operator ``(Node) -&gt; Node``.
+## Basic Usage
 
-Example:
-    ```python
-    from graphrefly.extra.tier2 import timeout
-    from graphrefly.extra import never
-    from graphrefly.extra.sources import first_value_from
-    n = timeout(0.001)(never())
-    try:
-        first_value_from(n)
-    except Exception:
-        pass
-    ```
+```python
+from graphrefly.extra.tier2 import timeout
+from graphrefly.extra import never
+from graphrefly.extra.sources import first_value_from
+n = timeout(0.001)(never())
+try:
+    first_value_from(n)
+except Exception:
+    pass
+```

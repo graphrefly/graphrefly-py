@@ -11,14 +11,14 @@ Emit ``(previous, current)`` pairs; the first upstream value yields ``RESOLVED``
 def pairwise() -> PipeOperator
 ```
 
-## Documentation
+## Returns
 
-Emit ``(previous, current)`` pairs; the first upstream value yields ``RESOLVED`` only.
+A :class:`~graphrefly.core.sugar.PipeOperator`.
 
-Returns:
-    A :class:`~graphrefly.core.sugar.PipeOperator`.
+## Basic Usage
 
-Examples:
-    &gt;&gt;&gt; from graphrefly import pipe, state
-    &gt;&gt;&gt; from graphrefly.extra import pairwise as grf_pw
-    &gt;&gt;&gt; n = pipe(state(0), grf_pw())
+```python
+from graphrefly import pipe, state
+from graphrefly.extra import pairwise as grf_pw
+n = pipe(state(0), grf_pw())
+```

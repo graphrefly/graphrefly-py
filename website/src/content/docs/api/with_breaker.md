@@ -5,6 +5,12 @@ description: 'Guard a source node with a :class:`CircuitBreaker`.'
 
 Guard a source node with a :class:`CircuitBreaker`.
 
+On each upstream ``DATA``, if the breaker refuses work, either emit
+``RESOLVED`` (``on_open="skip"``) or ``ERROR`` with :exc:`CircuitOpenError`
+(``on_open="error"``). ``COMPLETE`` records success; ``ERROR`` records
+failure and is forwarded. The ``breaker_state`` companion is wired into
+``node.meta`` so it appears in ``describe()``.
+
 ## Signature
 
 ```python
@@ -15,29 +21,23 @@ def with_breaker(
 ) -> Callable[[Node[Any]], WithBreakerBundle]
 ```
 
-## Documentation
+## Parameters
 
-Guard a source node with a :class:`CircuitBreaker`.
+| Parameter | Description |
+|-----------|-------------|
+| `breaker` | A :class:`CircuitBreaker` instance (see :func:`circuit_breaker`). |
+| `on_open` | ``"skip"`` (emit ``RESOLVED``) or ``"error"`` (emit :exc:`CircuitOpenError`) when the circuit is open. |
 
-On each upstream ``DATA``, if the breaker refuses work, either emit
-``RESOLVED`` (``on_open="skip"``) or ``ERROR`` with :exc:`CircuitOpenError`
-(``on_open="error"``). ``COMPLETE`` records success; ``ERROR`` records
-failure and is forwarded. The ``breaker_state`` companion is wired into
-``node.meta`` so it appears in ``describe()``.
+## Returns
 
-Args:
-    breaker: A :class:`CircuitBreaker` instance (see :func:`circuit_breaker`).
-    on_open: ``"skip"`` (emit ``RESOLVED``) or ``"error"`` (emit
-        :exc:`CircuitOpenError`) when the circuit is open.
+A unary operator ``(Node) -&gt; WithBreakerBundle``.
 
-Returns:
-    A unary operator ``(Node) -&gt; WithBreakerBundle``.
+## Basic Usage
 
-Example:
-    ```python
-    from graphrefly import state
-    from graphrefly.extra.resilience import circuit_breaker, with_breaker
-    breaker = circuit_breaker(failure_threshold=3)
-    src = state(1)
-    bundle = with_breaker(breaker)(src)
-    ```
+```python
+from graphrefly import state
+from graphrefly.extra.resilience import circuit_breaker, with_breaker
+breaker = circuit_breaker(failure_threshold=3)
+src = state(1)
+bundle = with_breaker(breaker)(src)
+```

@@ -10,7 +10,3 @@ Internal implementation — use :func:`node` factory.
 ```python
 class NodeImpl[T]
 ```
-
-## Documentation
-
-Internal implementation — use :func:`node` factory.

@@ -16,24 +16,24 @@ def reactive_map(
 ) -> ReactiveMapBundle
 ```
 
-## Documentation
+## Parameters
 
-Creates a reactive key–value map with optional TTL and LRU eviction.
+| Parameter | Description |
+|-----------|-------------|
+| `default_ttl` | If set, seconds until expiry when :meth:`ReactiveMapBundle.set` omits ``ttl`` (``None`` = no default expiry). |
+| `max_size` | If set, maximum number of entries; evicts LRU when exceeded (must be &gt;= 1). |
+| `name` | Optional registry name for ``describe()`` / debugging. |
 
-Args:
-    default_ttl: If set, seconds until expiry when :meth:`ReactiveMapBundle.set` omits
-        ``ttl`` (``None`` = no default expiry).
-    max_size: If set, maximum number of entries; evicts LRU when exceeded (must be &gt;= 1).
-    name: Optional registry name for ``describe()`` / debugging.
+## Returns
 
-Returns:
-    A :class:`ReactiveMapBundle` with imperative ``set`` / ``delete`` / ``clear`` /
-    ``prune`` and a ``data`` node exposing the live snapshot.
+A :class:`ReactiveMapBundle` with imperative ``set`` / ``delete`` / ``clear`` /
+``prune`` and a ``data`` node exposing the live snapshot.
 
-Example:
-    ```python
-    from graphrefly.extra import reactive_map
-    m = reactive_map(default_ttl=60.0, max_size=100)
-    m.set("x", 1)
-    assert m.data.get().value["x"] == 1
-    ```
+## Basic Usage
+
+```python
+from graphrefly.extra import reactive_map
+m = reactive_map(default_ttl=60.0, max_size=100)
+m.set("x", 1)
+assert m.data.get().value["x"] == 1
+```

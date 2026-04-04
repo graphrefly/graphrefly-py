@@ -5,6 +5,10 @@ description: 'Emit a value after a delay, then optionally tick at a fixed period
 
 Emit a value after a delay, then optionally tick at a fixed period (like Rx ``timer``).
 
+If *period* is ``None``, emit *first* once then ``COMPLETE``. If *period* is
+set, emit *first*, *first+1*, *first+2*, ... every *period* seconds. Timer
+threads are daemonized and cancelled on unsubscribe.
+
 ## Signature
 
 ```python
@@ -16,26 +20,23 @@ def from_timer(
 ) -> Node[Any]
 ```
 
-## Documentation
+## Parameters
 
-Emit a value after a delay, then optionally tick at a fixed period (like Rx ``timer``).
+| Parameter | Description |
+|-----------|-------------|
+| `delay` | Seconds to wait before the first emission (must be &gt;= 0). |
+| `period` | Optional repeat interval in seconds (``None`` = one-shot). |
+| `first` | Integer value for the first emission (default ``0``). |
 
-If *period* is ``None``, emit *first* once then ``COMPLETE``. If *period* is
-set, emit *first*, *first+1*, *first+2*, ... every *period* seconds. Timer
-threads are daemonized and cancelled on unsubscribe.
+## Returns
 
-Args:
-    delay: Seconds to wait before the first emission (must be &gt;= 0).
-    period: Optional repeat interval in seconds (``None`` = one-shot).
-    first: Integer value for the first emission (default ``0``).
+A :class:`~graphrefly.core.node.Node` that emits on a timer thread.
 
-Returns:
-    A :class:`~graphrefly.core.node.Node` that emits on a timer thread.
+## Basic Usage
 
-Example:
-    ```python
-    from graphrefly.extra import from_timer
-    from graphrefly.extra.sources import first_value_from
-    n = from_timer(0.001)
-    assert first_value_from(n) == 0
-    ```
+```python
+from graphrefly.extra import from_timer
+from graphrefly.extra.sources import first_value_from
+n = from_timer(0.001)
+assert first_value_from(n) == 0
+```

@@ -11,10 +11,9 @@ Cap any strategy at *max_attempts*; returns ``None`` after the cap.
 def with_max_attempts(strategy: BackoffStrategy, max_attempts: int) -> BackoffStrategy
 ```
 
-## Documentation
+## Parameters
 
-Cap any strategy at *max_attempts*; returns ``None`` after the cap.
-
-Args:
-    strategy: Inner strategy to wrap.
-    max_attempts: Maximum number of attempts (inclusive).
+| Parameter | Description |
+|-----------|-------------|
+| `strategy` | Inner strategy to wrap. |
+| `max_attempts` | Maximum number of attempts (inclusive). |

@@ -11,17 +11,20 @@ Drop the first ``n`` wire ``DATA`` payloads (``RESOLVED`` does not advance the c
 def skip(n: int) -> PipeOperator
 ```
 
-## Documentation
+## Parameters
 
-Drop the first ``n`` wire ``DATA`` payloads (``RESOLVED`` does not advance the counter).
+| Parameter | Description |
+|-----------|-------------|
+| `n` | Number of ``DATA`` values to suppress before forwarding. |
 
-Args:
-    n: Number of ``DATA`` values to suppress before forwarding.
+## Returns
 
-Returns:
-    A :class:`~graphrefly.core.sugar.PipeOperator`.
+A :class:`~graphrefly.core.sugar.PipeOperator`.
 
-Examples:
-    &gt;&gt;&gt; from graphrefly import pipe, state
-    &gt;&gt;&gt; from graphrefly.extra import skip as grf_skip
-    &gt;&gt;&gt; n = pipe(state(0), grf_skip(2))
+## Basic Usage
+
+```python
+from graphrefly import pipe, state
+from graphrefly.extra import skip as grf_skip
+n = pipe(state(0), grf_skip(2))
+```

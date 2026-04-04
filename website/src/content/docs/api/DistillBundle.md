@@ -10,7 +10,3 @@ Result of :func:`distill`.
 ```python
 class DistillBundle
 ```
-
-## Documentation
-
-Result of :func:`distill`.

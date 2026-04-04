@@ -11,20 +11,21 @@ Emit a list of ``DATA`` values collected over each timed window of ``seconds``.
 def buffer_time(seconds: float) -> PipeOperator
 ```
 
-## Documentation
+## Parameters
 
-Emit a list of ``DATA`` values collected over each timed window of ``seconds``.
+| Parameter | Description |
+|-----------|-------------|
+| `seconds` | Window duration in seconds. |
 
-Args:
-    seconds: Window duration in seconds.
+## Returns
 
-Returns:
-    A unary pipe operator ``(Node) -&gt; Node[list]``.
+A unary pipe operator ``(Node) -&gt; Node[list]``.
 
-Example:
-    ```python
-    from graphrefly import state, pipe
-    from graphrefly.extra.tier2 import buffer_time
-    src = state(0)
-    out = pipe(src, buffer_time(0.1))
-    ```
+## Basic Usage
+
+```python
+from graphrefly import state, pipe
+from graphrefly.extra.tier2 import buffer_time
+src = state(0)
+out = pipe(src, buffer_time(0.1))
+```

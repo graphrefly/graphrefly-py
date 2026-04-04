@@ -13,17 +13,20 @@ def distinct_until_changed(
 ) -> PipeOperator
 ```
 
-## Documentation
+## Parameters
 
-Suppress consecutive duplicates using ``equals`` (default: ``operator.eq``).
+| Parameter | Description |
+|-----------|-------------|
+| `equals` | Optional binary equality for adjacent values. |
 
-Args:
-    equals: Optional binary equality for adjacent values.
+## Returns
 
-Returns:
-    A :class:`~graphrefly.core.sugar.PipeOperator`.
+A :class:`~graphrefly.core.sugar.PipeOperator`.
 
-Examples:
-    &gt;&gt;&gt; from graphrefly import pipe, state
-    &gt;&gt;&gt; from graphrefly.extra import distinct_until_changed as grf_duc
-    &gt;&gt;&gt; n = pipe(state(1), grf_duc())
+## Basic Usage
+
+```python
+from graphrefly import pipe, state
+from graphrefly.extra import distinct_until_changed as grf_duc
+n = pipe(state(1), grf_duc())
+```

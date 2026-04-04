@@ -5,29 +5,30 @@ description: 'Play the source to ``COMPLETE``, then re-subscribe, repeating ``ti
 
 Play the source to ``COMPLETE``, then re-subscribe, repeating ``times`` passes total.
 
+Each pass ends when the source emits ``COMPLETE``; the operator then
+subscribes again until all passes have finished.
+
 ## Signature
 
 ```python
 def repeat(times: int) -> PipeOperator
 ```
 
-## Documentation
+## Parameters
 
-Play the source to ``COMPLETE``, then re-subscribe, repeating ``times`` passes total.
+| Parameter | Description |
+|-----------|-------------|
+| `times` | Total number of source passes to play through. |
 
-Each pass ends when the source emits ``COMPLETE``; the operator then
-subscribes again until all passes have finished.
+## Returns
 
-Args:
-    times: Total number of source passes to play through.
+A unary pipe operator ``(Node) -&gt; Node``.
 
-Returns:
-    A unary pipe operator ``(Node) -&gt; Node``.
+## Basic Usage
 
-Example:
-    ```python
-    from graphrefly.extra import of
-    from graphrefly.extra.tier2 import repeat
-    from graphrefly.extra.sources import to_list
-    assert to_list(repeat(3)(of(1))) == [1, 1, 1]
-    ```
+```python
+from graphrefly.extra import of
+from graphrefly.extra.tier2 import repeat
+from graphrefly.extra.sources import to_list
+assert to_list(repeat(3)(of(1))) == [1, 1, 1]
+```

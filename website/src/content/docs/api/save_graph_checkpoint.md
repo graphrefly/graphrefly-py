@@ -11,19 +11,19 @@ Persist a :meth:`~graphrefly.graph.Graph.snapshot` via a :class:`CheckpointAdapt
 def save_graph_checkpoint(graph: Graph, adapter: CheckpointAdapter) -> None
 ```
 
-## Documentation
+## Parameters
 
-Persist a :meth:`~graphrefly.graph.Graph.snapshot` via a :class:`CheckpointAdapter`.
+| Parameter | Description |
+|-----------|-------------|
+| `graph` | The :class:`~graphrefly.graph.Graph` to snapshot. |
+| `adapter` | Any :class:`CheckpointAdapter` (memory, file, SQLite, etc.). |
 
-Args:
-    graph: The :class:`~graphrefly.graph.Graph` to snapshot.
-    adapter: Any :class:`CheckpointAdapter` (memory, file, SQLite, etc.).
+## Basic Usage
 
-Example:
-    ```python
-    from graphrefly import Graph, state
-    from graphrefly.extra.checkpoint import MemoryCheckpointAdapter, save_graph_checkpoint
-    g = Graph("g"); g.add("x", state(5))
-    adapter = MemoryCheckpointAdapter()
-    save_graph_checkpoint(g, adapter)
-    ```
+```python
+from graphrefly import Graph, state
+from graphrefly.extra.checkpoint import MemoryCheckpointAdapter, save_graph_checkpoint
+g = Graph("g"); g.add("x", state(5))
+adapter = MemoryCheckpointAdapter()
+save_graph_checkpoint(g, adapter)
+```

@@ -11,10 +11,9 @@ Factory for a thread-safe :class:`TokenBucket`.
 def token_bucket(capacity: float, refill_per_second: float) -> TokenBucket
 ```
 
-## Documentation
+## Parameters
 
-Factory for a thread-safe :class:`TokenBucket`.
-
-Args:
-    capacity: Maximum tokens.
-    refill_per_second: Tokens restored per second (``0`` = no refill).
+| Parameter | Description |
+|-----------|-------------|
+| `capacity` | Maximum tokens. |
+| `refill_per_second` | Tokens restored per second (``0`` = no refill). |

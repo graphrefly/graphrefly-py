@@ -11,17 +11,15 @@ Create a new :class:`PubSubHub` with an empty topic registry.
 def pubsub() -> PubSubHub
 ```
 
-## Documentation
+## Returns
 
-Create a new :class:`PubSubHub` with an empty topic registry.
+A fresh :class:`PubSubHub` instance.
 
-Returns:
-    A fresh :class:`PubSubHub` instance.
+## Basic Usage
 
-Example:
-    ```python
-    from graphrefly.extra import pubsub
-    hub = pubsub()
-    hub.publish("topic", 1)
-    assert hub.topic("topic").get() == 1
-    ```
+```python
+from graphrefly.extra import pubsub
+hub = pubsub()
+hub.publish("topic", 1)
+assert hub.topic("topic").get() == 1
+```

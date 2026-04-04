@@ -11,22 +11,23 @@ Like :func:`switch_map`, but ignores new outer ``DATA`` while the current inner 
 def exhaust_map(fn: Callable[[Any], Any], *, initial: Any = _UNSET) -> PipeOperator
 ```
 
-## Documentation
+## Parameters
 
-Like :func:`switch_map`, but ignores new outer ``DATA`` while the current inner is active.
+| Parameter | Description |
+|-----------|-------------|
+| `fn` | ``outer_value -&gt; source`` (coerced via :func:`graphrefly.extra.sources.from_any`). |
+| `initial` | Optional initial ``get()`` value. |
 
-Args:
-    fn: ``outer_value -&gt; source`` (coerced via :func:`graphrefly.extra.sources.from_any`).
-    initial: Optional initial ``get()`` value.
+## Returns
 
-Returns:
-    A unary pipe operator ``(Node) -&gt; Node``.
+A unary pipe operator ``(Node) -&gt; Node``.
 
-Example:
-    ```python
-    from graphrefly import state, pipe
-    from graphrefly.extra.tier2 import exhaust_map
-    from graphrefly.extra import of
-    src = state(1)
-    out = pipe(src, exhaust_map(lambda v: of(v)))
-    ```
+## Basic Usage
+
+```python
+from graphrefly import state, pipe
+from graphrefly.extra.tier2 import exhaust_map
+from graphrefly.extra import of
+src = state(1)
+out = pipe(src, exhaust_map(lambda v: of(v)))
+```

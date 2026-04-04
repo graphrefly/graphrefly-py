@@ -15,18 +15,21 @@ def map(
 ) -> PipeOperator
 ```
 
-## Documentation
+## Parameters
 
-Map each upstream settled value through ``fn``.
+| Parameter | Description |
+|-----------|-------------|
+| `fn` | Transform applied to each dependency value. |
+| `equals` | Optional equality for ``RESOLVED`` detection on the inner node. |
 
-Args:
-    fn: Transform applied to each dependency value.
-    equals: Optional equality for ``RESOLVED`` detection on the inner node.
+## Returns
 
-Returns:
-    A :class:`~graphrefly.core.sugar.PipeOperator` wrapping the upstream node.
+A :class:`~graphrefly.core.sugar.PipeOperator` wrapping the upstream node.
 
-Examples:
-    &gt;&gt;&gt; from graphrefly import pipe, state
-    &gt;&gt;&gt; from graphrefly.extra import map as grf_map
-    &gt;&gt;&gt; n = pipe(state(1), grf_map(lambda x: x * 2))
+## Basic Usage
+
+```python
+from graphrefly import pipe, state
+from graphrefly.extra import map as grf_map
+n = pipe(state(1), grf_map(lambda x: x * 2))
+```

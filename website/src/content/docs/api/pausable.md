@@ -5,29 +5,27 @@ description: 'Buffer ``DIRTY``/``DATA``/``RESOLVED`` while ``PAUSE`` is in effec
 
 Buffer ``DIRTY``/``DATA``/``RESOLVED`` while ``PAUSE`` is in effect; flush on ``RESUME``.
 
+Protocol-level pause/resume using ``PAUSE``/``RESUME`` message types. Matches
+TypeScript ``pausable`` semantics.
+
 ## Signature
 
 ```python
 def pausable() -> PipeOperator
 ```
 
-## Documentation
+## Returns
 
-Buffer ``DIRTY``/``DATA``/``RESOLVED`` while ``PAUSE`` is in effect; flush on ``RESUME``.
+A unary pipe operator ``(Node) -&gt; Node``.
 
-Protocol-level pause/resume using ``PAUSE``/``RESUME`` message types. Matches
-TypeScript ``pausable`` semantics.
+## Basic Usage
 
-Returns:
-    A unary pipe operator ``(Node) -&gt; Node``.
-
-Example:
-    ```python
-    from graphrefly import state, pipe
-    from graphrefly.extra.tier2 import pausable
-    from graphrefly.core.protocol import MessageType
-    src = state(0)
-    out = pipe(src, pausable())
-    out.down([(MessageType.PAUSE,)])
-    out.down([(MessageType.RESUME,)])
-    ```
+```python
+from graphrefly import state, pipe
+from graphrefly.extra.tier2 import pausable
+from graphrefly.core.protocol import MessageType
+src = state(0)
+out = pipe(src, pausable())
+out.down([(MessageType.PAUSE,)])
+out.down([(MessageType.RESUME,)])
+```

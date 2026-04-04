@@ -11,20 +11,20 @@ Resolve a preset name string to a :data:`BackoffStrategy` with default parameter
 def resolve_backoff_preset(name: BackoffPreset) -> BackoffStrategy
 ```
 
-## Documentation
+## Parameters
 
-Resolve a preset name string to a :data:`BackoffStrategy` with default parameters.
+| Parameter | Description |
+|-----------|-------------|
+| `name` | One of ``"constant"``, ``"linear"``, ``"exponential"``, ``"fibonacci"``, or ``"decorrelated_jitter"``. |
 
-Args:
-    name: One of ``"constant"``, ``"linear"``, ``"exponential"``,
-        ``"fibonacci"``, or ``"decorrelated_jitter"``.
+## Returns
 
-Returns:
-    A :data:`BackoffStrategy` configured with default nanosecond parameters.
+A :data:`BackoffStrategy` configured with default nanosecond parameters.
 
-Example:
-    ```python
-    from graphrefly.extra.backoff import resolve_backoff_preset
-    s = resolve_backoff_preset("exponential")
-    assert s(0, None, None) == 100_000_000
-    ```
+## Basic Usage
+
+```python
+from graphrefly.extra.backoff import resolve_backoff_preset
+s = resolve_backoff_preset("exponential")
+assert s(0, None, None) == 100_000_000
+```

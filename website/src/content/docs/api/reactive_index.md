@@ -11,13 +11,13 @@ Creates a dual-key index: unique primary key, rows sorted by ``(secondary, prima
 def reactive_index(*, name: str | None = None) -> ReactiveIndexBundle[Any]
 ```
 
-## Documentation
+## Parameters
 
-Creates a dual-key index: unique primary key, rows sorted by ``(secondary, primary)``.
+| Parameter | Description |
+|-----------|-------------|
+| `name` | Optional registry name for ``describe()`` / debugging. |
 
-Args:
-    name: Optional registry name for ``describe()`` / debugging.
+## Returns
 
-Returns:
-    A :class:`ReactiveIndexBundle` with ``upsert`` / ``delete`` / ``clear`` and
-    ``by_primary`` / ``ordered`` derived nodes.
+A :class:`ReactiveIndexBundle` with ``upsert`` / ``delete`` / ``clear`` and
+``by_primary`` / ``ordered`` derived nodes.

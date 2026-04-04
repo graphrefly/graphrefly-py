@@ -5,24 +5,21 @@ description: 'Dual-key index: unique primary key with rows sorted by ``(secondar
 
 Dual-key index: unique primary key with rows sorted by ``(secondary, primary)``.
 
+Attributes:
+    by_primary: Derived node mapping ``primary -&gt; value``.
+    ordered: Derived node with all rows as a sorted tuple.
+
 ## Signature
 
 ```python
 class ReactiveIndexBundle[K]
 ```
 
-## Documentation
+## Basic Usage
 
-Dual-key index: unique primary key with rows sorted by ``(secondary, primary)``.
-
-Attributes:
-    by_primary: Derived node mapping ``primary -&gt; value``.
-    ordered: Derived node with all rows as a sorted tuple.
-
-Example:
-    ```python
-    from graphrefly.extra import reactive_index
-    idx = reactive_index()
-    idx.upsert("alice", score=90, value={"name": "Alice"})
-    assert "alice" in idx.by_primary.get()
-    ```
+```python
+from graphrefly.extra import reactive_index
+idx = reactive_index()
+idx.upsert("alice", score=90, value={"name": "Alice"})
+assert "alice" in idx.by_primary.get()
+```

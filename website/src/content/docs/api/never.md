@@ -11,17 +11,15 @@ Create a source that never emits any messages.
 def never() -> Node[Any]
 ```
 
-## Documentation
+## Returns
 
-Create a source that never emits any messages.
+A :class:`~graphrefly.core.node.Node` whose producer is a no-op
+(no ``DATA``, no ``COMPLETE``).
 
-Returns:
-    A :class:`~graphrefly.core.node.Node` whose producer is a no-op
-    (no ``DATA``, no ``COMPLETE``).
+## Basic Usage
 
-Example:
-    ```python
-    from graphrefly.extra import never
-    n = never()
-    # n.get() is None; no DATA will ever arrive
-    ```
+```python
+from graphrefly.extra import never
+n = never()
+# n.get() is None; no DATA will ever arrive
+```

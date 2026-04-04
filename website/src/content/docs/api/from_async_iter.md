@@ -15,15 +15,14 @@ def from_async_iter(
 ) -> Node[Any]
 ```
 
-## Documentation
+## Parameters
 
-Iterate an async iterable via a :class:`~graphrefly.core.runner.Runner`.
+| Parameter | Description |
+|-----------|-------------|
+| `aiterable` | The async iterable to drain. |
+| `runner` | Optional :class:`~graphrefly.core.runner.Runner`.  When ``None``, uses the thread-local default runner. |
 
-Args:
-    aiterable: The async iterable to drain.
-    runner: Optional :class:`~graphrefly.core.runner.Runner`.  When ``None``,
-        uses the thread-local default runner.
+## Returns
 
-Returns:
-    A :class:`~graphrefly.core.node.Node` that emits ``DATA`` per item,
-    then ``COMPLETE``, or ``ERROR`` on failure.
+A :class:`~graphrefly.core.node.Node` that emits ``DATA`` per item,
+then ``COMPLETE``, or ``ERROR`` on failure.

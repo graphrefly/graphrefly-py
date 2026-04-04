@@ -11,19 +11,18 @@ Hints passed to :meth:`~graphrefly.core.node.NodeImpl.subscribe` to enable optim
 class SubscribeHints
 ```
 
-## Documentation
+## Parameters
 
-Hints passed to :meth:`~graphrefly.core.node.NodeImpl.subscribe` to enable optimizations.
+| Parameter | Description |
+|-----------|-------------|
+| `single_dep` | When ``True``, the subscribing node has exactly one dependency, enabling the single-dep fast path that skips redundant ``DIRTY`` messages. |
 
-Args:
-    single_dep: When ``True``, the subscribing node has exactly one dependency,
-        enabling the single-dep fast path that skips redundant ``DIRTY`` messages.
+## Basic Usage
 
-Example:
-    ```python
-    from graphrefly import state
-    from graphrefly.core.node import SubscribeHints
-    x = state(1)
-    hints = SubscribeHints(single_dep=True)
-    unsub = x.subscribe(lambda msgs: None, hints)
-    ```
+```python
+from graphrefly import state
+from graphrefly.core.node import SubscribeHints
+x = state(1)
+hints = SubscribeHints(single_dep=True)
+unsub = x.subscribe(lambda msgs: None, hints)
+```

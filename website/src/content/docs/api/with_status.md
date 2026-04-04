@@ -5,6 +5,12 @@ description: 'Mirror *src* with ``status`` and ``error`` companion state nodes.'
 
 Mirror *src* with ``status`` and ``error`` companion state nodes.
 
+``status`` moves ``pending`` → ``active`` on ``DATA``, ``completed`` on
+``COMPLETE``, and ``errored`` on ``ERROR`` (``error`` holds the exception).
+After ``errored``, the next ``DATA`` clears ``error`` and sets ``active``
+inside :func:`~graphrefly.core.protocol.batch`. Both companions are wired
+into ``node.meta`` so they appear in ``describe()``.
+
 ## Signature
 
 ```python
@@ -15,29 +21,23 @@ def with_status(
 ) -> WithStatusBundle
 ```
 
-## Documentation
+## Parameters
 
-Mirror *src* with ``status`` and ``error`` companion state nodes.
+| Parameter | Description |
+|-----------|-------------|
+| `src` | The upstream :class:`~graphrefly.core.node.Node` to track. |
+| `initial_status` | Initial value of the ``status`` companion (default ``"pending"``). |
 
-``status`` moves ``pending`` → ``active`` on ``DATA``, ``completed`` on
-``COMPLETE``, and ``errored`` on ``ERROR`` (``error`` holds the exception).
-After ``errored``, the next ``DATA`` clears ``error`` and sets ``active``
-inside :func:`~graphrefly.core.protocol.batch`. Both companions are wired
-into ``node.meta`` so they appear in ``describe()``.
+## Returns
 
-Args:
-    src: The upstream :class:`~graphrefly.core.node.Node` to track.
-    initial_status: Initial value of the ``status`` companion (default
-        ``"pending"``).
+A :class:`WithStatusBundle` with ``node``, ``status``, and ``error`` fields.
 
-Returns:
-    A :class:`WithStatusBundle` with ``node``, ``status``, and ``error`` fields.
+## Basic Usage
 
-Example:
-    ```python
-    from graphrefly import state
-    from graphrefly.extra.resilience import with_status
-    src = state(None)
-    bundle = with_status(src)
-    assert bundle.status.get() == "pending"
-    ```
+```python
+from graphrefly import state
+from graphrefly.extra.resilience import with_status
+src = state(None)
+bundle = with_status(src)
+assert bundle.status.get() == "pending"
+```

@@ -18,13 +18,12 @@ def verifiable(
 ) -> VerifiableBundle
 ```
 
-## Documentation
+## Parameters
 
-Compose a value node with a reactive verification companion.
-
-Args:
-    source: Value source (`Node`, scalar, awaitable, iterable, async iterable).
-    verify_fn: Verification function returning a `NodeInput`.
-    trigger: Optional reactive trigger; each `DATA` triggers verification.
-    auto_verify: When true, source value changes also trigger verification.
-    initial_verified: Initial value for the verification companion.
+| Parameter | Description |
+|-----------|-------------|
+| `source` | Value source (`Node`, scalar, awaitable, iterable, async iterable). |
+| `verify_fn` | Verification function returning a `NodeInput`. |
+| `trigger` | Optional reactive trigger; each `DATA` triggers verification. |
+| `auto_verify` | When true, source value changes also trigger verification. |
+| `initial_verified` | Initial value for the verification companion. |

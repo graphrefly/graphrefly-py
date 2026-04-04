@@ -5,30 +5,31 @@ description: "Emit the primary's latest value whenever ``notifier`` settles with
 
 Emit the primary's latest value whenever ``notifier`` settles with ``DATA``.
 
+Source messages are intercepted via ``on_message``; only notifier ``DATA``
+(dep index 1) triggers ``src.get()`` emission. Matches TS ``sample`` architecture.
+
 ## Signature
 
 ```python
 def sample(notifier: Node[Any]) -> PipeOperator
 ```
 
-## Documentation
+## Parameters
 
-Emit the primary's latest value whenever ``notifier`` settles with ``DATA``.
+| Parameter | Description |
+|-----------|-------------|
+| `notifier` | Node whose ``DATA`` triggers sampling of the primary's latest value. |
 
-Source messages are intercepted via ``on_message``; only notifier ``DATA``
-(dep index 1) triggers ``src.get()`` emission. Matches TS ``sample`` architecture.
+## Returns
 
-Args:
-    notifier: Node whose ``DATA`` triggers sampling of the primary's latest value.
+A unary pipe operator ``(Node) -&gt; Node``.
 
-Returns:
-    A unary pipe operator ``(Node) -&gt; Node``.
+## Basic Usage
 
-Example:
-    ```python
-    from graphrefly import state, pipe
-    from graphrefly.extra.tier2 import sample
-    src = state(0)
-    tick = state(None)
-    out = pipe(src, sample(tick))
-    ```
+```python
+from graphrefly import state, pipe
+from graphrefly.extra.tier2 import sample
+src = state(0)
+tick = state(None)
+out = pipe(src, sample(tick))
+```

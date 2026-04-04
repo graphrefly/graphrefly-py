@@ -1,9 +1,12 @@
 ---
 title: 'scan'
-description: 'Fold upstream values with ``reducer(acc, value) -> acc``; emit accumulator after each step.'
+description: 'Fold upstream values with ``reducer(acc, value) -&gt; acc``; emit accumulator after each step.'
 ---
 
 Fold upstream values with ``reducer(acc, value) -&gt; acc``; emit accumulator after each step.
+
+Unlike RxJS, seed is always required — there is no seedless mode where the first value
+silently becomes the accumulator.
 
 ## Signature
 
@@ -16,22 +19,22 @@ def scan(
 ) -> PipeOperator
 ```
 
-## Documentation
+## Parameters
 
-Fold upstream values with ``reducer(acc, value) -&gt; acc``; emit accumulator after each step.
+| Parameter | Description |
+|-----------|-------------|
+| `reducer` | Accumulator update. |
+| `seed` | Initial accumulator (also used for ``initial`` on the inner node). |
+| `equals` | Optional equality for consecutive emissions (default ``operator.eq``). |
 
-Unlike RxJS, seed is always required — there is no seedless mode where the first value
-silently becomes the accumulator.
+## Returns
 
-Args:
-    reducer: Accumulator update.
-    seed: Initial accumulator (also used for ``initial`` on the inner node).
-    equals: Optional equality for consecutive emissions (default ``operator.eq``).
+A :class:`~graphrefly.core.sugar.PipeOperator`.
 
-Returns:
-    A :class:`~graphrefly.core.sugar.PipeOperator`.
+## Basic Usage
 
-Examples:
-    &gt;&gt;&gt; from graphrefly import pipe, state
-    &gt;&gt;&gt; from graphrefly.extra import scan as grf_scan
-    &gt;&gt;&gt; n = pipe(state(1), grf_scan(lambda a, x: a + x, 0))
+```python
+from graphrefly import pipe, state
+from graphrefly.extra import scan as grf_scan
+n = pipe(state(1), grf_scan(lambda a, x: a + x, 0))
+```

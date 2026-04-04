@@ -11,20 +11,21 @@ Delay each ``DATA`` message by ``seconds`` (one timer per pending value, FIFO or
 def delay(seconds: float) -> PipeOperator
 ```
 
-## Documentation
+## Parameters
 
-Delay each ``DATA`` message by ``seconds`` (one timer per pending value, FIFO order).
+| Parameter | Description |
+|-----------|-------------|
+| `seconds` | Delay in seconds applied to each ``DATA`` message. |
 
-Args:
-    seconds: Delay in seconds applied to each ``DATA`` message.
+## Returns
 
-Returns:
-    A unary pipe operator ``(Node) -&gt; Node``.
+A unary pipe operator ``(Node) -&gt; Node``.
 
-Example:
-    ```python
-    from graphrefly import state, pipe
-    from graphrefly.extra.tier2 import delay
-    src = state(0)
-    out = pipe(src, delay(0.01))
-    ```
+## Basic Usage
+
+```python
+from graphrefly import state, pipe
+from graphrefly.extra.tier2 import delay
+src = state(0)
+out = pipe(src, delay(0.01))
+```

@@ -155,30 +155,264 @@ def _first_line(doc: str | None) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# Google-style docstring parser
+# ---------------------------------------------------------------------------
+
+_SECTION_HEADERS = ("Args:", "Returns:", "Raises:", "Example:", "Examples:", "Notes:", "Note:")
+
+
+def _parse_docstring(doc: str) -> dict[str, str]:
+    """Split a Google-style docstring into {summary, body, args, returns, raises, example, notes}.
+
+    Each value is the raw text block (leading indent stripped).
+    """
+    lines = doc.strip().splitlines()
+
+    # Collect summary — everything before the first blank line or section header.
+    summary_lines: list[str] = []
+    idx = 0
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped in _SECTION_HEADERS:
+            break
+        if not stripped and summary_lines:
+            idx += 1
+            break
+        if stripped:
+            summary_lines.append(stripped)
+    else:
+        idx = len(lines)
+
+    result: dict[str, str] = {"summary": " ".join(summary_lines)}
+
+    # Collect body paragraphs between summary and first section header.
+    body_lines: list[str] = []
+    while idx < len(lines):
+        stripped = lines[idx].strip()
+        if stripped in _SECTION_HEADERS:
+            break
+        body_lines.append(lines[idx])
+        idx += 1
+    body_text = "\n".join(body_lines).strip()
+    if body_text:
+        result["body"] = body_text
+
+    # Parse named sections.
+    while idx < len(lines):
+        header = lines[idx].strip()
+        if header not in _SECTION_HEADERS:
+            idx += 1
+            continue
+        key = header.rstrip(":").lower()
+        # Normalize "examples" -> "example"
+        if key == "examples":
+            key = "example"
+        if key == "notes":
+            key = "note"
+        idx += 1
+        section_lines: list[str] = []
+        while idx < len(lines):
+            if lines[idx].strip() in _SECTION_HEADERS:
+                break
+            section_lines.append(lines[idx])
+            idx += 1
+        # Dedent section body.
+        result[key] = _dedent_block(section_lines)
+
+    return result
+
+
+def _dedent_block(lines: list[str]) -> str:
+    """Remove common leading whitespace from a block of lines."""
+    non_empty = [ln for ln in lines if ln.strip()]
+    if not non_empty:
+        return ""
+    min_indent = min(len(ln) - len(ln.lstrip()) for ln in non_empty)
+    return "\n".join(ln[min_indent:] for ln in lines).strip()
+
+
+def _parse_args_section(text: str) -> list[tuple[str, str]]:
+    """Parse 'Args:' section into (name, description) pairs."""
+    params: list[tuple[str, str]] = []
+    current_name = ""
+    current_desc_lines: list[str] = []
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            if current_name:
+                current_desc_lines.append("")
+            continue
+        # New param: starts with "name:" or "name (type):" at base indent
+        indent = len(line) - len(line.lstrip())
+        if indent == 0 and ":" in stripped:
+            # Save previous param
+            if current_name:
+                params.append((current_name, " ".join(current_desc_lines).strip()))
+            colon_pos = stripped.index(":")
+            current_name = stripped[:colon_pos].strip()
+            # Strip leading ** from **name style
+            current_name = current_name.strip("*")
+            current_desc_lines = [stripped[colon_pos + 1 :].strip()]
+        elif current_name:
+            current_desc_lines.append(stripped)
+
+    if current_name:
+        params.append((current_name, " ".join(current_desc_lines).strip()))
+
+    return params
+
+
+def _render_params_table(args_text: str) -> str:
+    """Render a Parameters table from parsed args."""
+    params = _parse_args_section(args_text)
+    if not params:
+        return ""
+    lines = [
+        "## Parameters",
+        "",
+        "| Parameter | Description |",
+        "|-----------|-------------|",
+    ]
+    for pname, desc in params:
+        lines.append(f"| `{_escape_html(pname)}` | {_escape_html(desc)} |")
+    return "\n".join(lines)
+
+
+def _extract_code_block(text: str) -> tuple[str, str]:
+    """Split text into (code_block, remaining_text).
+
+    Handles both ```python fenced blocks and >>> doctest lines.
+    """
+    lines = text.splitlines()
+
+    # Check for fenced code block.
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            # Find the closing fence.
+            for j in range(i + 1, len(lines)):
+                if lines[j].strip().startswith("```"):
+                    lang = stripped[3:].strip() or "python"
+                    code = "\n".join(lines[i + 1 : j])
+                    remaining = "\n".join(lines[j + 1 :]).strip()
+                    return f"```{lang}\n{code}\n```", remaining
+            break
+
+    # Check for doctest style (>>>).
+    doctest_lines: list[str] = []
+    rest_start = 0
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith(">>>") or stripped.startswith("..."):
+            doctest_lines.append(stripped.lstrip(">").lstrip(".").lstrip(" ") if stripped.startswith(">>>") else stripped.lstrip(".").lstrip(" "))
+            rest_start = i + 1
+        elif doctest_lines and not stripped:
+            rest_start = i + 1
+            break
+        elif doctest_lines:
+            rest_start = i
+            break
+
+    if doctest_lines:
+        code = "\n".join(doctest_lines)
+        remaining = "\n".join(lines[rest_start:]).strip()
+        return f"```python\n{code}\n```", remaining
+
+    # No code block found — return the text as-is description.
+    return "", text
+
+
 def _page_md(name: str, sig: str, doc: str | None, *, kind: str) -> str:
-    summary = _first_line(doc)
-    desc = summary[:160] if summary else f"API reference for `{name}` ({kind})."
+    summary_text = _first_line(doc)
+    desc = summary_text[:160] if summary_text else f"API reference for `{name}` ({kind})."
     parts = [
         "---",
         f"title: {name!r}",
-        f"description: {desc!r}",
+        f"description: {_escape_html(desc)!r}",
         "---",
         "",
     ]
-    if summary:
-        parts.append(_escape_html(summary))
+
+    if not doc or not doc.strip():
+        if summary_text:
+            parts.append(_escape_html(summary_text))
+            parts.append("")
+        parts.append("## Signature")
         parts.append("")
+        parts.append("```python")
+        parts.append(sig)
+        parts.append("```")
+        parts.append("")
+        return "\n".join(parts)
+
+    parsed = _parse_docstring(doc)
+
+    # Summary
+    if parsed.get("summary"):
+        parts.append(_escape_html(parsed["summary"]))
+        parts.append("")
+
+    # Body (extra description paragraphs)
+    if parsed.get("body"):
+        parts.append(_escape_html(parsed["body"]))
+        parts.append("")
+
+    # Signature
     parts.append("## Signature")
     parts.append("")
     parts.append("```python")
     parts.append(sig)
     parts.append("```")
     parts.append("")
-    if doc and doc.strip():
-        parts.append("## Documentation")
+
+    # Parameters table
+    if parsed.get("args"):
+        table = _render_params_table(parsed["args"])
+        if table:
+            parts.append(table)
+            parts.append("")
+
+    # Returns
+    if parsed.get("returns"):
+        parts.append("## Returns")
         parts.append("")
-        parts.append(_escape_html(doc.strip()))
+        parts.append(_escape_html(parsed["returns"]))
         parts.append("")
+
+    # Raises
+    if parsed.get("raises"):
+        parts.append("## Raises")
+        parts.append("")
+        parts.append(_escape_html(parsed["raises"]))
+        parts.append("")
+
+    # Example / Basic Usage
+    if parsed.get("example"):
+        code_block, remaining = _extract_code_block(parsed["example"])
+        if code_block:
+            parts.append("## Basic Usage")
+            parts.append("")
+            parts.append(code_block)
+            parts.append("")
+            if remaining.strip():
+                parts.append(_escape_html(remaining))
+                parts.append("")
+        else:
+            # No code block found, render as description
+            parts.append("## Example")
+            parts.append("")
+            parts.append(_escape_html(parsed["example"]))
+            parts.append("")
+
+    # Notes
+    if parsed.get("note"):
+        parts.append("## Notes")
+        parts.append("")
+        parts.append(_escape_html(parsed["note"]))
+        parts.append("")
+
     return "\n".join(parts)
 
 

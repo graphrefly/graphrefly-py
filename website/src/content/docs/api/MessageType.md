@@ -10,7 +10,3 @@ Wire discriminator for node messages (always the first tuple element).
 ```python
 class MessageType(StrEnum)
 ```
-
-## Documentation
-
-Wire discriminator for node messages (always the first tuple element).

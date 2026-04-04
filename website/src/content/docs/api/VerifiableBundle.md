@@ -10,7 +10,3 @@ Result of :func:`verifiable`.
 ```python
 class VerifiableBundle
 ```
-
-## Documentation
-
-Result of :func:`verifiable`.

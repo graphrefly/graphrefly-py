@@ -11,20 +11,21 @@ Split source ``DATA`` into sub-node windows of ``n`` items each.
 def window_count(n: int) -> PipeOperator
 ```
 
-## Documentation
+## Parameters
 
-Split source ``DATA`` into sub-node windows of ``n`` items each.
+| Parameter | Description |
+|-----------|-------------|
+| `n` | Number of ``DATA`` values per sub-node window. |
 
-Args:
-    n: Number of ``DATA`` values per sub-node window.
+## Returns
 
-Returns:
-    A unary pipe operator ``(Node) -&gt; Node[Node]``.
+A unary pipe operator ``(Node) -&gt; Node[Node]``.
 
-Example:
-    ```python
-    from graphrefly import state, pipe
-    from graphrefly.extra.tier2 import window_count
-    src = state(0)
-    out = pipe(src, window_count(3))
-    ```
+## Basic Usage
+
+```python
+from graphrefly import state, pipe
+from graphrefly.extra.tier2 import window_count
+src = state(0)
+out = pipe(src, window_count(3))
+```

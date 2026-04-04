@@ -11,25 +11,26 @@ Share one upstream subscription across all downstream sinks (ref-counted).
 def share[T](source: Node[T]) -> Node[T]
 ```
 
-## Documentation
+## Parameters
 
-Share one upstream subscription across all downstream sinks (ref-counted).
+| Parameter | Description |
+|-----------|-------------|
+| `source` | The upstream node to multicast. |
 
-Args:
-    source: The upstream node to multicast.
+## Returns
 
-Returns:
-    A new :class:`~graphrefly.core.node.Node` that connects to *source* once
-    and ref-counts downstream subscriptions.
+A new :class:`~graphrefly.core.node.Node` that connects to *source* once
+and ref-counts downstream subscriptions.
 
-Example:
-    ```python
-    from graphrefly import state
-    from graphrefly.extra.sources import share, for_each
-    x = state(0)
-    s = share(x)
-    log = []
-    unsub = for_each(s, log.append)
-    x.down([("DATA", 1)])
-    unsub()
-    ```
+## Basic Usage
+
+```python
+from graphrefly import state
+from graphrefly.extra.sources import share, for_each
+x = state(0)
+s = share(x)
+log = []
+unsub = for_each(s, log.append)
+x.down([("DATA", 1)])
+unsub()
+```

@@ -10,7 +10,3 @@ JSON-friendly snapshot persistence (single blob in / out).
 ```python
 class CheckpointAdapter(Protocol)
 ```
-
-## Documentation
-
-JSON-friendly snapshot persistence (single blob in / out).

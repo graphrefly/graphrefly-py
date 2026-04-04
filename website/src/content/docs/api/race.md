@@ -11,17 +11,20 @@ First source to emit ``DATA`` wins; subsequent traffic follows only that source.
 def race(*sources: Node[Any]) -> Node[Any]
 ```
 
-## Documentation
+## Parameters
 
-First source to emit ``DATA`` wins; subsequent traffic follows only that source.
+| Parameter | Description |
+|-----------|-------------|
+| `sources` | Contestants (empty → immediate ``COMPLETE``; one node is returned as-is). |
 
-Args:
-    *sources: Contestants (empty → immediate ``COMPLETE``; one node is returned as-is).
+## Returns
 
-Returns:
-    A :class:`~graphrefly.core.node.Node`.
+A :class:`~graphrefly.core.node.Node`.
 
-Examples:
-    &gt;&gt;&gt; from graphrefly.extra import race
-    &gt;&gt;&gt; from graphrefly import state
-    &gt;&gt;&gt; n = race(state(1), state(2))
+## Basic Usage
+
+```python
+from graphrefly.extra import race
+from graphrefly import state
+n = race(state(1), state(2))
+```

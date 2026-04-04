@@ -11,21 +11,22 @@ Collect ``DATA`` values in a buffer; emit the list when ``notifier`` emits ``DAT
 def buffer(notifier: Node[Any]) -> PipeOperator
 ```
 
-## Documentation
+## Parameters
 
-Collect ``DATA`` values in a buffer; emit the list when ``notifier`` emits ``DATA``.
+| Parameter | Description |
+|-----------|-------------|
+| `notifier` | Node whose ``DATA`` flushes the accumulated buffer. |
 
-Args:
-    notifier: Node whose ``DATA`` flushes the accumulated buffer.
+## Returns
 
-Returns:
-    A unary pipe operator ``(Node) -&gt; Node[list]``.
+A unary pipe operator ``(Node) -&gt; Node[list]``.
 
-Example:
-    ```python
-    from graphrefly import state, pipe
-    from graphrefly.extra.tier2 import buffer
-    src = state(0)
-    flush = state(None)
-    out = pipe(src, buffer(flush))
-    ```
+## Basic Usage
+
+```python
+from graphrefly import state, pipe
+from graphrefly.extra.tier2 import buffer
+src = state(0)
+flush = state(None)
+out = pipe(src, buffer(flush))
+```

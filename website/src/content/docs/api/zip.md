@@ -14,18 +14,21 @@ def zip(  # noqa: A001
 ) -> Node[Any]
 ```
 
-## Documentation
+## Parameters
 
-Zip one ``DATA`` from each source per cycle into a tuple.
+| Parameter | Description |
+|-----------|-------------|
+| `sources` | Upstreams to zip. |
+| `max_buffer` | When ``&gt; 0``, drop oldest queued values per source beyond this depth. |
 
-Args:
-    *sources: Upstreams to zip.
-    max_buffer: When ``&gt; 0``, drop oldest queued values per source beyond this depth.
+## Returns
 
-Returns:
-    A :class:`~graphrefly.core.node.Node` emitting tuples.
+A :class:`~graphrefly.core.node.Node` emitting tuples.
 
-Examples:
-    &gt;&gt;&gt; from graphrefly.extra import zip as grf_zip
-    &gt;&gt;&gt; from graphrefly import state
-    &gt;&gt;&gt; n = grf_zip(state(1), state(2))
+## Basic Usage
+
+```python
+from graphrefly.extra import zip as grf_zip
+from graphrefly import state
+n = grf_zip(state(1), state(2))
+```

@@ -11,17 +11,20 @@ Emit the value at zero-based ``DATA`` index ``index``, then ``COMPLETE``.
 def element_at(index: int) -> PipeOperator
 ```
 
-## Documentation
+## Parameters
 
-Emit the value at zero-based ``DATA`` index ``index``, then ``COMPLETE``.
+| Parameter | Description |
+|-----------|-------------|
+| `index` | Number of prior ``DATA`` emissions to skip. |
 
-Args:
-    index: Number of prior ``DATA`` emissions to skip.
+## Returns
 
-Returns:
-    A unary callable ``(Node) -&gt; Node`` composed from ``skip`` and ``take(1)``.
+A unary callable ``(Node) -&gt; Node`` composed from ``skip`` and ``take(1)``.
 
-Examples:
-    &gt;&gt;&gt; from graphrefly import pipe, state
-    &gt;&gt;&gt; from graphrefly.extra import element_at as grf_at
-    &gt;&gt;&gt; n = pipe(state(0), grf_at(2))
+## Basic Usage
+
+```python
+from graphrefly import pipe, state
+from graphrefly.extra import element_at as grf_at
+n = pipe(state(0), grf_at(2))
+```

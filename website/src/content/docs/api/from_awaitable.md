@@ -15,16 +15,14 @@ def from_awaitable(
 ) -> Node[Any]
 ```
 
-## Documentation
+## Parameters
 
-Resolve an awaitable via a :class:`~graphrefly.core.runner.Runner`.
+| Parameter | Description |
+|-----------|-------------|
+| `awaitable` | The awaitable/coroutine to resolve. |
+| `runner` | Optional :class:`~graphrefly.core.runner.Runner`.  When ``None``, uses the thread-local default runner (see :func:`~graphrefly.core.runner.set_default_runner`). |
 
-Args:
-    awaitable: The awaitable/coroutine to resolve.
-    runner: Optional :class:`~graphrefly.core.runner.Runner`.  When ``None``,
-        uses the thread-local default runner (see
-        :func:`~graphrefly.core.runner.set_default_runner`).
+## Returns
 
-Returns:
-    A :class:`~graphrefly.core.node.Node` that emits one ``DATA`` then
-    ``COMPLETE``, or ``ERROR`` on failure.
+A :class:`~graphrefly.core.node.Node` that emits one ``DATA`` then
+``COMPLETE``, or ``ERROR`` on failure.

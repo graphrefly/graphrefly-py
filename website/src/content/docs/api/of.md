@@ -11,20 +11,21 @@ Emit each argument as ``DATA`` in order, then ``COMPLETE`` on subscribe.
 def of(*values: Any) -> Node[Any]
 ```
 
-## Documentation
+## Parameters
 
-Emit each argument as ``DATA`` in order, then ``COMPLETE`` on subscribe.
+| Parameter | Description |
+|-----------|-------------|
+| `values` | Values to emit sequentially as ``DATA`` messages. |
 
-Args:
-    *values: Values to emit sequentially as ``DATA`` messages.
+## Returns
 
-Returns:
-    A cold :class:`~graphrefly.core.node.Node` that completes after emitting all values.
+A cold :class:`~graphrefly.core.node.Node` that completes after emitting all values.
 
-Example:
-    ```python
-    from graphrefly.extra import of
-    from graphrefly.extra.sources import first_value_from
-    n = of(1, 2, 3)
-    assert first_value_from(n) == 1
-    ```
+## Basic Usage
+
+```python
+from graphrefly.extra import of
+from graphrefly.extra.sources import first_value_from
+n = of(1, 2, 3)
+assert first_value_from(n) == 1
+```

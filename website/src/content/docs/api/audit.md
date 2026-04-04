@@ -5,29 +5,30 @@ description: 'Emit the latest upstream value after ``seconds`` of trailing silen
 
 Emit the latest upstream value after ``seconds`` of trailing silence (Rx ``auditTime``).
 
+Each ``DATA`` stores the latest value and restarts the timer. When the timer fires,
+the stored value is emitted. No leading-edge emission.
+
 ## Signature
 
 ```python
 def audit(seconds: float) -> PipeOperator
 ```
 
-## Documentation
+## Parameters
 
-Emit the latest upstream value after ``seconds`` of trailing silence (Rx ``auditTime``).
+| Parameter | Description |
+|-----------|-------------|
+| `seconds` | Trailing window duration in seconds. |
 
-Each ``DATA`` stores the latest value and restarts the timer. When the timer fires,
-the stored value is emitted. No leading-edge emission.
+## Returns
 
-Args:
-    seconds: Trailing window duration in seconds.
+A unary pipe operator ``(Node) -&gt; Node``.
 
-Returns:
-    A unary pipe operator ``(Node) -&gt; Node``.
+## Basic Usage
 
-Example:
-    ```python
-    from graphrefly import state, pipe
-    from graphrefly.extra.tier2 import audit
-    src = state(0)
-    out = pipe(src, audit(0.05))
-    ```
+```python
+from graphrefly import state, pipe
+from graphrefly.extra.tier2 import audit
+src = state(0)
+out = pipe(src, audit(0.05))
+```

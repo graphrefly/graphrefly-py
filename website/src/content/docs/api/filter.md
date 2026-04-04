@@ -5,6 +5,8 @@ description: 'Forward values where ``predicate`` is true; otherwise emit ``RESOL
 
 Forward values where ``predicate`` is true; otherwise emit ``RESOLVED`` (no ``DATA``).
 
+Pure predicate gate — no implicit dedup (use ``distinct_until_changed`` for that).
+
 ## Signature
 
 ```python
@@ -13,19 +15,20 @@ def filter(
 ) -> PipeOperator
 ```
 
-## Documentation
+## Parameters
 
-Forward values where ``predicate`` is true; otherwise emit ``RESOLVED`` (no ``DATA``).
+| Parameter | Description |
+|-----------|-------------|
+| `predicate` | Inclusion test for each value. |
 
-Pure predicate gate — no implicit dedup (use ``distinct_until_changed`` for that).
+## Returns
 
-Args:
-    predicate: Inclusion test for each value.
+A :class:`~graphrefly.core.sugar.PipeOperator`.
 
-Returns:
-    A :class:`~graphrefly.core.sugar.PipeOperator`.
+## Basic Usage
 
-Examples:
-    &gt;&gt;&gt; from graphrefly import pipe, state
-    &gt;&gt;&gt; from graphrefly.extra import filter as grf_filter
-    &gt;&gt;&gt; n = pipe(state(1), grf_filter(lambda x: x &gt; 0))
+```python
+from graphrefly import pipe, state
+from graphrefly.extra import filter as grf_filter
+n = pipe(state(1), grf_filter(lambda x: x > 0))
+```

@@ -10,7 +10,3 @@ Protocol for circuit breaker instances (use :func:`circuit_breaker` to create).
 ```python
 class CircuitBreaker(Protocol)
 ```
-
-## Documentation
-
-Protocol for circuit breaker instances (use :func:`circuit_breaker` to create).

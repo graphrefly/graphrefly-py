@@ -11,26 +11,27 @@ Create an auto-starting producer node with no dependencies.
 def producer(fn: NodeFn, **opts: Any) -> Node[Any]
 ```
 
-## Documentation
+## Parameters
 
-Create an auto-starting producer node with no dependencies.
+| Parameter | Description |
+|-----------|-------------|
+| `fn` | The compute function invoked when the first sink subscribes. |
+| `opts` | Additional node options passed through to :func:`~graphrefly.core.node.node`. |
 
-Args:
-    fn: The compute function invoked when the first sink subscribes.
-    **opts: Additional node options passed through to :func:`~graphrefly.core.node.node`.
+## Returns
 
-Returns:
-    A :class:`~graphrefly.core.node.Node` whose producer starts on first subscribe.
+A :class:`~graphrefly.core.node.Node` whose producer starts on first subscribe.
 
-Example:
-    ```python
-    from graphrefly import producer
-    from graphrefly.core.protocol import MessageType
+## Basic Usage
 
-    def ticker(deps, actions):
-        actions.emit(42)
-        actions.down([(MessageType.COMPLETE,)])
-        return lambda: None
+```python
+from graphrefly import producer
+from graphrefly.core.protocol import MessageType
 
-    p = producer(ticker, name="once")
-    ```
+def ticker(deps, actions):
+    actions.emit(42)
+    actions.down([(MessageType.COMPLETE,)])
+    return lambda: None
+
+p = producer(ticker, name="once")
+```

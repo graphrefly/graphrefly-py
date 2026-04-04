@@ -11,17 +11,15 @@ Return True while inside ``batch()`` or while deferred phase-2 work is draining.
 def is_batching() -> bool
 ```
 
-## Documentation
+## Returns
 
-Return True while inside ``batch()`` or while deferred phase-2 work is draining.
+``True`` when batch depth &gt; 0 or the drain loop is active.
 
-Returns:
-    ``True`` when batch depth &gt; 0 or the drain loop is active.
+## Basic Usage
 
-Example:
-    ```python
-    from graphrefly import batch, is_batching
-    assert not is_batching()
-    with batch():
-        assert is_batching()
-    ```
+```python
+from graphrefly import batch, is_batching
+assert not is_batching()
+with batch():
+    assert is_batching()
+```

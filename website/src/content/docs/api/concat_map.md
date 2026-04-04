@@ -5,6 +5,9 @@ description: 'Map outer values to inner nodes; run inners strictly one after ano
 
 Map outer values to inner nodes; run inners strictly one after another.
 
+While an inner is active, outer ``DATA`` values are queued. ``max_buffer &gt; 0`` drops the
+oldest queued value when the queue would exceed that length.
+
 ## Signature
 
 ```python
@@ -16,26 +19,24 @@ def concat_map(
 ) -> PipeOperator
 ```
 
-## Documentation
+## Parameters
 
-Map outer values to inner nodes; run inners strictly one after another.
+| Parameter | Description |
+|-----------|-------------|
+| `fn` | ``outer_value -&gt; source`` (coerced via :func:`graphrefly.extra.sources.from_any`). |
+| `initial` | Optional initial ``get()`` value. |
+| `max_buffer` | Maximum queued outer keys (``0`` = unlimited). |
 
-While an inner is active, outer ``DATA`` values are queued. ``max_buffer &gt; 0`` drops the
-oldest queued value when the queue would exceed that length.
+## Returns
 
-Args:
-    fn: ``outer_value -&gt; source`` (coerced via :func:`graphrefly.extra.sources.from_any`).
-    initial: Optional initial ``get()`` value.
-    max_buffer: Maximum queued outer keys (``0`` = unlimited).
+A unary pipe operator ``(Node) -&gt; Node``.
 
-Returns:
-    A unary pipe operator ``(Node) -&gt; Node``.
+## Basic Usage
 
-Example:
-    ```python
-    from graphrefly import state, pipe
-    from graphrefly.extra.tier2 import concat_map
-    from graphrefly.extra import of
-    src = state(1)
-    out = pipe(src, concat_map(lambda v: of(v, v + 1)))
-    ```
+```python
+from graphrefly import state, pipe
+from graphrefly.extra.tier2 import concat_map
+from graphrefly.extra import of
+src = state(1)
+out = pipe(src, concat_map(lambda v: of(v, v + 1)))
+```

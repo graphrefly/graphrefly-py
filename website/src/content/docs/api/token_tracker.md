@@ -11,20 +11,21 @@ Create a token bucket (alias for :func:`token_bucket`, kept for backward compat)
 def token_tracker(capacity: float, refill_per_second: float) -> TokenBucket
 ```
 
-## Documentation
+## Parameters
 
-Create a token bucket (alias for :func:`token_bucket`, kept for backward compat).
+| Parameter | Description |
+|-----------|-------------|
+| `capacity` | Maximum number of tokens. |
+| `refill_per_second` | Tokens restored per second (``0`` = no refill). |
 
-Args:
-    capacity: Maximum number of tokens.
-    refill_per_second: Tokens restored per second (``0`` = no refill).
+## Returns
 
-Returns:
-    A :class:`TokenBucket` instance.
+A :class:`TokenBucket` instance.
 
-Example:
-    ```python
-    from graphrefly.extra.resilience import token_tracker
-    tb = token_tracker(10, 2.0)
-    assert tb.try_consume(1)
-    ```
+## Basic Usage
+
+```python
+from graphrefly.extra.resilience import token_tracker
+tb = token_tracker(10, 2.0)
+assert tb.try_consume(1)
+```

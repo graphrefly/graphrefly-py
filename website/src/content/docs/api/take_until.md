@@ -5,6 +5,8 @@ description: 'Forward the main source until ``notifier`` matches ``predicate``, 
 
 Forward the main source until ``notifier`` matches ``predicate``, then ``COMPLETE``.
 
+Default ``predicate`` fires on ``DATA`` from the notifier (full message tuple is passed in).
+
 ## Signature
 
 ```python
@@ -15,21 +17,22 @@ def take_until(
 ) -> PipeOperator
 ```
 
-## Documentation
+## Parameters
 
-Forward the main source until ``notifier`` matches ``predicate``, then ``COMPLETE``.
+| Parameter | Description |
+|-----------|-------------|
+| `notifier` | Second input observed for the stop condition. |
+| `predicate` | Optional ``(msg) -&gt; bool``; default tests ``msg[0] is MessageType.DATA``. |
 
-Default ``predicate`` fires on ``DATA`` from the notifier (full message tuple is passed in).
+## Returns
 
-Args:
-    notifier: Second input observed for the stop condition.
-    predicate: Optional ``(msg) -&gt; bool``; default tests ``msg[0] is MessageType.DATA``.
+A :class:`~graphrefly.core.sugar.PipeOperator`.
 
-Returns:
-    A :class:`~graphrefly.core.sugar.PipeOperator`.
+## Basic Usage
 
-Examples:
-    &gt;&gt;&gt; from graphrefly import pipe, producer, state
-    &gt;&gt;&gt; from graphrefly.extra import take_until as grf_tu
-    &gt;&gt;&gt; stop = producer(lambda _d, a: a.emit(0))
-    &gt;&gt;&gt; n = pipe(state(1), grf_tu(stop))
+```python
+from graphrefly import pipe, producer, state
+from graphrefly.extra import take_until as grf_tu
+stop = producer(lambda _d, a: a.emit(0))
+n = pipe(state(1), grf_tu(stop))
+```

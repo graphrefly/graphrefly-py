@@ -15,14 +15,14 @@ def log_slice(
 ) -> Node[tuple[Any, ...]]
 ```
 
-## Documentation
+## Parameters
 
-Derived view of a slice of the log, same semantics as ``tuple[start:stop]`` (stop exclusive).
+| Parameter | Description |
+|-----------|-------------|
+| `log` | A :class:`ReactiveLogBundle`. |
+| `start` | Start index (must be &gt;= 0). |
+| `stop` | End index (exclusive); if ``None``, slice to the end. |
 
-Args:
-    log: A :class:`ReactiveLogBundle`.
-    start: Start index (must be &gt;= 0).
-    stop: End index (exclusive); if ``None``, slice to the end.
+## Returns
 
-Returns:
-    A derived node emitting the sliced tuple; stays updated while the log changes.
+A derived node emitting the sliced tuple; stays updated while the log changes.

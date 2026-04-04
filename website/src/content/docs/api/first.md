@@ -11,14 +11,14 @@ Emit the first ``DATA`` then ``COMPLETE`` (same as ``take(1)``).
 def first() -> PipeOperator
 ```
 
-## Documentation
+## Returns
 
-Emit the first ``DATA`` then ``COMPLETE`` (same as ``take(1)``).
+A :class:`~graphrefly.core.sugar.PipeOperator`.
 
-Returns:
-    A :class:`~graphrefly.core.sugar.PipeOperator`.
+## Basic Usage
 
-Examples:
-    &gt;&gt;&gt; from graphrefly import pipe, state
-    &gt;&gt;&gt; from graphrefly.extra import first as grf_first
-    &gt;&gt;&gt; n = pipe(state(42), grf_first())
+```python
+from graphrefly import pipe, state
+from graphrefly.extra import first as grf_first
+n = pipe(state(42), grf_first())
+```

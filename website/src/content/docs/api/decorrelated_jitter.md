@@ -5,6 +5,9 @@ description: 'Decorrelated jitter (AWS-recommended): ``random(base_ns, min(max, 
 
 Decorrelated jitter (AWS-recommended): ``random(base_ns, min(max, prev * 3))``.
 
+Stateless — uses ``prev_delay`` (passed by the consumer) instead of closure state.
+Safe to share across concurrent retry sequences.
+
 ## Signature
 
 ```python
@@ -14,13 +17,9 @@ def decorrelated_jitter(
 ) -> BackoffStrategy
 ```
 
-## Documentation
+## Parameters
 
-Decorrelated jitter (AWS-recommended): ``random(base_ns, min(max, prev * 3))``.
-
-Stateless — uses ``prev_delay`` (passed by the consumer) instead of closure state.
-Safe to share across concurrent retry sequences.
-
-Args:
-    base_ns: Floor of the random range (nanoseconds, default ``100_000_000`` = 100 ms).
-    max_delay_ns: Ceiling cap (nanoseconds, default ``30_000_000_000`` = 30 s).
+| Parameter | Description |
+|-----------|-------------|
+| `base_ns` | Floor of the random range (nanoseconds, default ``100_000_000`` = 100 ms). |
+| `max_delay_ns` | Ceiling cap (nanoseconds, default ``30_000_000_000`` = 30 s). |

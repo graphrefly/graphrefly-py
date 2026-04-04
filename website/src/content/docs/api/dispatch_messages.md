@@ -10,7 +10,3 @@ Backward-compatible alias: ``emit_with_batch(sink, messages)`` with defaults.
 ```python
 def dispatch_messages(messages: Messages, sink: Callable[[Messages], None]) -> None
 ```
-
-## Documentation
-
-Backward-compatible alias: ``emit_with_batch(sink, messages)`` with defaults.

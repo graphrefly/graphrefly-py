@@ -10,7 +10,3 @@ Result of :func:`with_status`: pass-through value plus companion nodes.
 ```python
 class WithStatusBundle
 ```
-
-## Documentation
-
-Result of :func:`with_status`: pass-through value plus companion nodes.

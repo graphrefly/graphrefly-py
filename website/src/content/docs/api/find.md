@@ -11,17 +11,20 @@ Emit the first value satisfying ``predicate``, then ``COMPLETE``.
 def find(predicate: Callable[[Any], bool]) -> PipeOperator
 ```
 
-## Documentation
+## Parameters
 
-Emit the first value satisfying ``predicate``, then ``COMPLETE``.
+| Parameter | Description |
+|-----------|-------------|
+| `predicate` | Match test. |
 
-Args:
-    predicate: Match test.
+## Returns
 
-Returns:
-    A unary callable ``(Node) -&gt; Node`` composed from ``filter`` and ``take(1)``.
+A unary callable ``(Node) -&gt; Node`` composed from ``filter`` and ``take(1)``.
 
-Examples:
-    &gt;&gt;&gt; from graphrefly import pipe, state
-    &gt;&gt;&gt; from graphrefly.extra import find as grf_find
-    &gt;&gt;&gt; n = pipe(state(1), grf_find(lambda x: x &gt; 0))
+## Basic Usage
+
+```python
+from graphrefly import pipe, state
+from graphrefly.extra import find as grf_find
+n = pipe(state(1), grf_find(lambda x: x > 0))
+```

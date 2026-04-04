@@ -10,7 +10,3 @@ Imperative ``actions`` object passed to the node compute function.
 ```python
 class NodeActions
 ```
-
-## Documentation
-
-Imperative ``actions`` object passed to the node compute function.

@@ -26,22 +26,20 @@ def distill(
 ) -> DistillBundle
 ```
 
-## Documentation
+## Parameters
 
-Budget-constrained reactive memory composition.
-
-Args:
-    source: Source stream to distill.
-    extract_fn: `(raw, existing) -&gt; Extraction` as `NodeInput`.
-    score: Relevance function for compact packing.
-    cost: Cost function for compact packing.
-    budget: Maximum compact budget (default `2000`).
-    evict: Optional reactive eviction predicate per key.
-    consolidate: Optional consolidation function.
-    consolidate_trigger: Optional trigger for consolidation.
-    context: Optional context source affecting compact ranking.
-    map_options: Optional dict-style map config parity with TS (`name`,
-        `default_ttl`, `max_size`).
-    map_name: Optional underlying map node name.
-    map_default_ttl: Optional default TTL seconds for underlying map.
-    map_max_size: Optional underlying map max size.
+| Parameter | Description |
+|-----------|-------------|
+| `source` | Source stream to distill. |
+| `extract_fn` | `(raw, existing) -&gt; Extraction` as `NodeInput`. |
+| `score` | Relevance function for compact packing. |
+| `cost` | Cost function for compact packing. |
+| `budget` | Maximum compact budget (default `2000`). |
+| `evict` | Optional reactive eviction predicate per key. |
+| `consolidate` | Optional consolidation function. |
+| `consolidate_trigger` | Optional trigger for consolidation. |
+| `context` | Optional context source affecting compact ranking. |
+| `map_options` | Optional dict-style map config parity with TS (`name`, `default_ttl`, `max_size`). |
+| `map_name` | Optional underlying map node name. |
+| `map_default_ttl` | Optional default TTL seconds for underlying map. |
+| `map_max_size` | Optional underlying map max size. |
