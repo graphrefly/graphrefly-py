@@ -771,6 +771,8 @@ count<span class="punct">.</span><span class="fn">down</span><span class="punct"
 		width: 10px; height: 10px;
 		border-radius: 50%;
 		background: rgba(216,228,232,.1);
+		margin-top: 0 !important;
+		margin-bottom: 0 !important;
 	}
 	.gr-code-dot:nth-child(1) { background: rgba(0,212,232,.5); }
 	.gr-code-dot:nth-child(2) { background: rgba(0,168,192,.5); }
@@ -780,12 +782,21 @@ count<span class="punct">.</span><span class="fn">down</span><span class="punct"
 		font-size: .7rem;
 		color: var(--gr-stone);
 		letter-spacing: .08em;
+		margin-top: 0 !important;
+		margin-bottom: 0 !important;
 	}
 	.gr-code-body {
 		padding: 1.5rem 1.75rem;
 		overflow-x: auto;
+		margin-top: 0 !important;
 	}
-	.gr-code-body pre { margin: 0; }
+	.gr-code-body pre {
+		margin: 0;
+		padding: 0;
+		background: transparent;
+		border: none;
+		box-shadow: none;
+	}
 	.gr-code-body .kw { color: var(--gr-purple); }
 	.gr-code-body .fn { color: #40e8f8; }
 	.gr-code-body .str { color: var(--gr-aqua); }
