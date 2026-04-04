@@ -292,8 +292,8 @@ count<span class="punct">.</span><span class="fn">down</span><span class="punct"
 		--gr-ink-raised: #080a0c;
 		--gr-aqua: #00d4e8;
 		--gr-aqua-dim: #00a8c0;
-		--gr-warm: #407888;
-		--gr-stone: #5a7a88;
+		--gr-warm: #5a9aaa;
+		--gr-stone: #7a9caa;
 		--gr-parchment: #d8e4e8;
 		--gr-purple: #0098b0;
 		--gr-pink: #60a8e0;
@@ -434,7 +434,7 @@ count<span class="punct">.</span><span class="fn">down</span><span class="punct"
 	.gr-subtitle {
 		font-family: var(--gr-serif);
 		font-size: 1.15rem;
-		color: rgba(64,120,136,.6);
+		color: rgba(90,154,170,.75);
 		letter-spacing: .12em;
 		font-style: italic;
 		margin: 0 0 2rem;
@@ -512,7 +512,7 @@ count<span class="punct">.</span><span class="fn">down</span><span class="punct"
 		border: none;
 		border-left: 1px solid rgba(0, 212, 232, 0.12);
 		background: rgba(0, 212, 232, 0.06);
-		color: var(--gr-stone);
+		color: var(--gr-parchment);
 		font-size: 0.7rem;
 		font-weight: 600;
 		letter-spacing: 0.08em;
@@ -811,7 +811,7 @@ count<span class="punct">.</span><span class="fn">down</span><span class="punct"
 	.gr-code-body .fn { color: #40e8f8; }
 	.gr-code-body .str { color: var(--gr-aqua); }
 	.gr-code-body .num { color: var(--gr-warm); }
-	.gr-code-body .cmt { color: rgba(107,114,128,.7); font-style: italic; }
+	.gr-code-body .cmt { color: rgba(140,160,175,.85); font-style: italic; }
 	.gr-code-body .punct { color: var(--gr-stone); }
 
 	/* ── USE CASES ── */
@@ -984,9 +984,37 @@ count<span class="punct">.</span><span class="fn">down</span><span class="punct"
 	/* ── RESPONSIVE ── */
 	@media (max-width: 768px) {
 		.gr-hero-vertical { display: none; }
+		.gr-hero-content { padding: 3rem 1rem 3rem; max-width: 100%; }
+		.gr-hero-content .gr-title { font-size: clamp(2.4rem, 10vw, 3.5rem); }
+		.gr-tagline { font-size: 1rem; margin-bottom: 2rem; }
+		.gr-kicker { font-size: 0.65rem; }
+
+		.gr-hero-cta { max-width: 100%; }
+		.gr-hero-row { flex-direction: column; align-items: stretch; }
+		.gr-install-box { max-width: 100%; flex: 1 1 auto; }
+		.gr-hero-gh { min-width: auto; }
+		.gr-hero-row--cta { flex-direction: row; }
+		.gr-hero-row--cta .gr-btn { flex: 1 1 0; padding: 0.65rem 1rem; font-size: 0.8rem; text-align: center; justify-content: center; }
+
 		.gr-philosophy .gr-container { flex-direction: column; gap: 2rem; }
 		.gr-phil-stroke { min-height: 3px; width: 80px; height: 3px; }
-		.gr-home > section:not(.gr-hero) { padding: 0 1.25rem 4rem; }
+		.gr-phil-quote { font-size: clamp(1.4rem, 5vw, 2rem); }
+		.gr-phil-text { font-size: 0.9rem; }
+
+		.gr-features-heading { font-size: clamp(1.3rem, 4vw, 1.8rem); }
+		.gr-feature-card { padding: 1.4rem 1.2rem; }
+		.gr-feature-card p { font-size: 0.82rem; }
+
+		.gr-code-block { font-size: 0.75rem; }
+		.gr-code-body { padding: 1rem 1.25rem; }
+
+		.gr-use-cases-grid { gap: 1rem; }
+		.gr-use-card { width: 140px; padding: 1.25rem 1rem; }
+		.gr-use-card h4 { font-size: .8rem; }
+		.gr-use-card:nth-child(even) { margin-top: 0; }
+		.gr-use-cases-streams { display: none; }
+
+		.gr-home > section:not(.gr-hero) { padding: 0 1rem 3rem; }
 		.gr-impl-cards {
 			flex-direction: column;
 			flex-wrap: wrap;
@@ -999,6 +1027,19 @@ count<span class="punct">.</span><span class="fn">down</span><span class="punct"
 			min-height: 0;
 			margin-inline: auto;
 		}
+		.gr-impl-card { padding: 1.75rem 1.25rem; }
+	}
+
+	/* Small phones */
+	@media (max-width: 400px) {
+		.gr-hero-content { padding: 2.5rem 0.75rem 2.5rem; }
+		.gr-hero-content .gr-title { font-size: 2.2rem; }
+		.gr-hero-row--cta { flex-direction: column; }
+		.gr-hero-row--cta .gr-btn { flex: none; }
+		.gr-feature-card { padding: 1.2rem 1rem; }
+		.gr-code-body { padding: 0.75rem 1rem; }
+		.gr-code-body pre { font-size: 0.7rem; }
+		.gr-use-card { width: 120px; padding: 1rem 0.75rem; }
 	}
 </style>
 

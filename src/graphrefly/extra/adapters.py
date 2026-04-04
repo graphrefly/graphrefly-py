@@ -15,12 +15,14 @@ built on :func:`~graphrefly.core.node.node` -- no second protocol.
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import json
 import os
 import re
 import threading
 import urllib.error
+from collections.abc import AsyncIterable as ABCAsyncIterable
 import urllib.request
 from contextlib import suppress
 from dataclasses import dataclass
@@ -2112,6 +2114,1326 @@ def from_clickhouse_watch(
 
 
 # ---------------------------------------------------------------------------
+#  Apache Pulsar (native client)
+# ---------------------------------------------------------------------------
+
+
+def from_pulsar(
+    consumer: Any,
+    *,
+    deserialize: Callable[[bytes], Any] | None = None,
+    auto_ack: bool = True,
+) -> Node[Any]:
+    """Apache Pulsar consumer as a reactive source (native client).
+
+    Wraps a ``pulsar-client``-compatible consumer. Each message becomes a ``DATA``
+    emission with structured metadata. For Kafka-on-Pulsar (KoP), use
+    :func:`from_kafka` instead.
+
+    Args:
+        consumer: Pulsar consumer instance (caller owns create/close lifecycle).
+            Must support ``receive()``, ``acknowledge(msg)``.
+        deserialize: Optional deserializer for message data. Default: ``json.loads``
+            with fallback to string.
+        auto_ack: Acknowledge messages automatically. Default ``True``.
+
+    Returns:
+        A :class:`~graphrefly.core.node.Node` emitting one ``DATA`` per Pulsar message.
+
+    .. note::
+        Teardown sets an internal flag but cannot interrupt a blocking
+        ``consumer.receive()``. The loop exits on the next message or when
+        the consumer is closed externally. Callers should call
+        ``consumer.close()`` after unsubscribing for prompt cleanup.
+    """
+    if deserialize is None:
+
+        def _default_deserialize(data: bytes) -> Any:
+            if isinstance(data, (bytes, bytearray)):
+                raw = data.decode("utf-8", errors="replace")
+            else:
+                raw = str(data)
+            try:
+                return json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                return raw
+
+        deserialize = _default_deserialize
+
+    def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
+        active = [True]
+
+        def _run() -> None:
+            while active[0]:
+                try:
+                    msg = consumer.receive()
+                    if not active[0]:
+                        return
+                    actions.emit(
+                        {
+                            "topic": msg.topic_name(),
+                            "message_id": str(msg.message_id()),
+                            "key": msg.partition_key(),
+                            "value": deserialize(msg.data()),
+                            "properties": msg.properties(),
+                            "publish_time": msg.publish_timestamp(),
+                            "event_time": msg.event_timestamp(),
+                            "timestamp_ns": wall_clock_ns(),
+                        }
+                    )
+                    if auto_ack:
+                        consumer.acknowledge(msg)
+                except BaseException as err:
+                    if active[0]:
+                        actions.down([(MessageType.ERROR, err)])
+                    return
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+
+        def cleanup() -> None:
+            active[0] = False
+
+        return cleanup
+
+    return node(start, describe_kind="producer", complete_when_deps_complete=False)
+
+
+def to_pulsar(
+    source: Node[Any],
+    producer_inst: Any,
+    *,
+    serialize: Callable[[Any], bytes] | None = None,
+    key_extractor: Callable[[Any], str | None] | None = None,
+    properties_extractor: Callable[[Any], dict[str, str] | None] | None = None,
+    on_transport_error: Callable[[SinkTransportError], None] | None = None,
+) -> Callable[[], None]:
+    """Pulsar producer sink -- forwards upstream ``DATA`` to a Pulsar topic.
+
+    Auto-subscribes and returns an unsubscribe function.
+
+    Args:
+        source: Upstream node to forward.
+        producer_inst: Pulsar producer instance with a ``send`` method.
+        serialize: Optional serializer returning bytes. Default: ``json.dumps`` encoded to UTF-8.
+        key_extractor: Optional function to extract a partition key from the value.
+        properties_extractor: Optional function to extract properties from the value.
+        on_transport_error: Optional callback for transport errors.
+
+    Returns:
+        An unsubscribe ``Callable[[], None]`` to tear down the sink.
+    """
+    if serialize is None:
+
+        def _default_serialize(v: Any) -> bytes:
+            return json.dumps(v).encode("utf-8")
+
+        serialize = _default_serialize
+
+    def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
+        if msg[0] is MessageType.DATA:
+            value = msg[1] if len(msg) > 1 else None
+            key = key_extractor(value) if key_extractor else None
+            props = properties_extractor(value) if properties_extractor else None
+            try:
+                data = serialize(value)
+            except Exception as err:
+                if on_transport_error is not None:
+                    on_transport_error(
+                        SinkTransportError(stage="serialize", error=err, value=value)
+                    )
+                return True
+            try:
+                send_kwargs: dict[str, Any] = {}
+                if key is not None:
+                    send_kwargs["partition_key"] = key
+                if props is not None:
+                    send_kwargs["properties"] = props
+                producer_inst.send(data, **send_kwargs)
+            except Exception as err:
+                if on_transport_error is not None:
+                    on_transport_error(SinkTransportError(stage="send", error=err, value=value))
+            return True
+        return False
+
+    effect = node(
+        [source],
+        lambda _deps, _actions: lambda: None,
+        describe_kind="effect",
+        on_message=_on_message,
+    )
+    unsub = effect.subscribe(lambda _msgs: None)
+    return unsub
+
+
+# ---------------------------------------------------------------------------
+#  NATS
+# ---------------------------------------------------------------------------
+
+
+def _nats_msg_to_dict(msg: Any, deserialize: Callable[[bytes], Any]) -> dict[str, Any]:
+    """Extract structured fields from a NATS message (sync or async client)."""
+    headers: dict[str, str] = {}
+    if hasattr(msg, "headers") and msg.headers is not None:
+        for k in msg.headers.keys():
+            headers[k] = msg.headers[k]
+    return {
+        "subject": msg.subject,
+        "data": deserialize(msg.data),
+        "headers": headers,
+        "reply": getattr(msg, "reply", None),
+        "sid": getattr(msg, "sid", 0),
+        "timestamp_ns": wall_clock_ns(),
+    }
+
+
+def from_nats(
+    client: Any,
+    subject: str,
+    *,
+    queue: str | None = None,
+    deserialize: Callable[[bytes], Any] | None = None,
+    runner: Any | None = None,
+) -> Node[Any]:
+    """NATS consumer as a reactive source.
+
+    Wraps a ``nats-py``-compatible subscription. Each message becomes a ``DATA``
+    emission with structured metadata.
+
+    Supports both **synchronous** NATS clients (whose ``subscribe()`` returns a
+    synchronous iterable) and **async** ``nats-py`` v2+ clients (whose
+    ``subscribe()`` returns a coroutine / ``AsyncIterable``). Async subscriptions
+    are drained via a :class:`~graphrefly.core.runner.Runner`.
+
+    Args:
+        client: NATS client instance with a ``subscribe`` method (caller owns
+            connect/drain lifecycle).
+        subject: Subject to subscribe to (supports wildcards).
+        queue: Optional queue group name for load balancing.
+        deserialize: Optional deserializer for message data. Default: ``json.loads``
+            with fallback to string.
+        runner: Optional :class:`~graphrefly.core.runner.Runner` for async
+            subscriptions. When ``None``, uses the thread-local default runner.
+
+    Returns:
+        A :class:`~graphrefly.core.node.Node` emitting one ``DATA`` per NATS message.
+
+    .. note::
+        For sync subscriptions, teardown sets an internal flag but cannot
+        break the iterator. The loop exits on the next message or when the
+        subscription is drained externally. Call ``client.drain()`` after
+        unsubscribing for prompt cleanup. For async subscriptions, teardown
+        cancels via the Runner.
+    """
+    if deserialize is None:
+
+        def _default_deserialize(data: bytes) -> Any:
+            raw = data.decode("utf-8", errors="replace") if isinstance(data, (bytes, bytearray)) else str(data)
+            try:
+                return json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                return raw
+
+        deserialize = _default_deserialize
+
+    def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
+        active = [True]
+
+        sub_kwargs: dict[str, Any] = {}
+        if queue is not None:
+            sub_kwargs["queue"] = queue
+        sub_or_coro = client.subscribe(subject, **sub_kwargs)
+
+        # Detect async subscription (nats-py v2+: subscribe() returns a coroutine
+        # that resolves to an AsyncIterable, or directly an AsyncIterable).
+        is_async = asyncio.iscoroutine(sub_or_coro) or isinstance(sub_or_coro, ABCAsyncIterable)
+
+        if is_async:
+            from graphrefly.core.runner import resolve_runner
+
+            async def _async_drain() -> None:
+                sub = sub_or_coro
+                if asyncio.iscoroutine(sub):
+                    sub = await sub
+                async for msg in sub:
+                    if not active[0]:
+                        return
+                    actions.emit(_nats_msg_to_dict(msg, deserialize))  # type: ignore[arg-type]
+                # Iterator exhausted — subscription closed (inline, matching TS pattern).
+                if active[0]:
+                    actions.down([(MessageType.COMPLETE,)])
+
+            def on_result(_: Any) -> None:
+                pass  # COMPLETE emitted inline in _async_drain.
+
+            def on_error(err: BaseException) -> None:
+                if active[0]:
+                    actions.down([(MessageType.ERROR, err)])
+
+            cancel = resolve_runner(runner).schedule(_async_drain(), on_result, on_error)
+
+            def cleanup() -> None:
+                active[0] = False
+                cancel()
+
+            return cleanup
+
+        # Synchronous path — threaded drain.
+        def _run() -> None:
+            try:
+                for msg in sub_or_coro:
+                    if not active[0]:
+                        return
+                    actions.emit(_nats_msg_to_dict(msg, deserialize))  # type: ignore[arg-type]
+                # Iterator exhausted — subscription closed.
+                if active[0]:
+                    actions.down([(MessageType.COMPLETE,)])
+            except BaseException as err:
+                if active[0]:
+                    actions.down([(MessageType.ERROR, err)])
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+
+        def cleanup() -> None:
+            active[0] = False
+
+        return cleanup
+
+    return node(start, describe_kind="producer", complete_when_deps_complete=False)
+
+
+def to_nats(
+    source: Node[Any],
+    client: Any,
+    subject: str,
+    *,
+    serialize: Callable[[Any], bytes] | None = None,
+    on_transport_error: Callable[[SinkTransportError], None] | None = None,
+) -> Callable[[], None]:
+    """NATS publisher sink -- forwards upstream ``DATA`` to a NATS subject.
+
+    Auto-subscribes and returns an unsubscribe function.
+
+    Args:
+        source: Upstream node to forward.
+        client: NATS client instance with a ``publish`` method.
+        subject: Target subject.
+        serialize: Optional serializer returning bytes. Default: ``json.dumps`` encoded to UTF-8.
+        on_transport_error: Optional callback for transport errors.
+
+    Returns:
+        An unsubscribe ``Callable[[], None]`` to tear down the sink.
+    """
+    if serialize is None:
+
+        def _default_serialize(v: Any) -> bytes:
+            return json.dumps(v).encode("utf-8")
+
+        serialize = _default_serialize
+
+    def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
+        if msg[0] is MessageType.DATA:
+            value = msg[1] if len(msg) > 1 else None
+            try:
+                data = serialize(value)
+            except Exception as err:
+                if on_transport_error is not None:
+                    on_transport_error(
+                        SinkTransportError(stage="serialize", error=err, value=value)
+                    )
+                return True
+            try:
+                client.publish(subject, data)
+            except Exception as err:
+                if on_transport_error is not None:
+                    on_transport_error(SinkTransportError(stage="send", error=err, value=value))
+            return True
+        return False
+
+    effect = node(
+        [source],
+        lambda _deps, _actions: lambda: None,
+        describe_kind="effect",
+        on_message=_on_message,
+    )
+    unsub = effect.subscribe(lambda _msgs: None)
+    return unsub
+
+
+# ---------------------------------------------------------------------------
+#  RabbitMQ
+# ---------------------------------------------------------------------------
+
+# Known AMQP 0-9-1 BasicProperties fields (pika / spec-stable).
+_AMQP_PROPERTY_FIELDS = (
+    "content_type", "content_encoding", "headers", "delivery_mode", "priority",
+    "correlation_id", "reply_to", "expiration", "message_id", "timestamp",
+    "type", "user_id", "app_id", "cluster_id",
+)
+
+
+def _extract_amqp_properties(properties: Any) -> dict[str, Any]:
+    """Extract known AMQP properties from a pika BasicProperties instance."""
+    if properties is None:
+        return {}
+    return {
+        k: getattr(properties, k)
+        for k in _AMQP_PROPERTY_FIELDS
+        if getattr(properties, k, None) is not None
+    }
+
+
+def from_rabbitmq(
+    channel: Any,
+    queue: str,
+    *,
+    deserialize: Callable[[bytes], Any] | None = None,
+    auto_ack: bool = True,
+) -> Node[Any]:
+    """RabbitMQ consumer as a reactive source.
+
+    Wraps a ``pika``-compatible channel. Each message becomes a ``DATA`` emission
+    with structured metadata.
+
+    Args:
+        channel: AMQP channel instance (caller owns connection/channel lifecycle).
+            Must support ``basic_consume(queue, on_message_callback, auto_ack=...)``.
+        queue: Queue to consume from.
+        deserialize: Optional deserializer for message body. Default: ``json.loads``
+            with fallback to string.
+        auto_ack: Acknowledge messages automatically. Default ``True``.
+
+    Returns:
+        A :class:`~graphrefly.core.node.Node` emitting one ``DATA`` per RabbitMQ message.
+    """
+    if deserialize is None:
+
+        def _default_deserialize(body: bytes) -> Any:
+            raw = body.decode("utf-8", errors="replace") if isinstance(body, (bytes, bytearray)) else str(body)
+            try:
+                return json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                return raw
+
+        deserialize = _default_deserialize
+
+    def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
+        active = [True]
+        consumer_tag_holder: list[str | None] = [None]
+
+        def _on_message(ch: Any, method: Any, properties: Any, body: bytes) -> None:
+            if not active[0]:
+                return
+            if method is None:
+                # Broker cancelled the consumer (queue deleted, etc.).
+                if active[0]:
+                    actions.down([(MessageType.ERROR, RuntimeError("Consumer cancelled by broker"))])
+                return
+            actions.emit(
+                {
+                    "queue": queue,
+                    "routing_key": method.routing_key,
+                    "exchange": method.exchange,
+                    "content": deserialize(body),
+                    "properties": _extract_amqp_properties(properties),
+                    "delivery_tag": method.delivery_tag,
+                    "redelivered": method.redelivered,
+                    "timestamp_ns": wall_clock_ns(),
+                }
+            )
+            if auto_ack:
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+
+        def _run() -> None:
+            try:
+                tag = channel.basic_consume(
+                    queue=queue,
+                    on_message_callback=_on_message,
+                    auto_ack=False,
+                )
+                consumer_tag_holder[0] = tag
+                channel.start_consuming()
+            except BaseException as err:
+                if active[0]:
+                    actions.down([(MessageType.ERROR, err)])
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+
+        def cleanup() -> None:
+            active[0] = False
+            with suppress(Exception):
+                channel.stop_consuming()
+            if consumer_tag_holder[0] is not None:
+                with suppress(Exception):
+                    channel.basic_cancel(consumer_tag_holder[0])
+
+        return cleanup
+
+    return node(start, describe_kind="producer", complete_when_deps_complete=False)
+
+
+def to_rabbitmq(
+    source: Node[Any],
+    channel: Any,
+    exchange: str,
+    *,
+    serialize: Callable[[Any], bytes] | None = None,
+    routing_key_extractor: Callable[[Any], str] | None = None,
+    on_transport_error: Callable[[SinkTransportError], None] | None = None,
+) -> Callable[[], None]:
+    """RabbitMQ producer sink -- forwards upstream ``DATA`` to a RabbitMQ exchange.
+
+    Auto-subscribes and returns an unsubscribe function.
+
+    Args:
+        source: Upstream node to forward.
+        channel: AMQP channel instance with a ``basic_publish`` method.
+        exchange: Target exchange (use ``""`` for default exchange + queue routing).
+        serialize: Optional serializer returning bytes. Default: ``json.dumps`` encoded to UTF-8.
+        routing_key_extractor: Optional function to extract a routing key from the value.
+            Default: ``""`` (empty string).
+        on_transport_error: Optional callback for transport errors.
+
+    Returns:
+        An unsubscribe ``Callable[[], None]`` to tear down the sink.
+    """
+    if serialize is None:
+
+        def _default_serialize(v: Any) -> bytes:
+            return json.dumps(v).encode("utf-8")
+
+        serialize = _default_serialize
+    if routing_key_extractor is None:
+        routing_key_extractor = lambda _v: ""  # noqa: E731
+
+    def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
+        if msg[0] is MessageType.DATA:
+            value = msg[1] if len(msg) > 1 else None
+            try:
+                rk = routing_key_extractor(value)  # type: ignore[misc]
+            except Exception as err:
+                if on_transport_error is not None:
+                    on_transport_error(
+                        SinkTransportError(stage="routing_key", error=err, value=value)
+                    )
+                return True
+            try:
+                body = serialize(value)  # type: ignore[misc]
+            except Exception as err:
+                if on_transport_error is not None:
+                    on_transport_error(
+                        SinkTransportError(stage="serialize", error=err, value=value)
+                    )
+                return True
+            try:
+                channel.basic_publish(exchange=exchange, routing_key=rk, body=body)
+            except Exception as err:
+                if on_transport_error is not None:
+                    on_transport_error(SinkTransportError(stage="send", error=err, value=value))
+            return True
+        return False
+
+    effect = node(
+        [source],
+        lambda _deps, _actions: lambda: None,
+        describe_kind="effect",
+        on_message=_on_message,
+    )
+    unsub = effect.subscribe(lambda _msgs: None)
+    return unsub
+
+
+# ---------------------------------------------------------------------------
+#  Phase 5.2d -- Storage & sink adapters
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class BufferedSinkHandle:
+    """Handle returned by buffered sinks. ``flush()`` drains remaining buffer."""
+
+    dispose: Callable[[], None]
+    flush: Callable[[], None]
+
+
+# ——— to_file ———
+
+
+@runtime_checkable
+class FileWriterLike(Protocol):
+    """Duck-typed writable file handle."""
+
+    def write(self, data: str | bytes) -> Any: ...
+    def close(self) -> None: ...
+
+
+def to_file(
+    source: Node[Any],
+    writer: FileWriterLike,
+    *,
+    serialize: Callable[[Any], str] | None = None,
+    flush_interval_ms: int = 0,
+    batch_size: int = 0,
+    on_transport_error: Callable[[SinkTransportError], None] | None = None,
+) -> BufferedSinkHandle:
+    """File sink -- writes upstream ``DATA`` values to a file-like writable.
+
+    When ``flush_interval_ms > 0`` or ``batch_size`` is set, values are buffered
+    and flushed in batches. Otherwise, each value is written immediately.
+
+    Args:
+        source: Upstream node.
+        writer: Writable file handle (e.g. ``open(path, "a")``).
+        serialize: Serialize a value to a string line. Default: ``json.dumps(v) + "\\n"``.
+        flush_interval_ms: Flush interval in ms. ``0`` = write-through. Default: ``0``.
+        batch_size: Buffer size before auto-flush. ``0`` = no size limit. Default: ``0``.
+        on_transport_error: Optional callback for transport errors.
+
+    Returns:
+        A :class:`BufferedSinkHandle` with ``dispose()`` and ``flush()``.
+    """
+    if serialize is None:
+
+        def _default_serialize(v: Any) -> str:
+            return json.dumps(v) + "\n"
+
+        serialize = _default_serialize
+
+    buffer: list[str] = []
+    timer_handle: list[Any] = [None]
+    lock = threading.Lock()
+    buffered = flush_interval_ms > 0 or batch_size > 0
+
+    def do_flush() -> None:
+        with lock:
+            if not buffer:
+                return
+            chunk = "".join(buffer)
+            buffer.clear()
+        try:
+            writer.write(chunk)
+        except Exception as err:
+            if on_transport_error is not None:
+                on_transport_error(SinkTransportError(stage="send", error=err, value=chunk))
+
+    def schedule_flush() -> None:
+        if flush_interval_ms > 0 and timer_handle[0] is None:
+            t = threading.Timer(flush_interval_ms / 1000.0, _timer_fire)
+            t.daemon = True
+            t.start()
+            timer_handle[0] = t
+
+    def _timer_fire() -> None:
+        timer_handle[0] = None
+        do_flush()
+
+    def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
+        if msg[0] is MessageType.DATA:
+            value = msg[1] if len(msg) > 1 else None
+            try:
+                line = serialize(value)  # type: ignore[misc]
+            except Exception as err:
+                if on_transport_error is not None:
+                    on_transport_error(
+                        SinkTransportError(stage="serialize", error=err, value=value)
+                    )
+                return True
+            if buffered:
+                with lock:
+                    buffer.append(line)
+                    need_flush = batch_size > 0 and len(buffer) >= batch_size
+                if need_flush:
+                    do_flush()
+                else:
+                    schedule_flush()
+            else:
+                try:
+                    writer.write(line)
+                except Exception as err:
+                    if on_transport_error is not None:
+                        on_transport_error(
+                            SinkTransportError(stage="send", error=err, value=value)
+                        )
+            return True
+        if msg[0] is MessageType.COMPLETE or msg[0] is MessageType.TEARDOWN:
+            do_flush()
+        return False
+
+    effect = node(
+        [source],
+        lambda _deps, _actions: lambda: None,
+        describe_kind="effect",
+        on_message=_on_message,
+    )
+    unsub = effect.subscribe(lambda _msgs: None)
+
+    def dispose() -> None:
+        t = timer_handle[0]
+        if t is not None:
+            t.cancel()
+            timer_handle[0] = None
+        do_flush()
+        writer.close()
+        unsub()
+
+    return BufferedSinkHandle(dispose=dispose, flush=do_flush)
+
+
+# ——— to_csv ———
+
+
+def _escape_csv_field(value: str, delimiter: str) -> str:
+    if delimiter in value or '"' in value or "\n" in value:
+        return '"' + value.replace('"', '""') + '"'
+    return value
+
+
+def to_csv(
+    source: Node[Any],
+    writer: FileWriterLike,
+    *,
+    columns: list[str],
+    delimiter: str = ",",
+    write_header: bool = True,
+    cell_extractor: Callable[[Any, str], str] | None = None,
+    flush_interval_ms: int = 0,
+    batch_size: int = 0,
+    on_transport_error: Callable[[SinkTransportError], None] | None = None,
+) -> BufferedSinkHandle:
+    """CSV file sink -- writes upstream ``DATA`` as CSV rows.
+
+    Args:
+        source: Upstream node.
+        writer: Writable file handle.
+        columns: Column names (required). Determines header row and field order.
+        delimiter: Column delimiter. Default: ``","``.
+        write_header: Whether to write a header row on first flush. Default: ``True``.
+        cell_extractor: Extract a cell value from the row object. Default: ``str(row[col])``.
+        flush_interval_ms: Flush interval in ms. Default: ``0``.
+        batch_size: Buffer size before auto-flush. Default: ``0``.
+        on_transport_error: Optional callback for transport errors.
+
+    Returns:
+        A :class:`BufferedSinkHandle`.
+    """
+    if cell_extractor is None:
+
+        def _default_extractor(row: Any, col: str) -> str:
+            v = row.get(col, "") if isinstance(row, dict) else getattr(row, col, "")
+            return str(v) if v is not None else ""
+
+        cell_extractor = _default_extractor
+
+    header_written = [False]
+
+    def serialize_row(row: Any) -> str:
+        if not header_written[0] and write_header:
+            header_written[0] = True
+            header = delimiter.join(
+                _escape_csv_field(c, delimiter) for c in columns
+            )
+            data = delimiter.join(
+                _escape_csv_field(cell_extractor(row, c), delimiter)  # type: ignore[misc]
+                for c in columns
+            )
+            return header + "\n" + data + "\n"
+        return (
+            delimiter.join(
+                _escape_csv_field(cell_extractor(row, c), delimiter)  # type: ignore[misc]
+                for c in columns
+            )
+            + "\n"
+        )
+
+    return to_file(
+        source,
+        writer,
+        serialize=serialize_row,
+        flush_interval_ms=flush_interval_ms,
+        batch_size=batch_size,
+        on_transport_error=on_transport_error,
+    )
+
+
+# ——— to_clickhouse ———
+
+
+@runtime_checkable
+class ClickHouseInsertClientLike(Protocol):
+    """Duck-typed ClickHouse client for batch inserts."""
+
+    def insert(self, table: str, values: list[Any], *, fmt: str = "JSONEachRow") -> None: ...
+
+
+def to_clickhouse(
+    source: Node[Any],
+    client: Any,
+    table: str,
+    *,
+    batch_size: int = 1000,
+    flush_interval_ms: int = 5000,
+    fmt: str = "JSONEachRow",
+    transform: Callable[[Any], Any] | None = None,
+    on_transport_error: Callable[[SinkTransportError], None] | None = None,
+) -> BufferedSinkHandle:
+    """ClickHouse buffered batch insert sink.
+
+    Accumulates upstream ``DATA`` values and inserts in batches.
+
+    Args:
+        source: Upstream node.
+        client: ClickHouse client with ``insert(table, values, fmt=...)``.
+        table: Target table name.
+        batch_size: Batch size before auto-flush. Default: ``1000``.
+        flush_interval_ms: Flush interval in ms. Default: ``5000``.
+        fmt: Insert format. Default: ``"JSONEachRow"``.
+        transform: Transform value before insert. Default: identity.
+        on_transport_error: Optional callback for transport errors.
+
+    Returns:
+        A :class:`BufferedSinkHandle`.
+    """
+    if transform is None:
+        transform = lambda v: v  # noqa: E731
+
+    buffer: list[Any] = []
+    timer_handle: list[Any] = [None]
+    lock = threading.Lock()
+
+    def do_flush() -> None:
+        with lock:
+            if not buffer:
+                return
+            batch_data = list(buffer)
+            buffer.clear()
+        try:
+            client.insert(table, batch_data, fmt=fmt)
+        except Exception as err:
+            if on_transport_error is not None:
+                on_transport_error(
+                    SinkTransportError(stage="send", error=err, value=batch_data)
+                )
+
+    def schedule_flush() -> None:
+        if timer_handle[0] is None:
+            t = threading.Timer(flush_interval_ms / 1000.0, _timer_fire)
+            t.daemon = True
+            t.start()
+            timer_handle[0] = t
+
+    def _timer_fire() -> None:
+        timer_handle[0] = None
+        do_flush()
+
+    def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
+        if msg[0] is MessageType.DATA:
+            value = msg[1] if len(msg) > 1 else None
+            try:
+                transformed = transform(value)  # type: ignore[misc]
+            except Exception as err:
+                if on_transport_error is not None:
+                    on_transport_error(
+                        SinkTransportError(stage="serialize", error=err, value=value)
+                    )
+                return True
+            with lock:
+                buffer.append(transformed)
+                need_flush = batch_size > 0 and len(buffer) >= batch_size
+            if need_flush:
+                do_flush()
+            else:
+                schedule_flush()
+            return True
+        if msg[0] is MessageType.COMPLETE or msg[0] is MessageType.TEARDOWN:
+            do_flush()
+        return False
+
+    effect = node(
+        [source],
+        lambda _deps, _actions: lambda: None,
+        describe_kind="effect",
+        on_message=_on_message,
+    )
+    unsub = effect.subscribe(lambda _msgs: None)
+
+    def dispose() -> None:
+        t = timer_handle[0]
+        if t is not None:
+            t.cancel()
+            timer_handle[0] = None
+        do_flush()
+        unsub()
+
+    return BufferedSinkHandle(dispose=dispose, flush=do_flush)
+
+
+# ——— to_s3 ———
+
+
+@runtime_checkable
+class S3ClientLike(Protocol):
+    """Duck-typed S3 client (compatible with boto3 ``S3.Client``)."""
+
+    def put_object(self, *, Bucket: str, Key: str, Body: str | bytes, ContentType: str = "") -> Any: ...  # noqa: N803
+
+
+def to_s3(
+    source: Node[Any],
+    client: Any,
+    bucket: str,
+    *,
+    fmt: str = "ndjson",
+    key_generator: Callable[[int, int], str] | None = None,
+    batch_size: int = 1000,
+    flush_interval_ms: int = 10000,
+    transform: Callable[[Any], Any] | None = None,
+    on_transport_error: Callable[[SinkTransportError], None] | None = None,
+) -> BufferedSinkHandle:
+    """S3 object storage sink -- buffers values and uploads as NDJSON or JSON.
+
+    Args:
+        source: Upstream node.
+        client: S3-compatible client with ``put_object()``.
+        bucket: S3 bucket name.
+        fmt: Output format (``"ndjson"`` or ``"json"``). Default: ``"ndjson"``.
+        key_generator: Generate the S3 key for each batch. Default: ISO timestamp + seq.
+        batch_size: Batch size before auto-flush. Default: ``1000``.
+        flush_interval_ms: Flush interval in ms. Default: ``10000``.
+        transform: Transform value before serialization. Default: identity.
+        on_transport_error: Optional callback for transport errors.
+
+    Returns:
+        A :class:`BufferedSinkHandle`.
+    """
+    if transform is None:
+        transform = lambda v: v  # noqa: E731
+    if key_generator is None:
+
+        def _default_key_gen(seq: int, ts_ns: int) -> str:
+            ms = ts_ns // 1_000_000
+            ts = datetime.fromtimestamp(ms / 1000.0, tz=UTC).isoformat().replace(":", "-").replace(".", "-")
+            ext = "ndjson" if fmt == "ndjson" else "json"
+            return f"data/{ts}-{seq}.{ext}"
+
+        key_generator = _default_key_gen
+
+    buffer: list[Any] = []
+    timer_handle: list[Any] = [None]
+    lock = threading.Lock()
+    seq_counter = [0]
+
+    def do_flush() -> None:
+        with lock:
+            if not buffer:
+                return
+            batch_data = list(buffer)
+            buffer.clear()
+        seq_counter[0] += 1
+        if fmt == "ndjson":
+            body = "\n".join(json.dumps(v) for v in batch_data) + "\n"
+            content_type = "application/x-ndjson"
+        else:
+            body = json.dumps(batch_data)
+            content_type = "application/json"
+        key = key_generator(seq_counter[0], wall_clock_ns())  # type: ignore[misc]
+        try:
+            client.put_object(Bucket=bucket, Key=key, Body=body, ContentType=content_type)
+        except Exception as err:
+            if on_transport_error is not None:
+                on_transport_error(
+                    SinkTransportError(stage="send", error=err, value=batch_data)
+                )
+
+    def schedule_flush() -> None:
+        if timer_handle[0] is None:
+            t = threading.Timer(flush_interval_ms / 1000.0, _timer_fire)
+            t.daemon = True
+            t.start()
+            timer_handle[0] = t
+
+    def _timer_fire() -> None:
+        timer_handle[0] = None
+        do_flush()
+
+    def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
+        if msg[0] is MessageType.DATA:
+            value = msg[1] if len(msg) > 1 else None
+            try:
+                transformed = transform(value)  # type: ignore[misc]
+            except Exception as err:
+                if on_transport_error is not None:
+                    on_transport_error(
+                        SinkTransportError(stage="serialize", error=err, value=value)
+                    )
+                return True
+            with lock:
+                buffer.append(transformed)
+                need_flush = batch_size > 0 and len(buffer) >= batch_size
+            if need_flush:
+                do_flush()
+            else:
+                schedule_flush()
+            return True
+        if msg[0] is MessageType.COMPLETE or msg[0] is MessageType.TEARDOWN:
+            do_flush()
+        return False
+
+    effect = node(
+        [source],
+        lambda _deps, _actions: lambda: None,
+        describe_kind="effect",
+        on_message=_on_message,
+    )
+    unsub = effect.subscribe(lambda _msgs: None)
+
+    def dispose() -> None:
+        t = timer_handle[0]
+        if t is not None:
+            t.cancel()
+            timer_handle[0] = None
+        do_flush()
+        unsub()
+
+    return BufferedSinkHandle(dispose=dispose, flush=do_flush)
+
+
+# ——— to_postgres ———
+
+
+def to_postgres(
+    source: Node[Any],
+    client: Any,
+    table: str,
+    *,
+    to_sql: Callable[[Any, str], tuple[str, list[Any]]] | None = None,
+    on_transport_error: Callable[[SinkTransportError], None] | None = None,
+) -> Callable[[], None]:
+    """PostgreSQL sink -- inserts each upstream ``DATA`` value as a row.
+
+    Args:
+        source: Upstream node.
+        client: Postgres client with ``query(sql, params)`` method (or ``execute``).
+        table: Target table name.
+        to_sql: Build the SQL + params for an insert. Default: JSON insert into ``table``.
+        on_transport_error: Optional callback for transport errors.
+
+    Returns:
+        An unsubscribe ``Callable[[], None]``.
+    """
+    if to_sql is None:
+
+        def _default_to_sql(v: Any, t: str) -> tuple[str, list[Any]]:
+            quoted = '"' + t.replace('"', '""') + '"'
+            return (f"INSERT INTO {quoted} (data) VALUES (%s)", [json.dumps(v)])
+
+        to_sql = _default_to_sql
+
+    _query = getattr(client, "query", None) or getattr(client, "execute")
+
+    def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
+        if msg[0] is MessageType.DATA:
+            value = msg[1] if len(msg) > 1 else None
+            try:
+                sql, params = to_sql(value, table)  # type: ignore[misc]
+            except Exception as err:
+                if on_transport_error is not None:
+                    on_transport_error(
+                        SinkTransportError(stage="serialize", error=err, value=value)
+                    )
+                return True
+            try:
+                _query(sql, params)
+            except Exception as err:
+                if on_transport_error is not None:
+                    on_transport_error(SinkTransportError(stage="send", error=err, value=value))
+            return True
+        return False
+
+    effect = node(
+        [source],
+        lambda _deps, _actions: lambda: None,
+        describe_kind="effect",
+        on_message=_on_message,
+    )
+    unsub = effect.subscribe(lambda _msgs: None)
+    return unsub
+
+
+# ——— to_mongo ———
+
+
+def to_mongo(
+    source: Node[Any],
+    collection: Any,
+    *,
+    to_document: Callable[[Any], Any] | None = None,
+    on_transport_error: Callable[[SinkTransportError], None] | None = None,
+) -> Callable[[], None]:
+    """MongoDB sink -- inserts each upstream ``DATA`` value as a document.
+
+    Args:
+        source: Upstream node.
+        collection: MongoDB collection with ``insert_one()`` method.
+        to_document: Transform value to a MongoDB document. Default: identity.
+        on_transport_error: Optional callback for transport errors.
+
+    Returns:
+        An unsubscribe ``Callable[[], None]``.
+    """
+    if to_document is None:
+        to_document = lambda v: v  # noqa: E731
+
+    def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
+        if msg[0] is MessageType.DATA:
+            value = msg[1] if len(msg) > 1 else None
+            try:
+                doc = to_document(value)  # type: ignore[misc]
+            except Exception as err:
+                if on_transport_error is not None:
+                    on_transport_error(
+                        SinkTransportError(stage="serialize", error=err, value=value)
+                    )
+                return True
+            try:
+                collection.insert_one(doc)
+            except Exception as err:
+                if on_transport_error is not None:
+                    on_transport_error(SinkTransportError(stage="send", error=err, value=value))
+            return True
+        return False
+
+    effect = node(
+        [source],
+        lambda _deps, _actions: lambda: None,
+        describe_kind="effect",
+        on_message=_on_message,
+    )
+    unsub = effect.subscribe(lambda _msgs: None)
+    return unsub
+
+
+# ——— to_loki ———
+
+
+def to_loki(
+    source: Node[Any],
+    client: Any,
+    *,
+    labels: dict[str, str] | None = None,
+    to_line: Callable[[Any], str] | None = None,
+    to_labels: Callable[[Any], dict[str, str]] | None = None,
+    on_transport_error: Callable[[SinkTransportError], None] | None = None,
+) -> Callable[[], None]:
+    """Grafana Loki sink -- pushes upstream ``DATA`` values as log entries.
+
+    Args:
+        source: Upstream node.
+        client: Loki-compatible client with ``push(streams)`` method.
+        labels: Static labels applied to every log entry.
+        to_line: Extract the log line from a value. Default: ``json.dumps(v)``.
+        to_labels: Extract additional labels from a value. Default: none.
+        on_transport_error: Optional callback for transport errors.
+
+    Returns:
+        An unsubscribe ``Callable[[], None]``.
+    """
+    if labels is None:
+        labels = {}
+    if to_line is None:
+        to_line = json.dumps
+
+    def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
+        if msg[0] is MessageType.DATA:
+            value = msg[1] if len(msg) > 1 else None
+            try:
+                line = to_line(value)  # type: ignore[misc]
+            except Exception as err:
+                if on_transport_error is not None:
+                    on_transport_error(
+                        SinkTransportError(stage="serialize", error=err, value=value)
+                    )
+                return True
+            try:
+                stream_labels = {**labels, **to_labels(value)} if to_labels else labels
+            except Exception as err:
+                if on_transport_error is not None:
+                    on_transport_error(
+                        SinkTransportError(stage="serialize", error=err, value=value)
+                    )
+                return True
+            ts = str(wall_clock_ns())
+            try:
+                client.push({"streams": [{"stream": stream_labels, "values": [[ts, line]]}]})
+            except Exception as err:
+                if on_transport_error is not None:
+                    on_transport_error(SinkTransportError(stage="send", error=err, value=value))
+            return True
+        return False
+
+    effect = node(
+        [source],
+        lambda _deps, _actions: lambda: None,
+        describe_kind="effect",
+        on_message=_on_message,
+    )
+    unsub = effect.subscribe(lambda _msgs: None)
+    return unsub
+
+
+# ——— to_tempo ———
+
+
+def to_tempo(
+    source: Node[Any],
+    client: Any,
+    *,
+    to_resource_spans: Callable[[Any], list[Any]] | None = None,
+    on_transport_error: Callable[[SinkTransportError], None] | None = None,
+) -> Callable[[], None]:
+    """Grafana Tempo sink -- pushes upstream ``DATA`` values as trace spans.
+
+    Args:
+        source: Upstream node.
+        client: Tempo-compatible client with ``push(payload)`` method.
+        to_resource_spans: Transform a value into OTLP resourceSpans entries.
+            Default: wraps the value in a list.
+        on_transport_error: Optional callback for transport errors.
+
+    Returns:
+        An unsubscribe ``Callable[[], None]``.
+    """
+    if to_resource_spans is None:
+        to_resource_spans = lambda v: [v]  # noqa: E731
+
+    def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
+        if msg[0] is MessageType.DATA:
+            value = msg[1] if len(msg) > 1 else None
+            try:
+                spans = to_resource_spans(value)  # type: ignore[misc]
+            except Exception as err:
+                if on_transport_error is not None:
+                    on_transport_error(
+                        SinkTransportError(stage="serialize", error=err, value=value)
+                    )
+                return True
+            try:
+                client.push({"resourceSpans": spans})
+            except Exception as err:
+                if on_transport_error is not None:
+                    on_transport_error(SinkTransportError(stage="send", error=err, value=value))
+            return True
+        return False
+
+    effect = node(
+        [source],
+        lambda _deps, _actions: lambda: None,
+        describe_kind="effect",
+        on_message=_on_message,
+    )
+    unsub = effect.subscribe(lambda _msgs: None)
+    return unsub
+
+
+# ——— checkpoint_to_s3 ———
+
+
+def checkpoint_to_s3(
+    graph: Any,
+    client: Any,
+    bucket: str,
+    *,
+    prefix: str = "checkpoints/",
+    debounce_ms: int = 500,
+    compact_every: int = 10,
+    on_error: Callable[[Any], None] | None = None,
+) -> Any:
+    """Wires ``graph.auto_checkpoint()`` to persist snapshots to S3.
+
+    Args:
+        graph: Graph instance to checkpoint.
+        client: S3-compatible client with ``put_object()``.
+        bucket: S3 bucket name.
+        prefix: S3 key prefix. Default: ``"checkpoints/"``.
+        debounce_ms: Debounce ms for auto_checkpoint. Default: ``500``.
+        compact_every: Full snapshot compaction interval. Default: ``10``.
+        on_error: Optional error callback.
+
+    Returns:
+        Dispose handle from ``graph.auto_checkpoint()``.
+    """
+
+    class _Adapter:
+        def save(self, data: Any) -> None:
+            ms = wall_clock_ns() // 1_000_000
+            key = f"{prefix}{graph.name}/checkpoint-{ms}.json"
+            try:
+                body = json.dumps(data)
+            except Exception as err:
+                if on_error is not None:
+                    on_error(err)
+                return
+            try:
+                client.put_object(
+                    Bucket=bucket, Key=key, Body=body, ContentType="application/json"
+                )
+            except Exception as err:
+                if on_error is not None:
+                    on_error(err)
+
+    return graph.auto_checkpoint(
+        _Adapter(), debounce_ms=debounce_ms, compact_every=compact_every, on_error=on_error
+    )
+
+
+# ——— checkpoint_to_redis ———
+
+
+def checkpoint_to_redis(
+    graph: Any,
+    client: Any,
+    *,
+    prefix: str = "graphrefly:checkpoint:",
+    debounce_ms: int = 500,
+    compact_every: int = 10,
+    on_error: Callable[[Any], None] | None = None,
+) -> Any:
+    """Wires ``graph.auto_checkpoint()`` to persist snapshots to Redis.
+
+    Args:
+        graph: Graph instance to checkpoint.
+        client: Redis client with ``set()``/``get()``.
+        prefix: Key prefix. Default: ``"graphrefly:checkpoint:"``.
+        debounce_ms: Debounce ms for auto_checkpoint. Default: ``500``.
+        compact_every: Full snapshot compaction interval. Default: ``10``.
+        on_error: Optional error callback.
+
+    Returns:
+        Dispose handle from ``graph.auto_checkpoint()``.
+    """
+    redis_key = f"{prefix}{graph.name}"
+
+    class _Adapter:
+        def save(self, data: Any) -> None:
+            try:
+                body = json.dumps(data)
+            except Exception as err:
+                if on_error is not None:
+                    on_error(err)
+                return
+            try:
+                client.set(redis_key, body)
+            except Exception as err:
+                if on_error is not None:
+                    on_error(err)
+
+    return graph.auto_checkpoint(
+        _Adapter(), debounce_ms=debounce_ms, compact_every=compact_every, on_error=on_error
+    )
+
+
+# ---------------------------------------------------------------------------
 #  __all__
 # ---------------------------------------------------------------------------
 
@@ -2146,4 +3468,26 @@ __all__ = [
     "from_ndjson",
     "from_clickhouse_watch",
     "ClickHouseClientLike",
+    # 5.2c remaining -- Pulsar, NATS, RabbitMQ
+    "from_pulsar",
+    "to_pulsar",
+    "from_nats",
+    "to_nats",
+    "from_rabbitmq",
+    "to_rabbitmq",
+    # 5.2d -- Storage & sink adapters
+    "BufferedSinkHandle",
+    "FileWriterLike",
+    "to_file",
+    "to_csv",
+    "ClickHouseInsertClientLike",
+    "to_clickhouse",
+    "S3ClientLike",
+    "to_s3",
+    "to_postgres",
+    "to_mongo",
+    "to_loki",
+    "to_tempo",
+    "checkpoint_to_s3",
+    "checkpoint_to_redis",
 ]

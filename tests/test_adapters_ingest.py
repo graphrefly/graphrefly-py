@@ -16,9 +16,12 @@ from graphrefly.extra.adapters import (
     from_clickhouse_watch,
     from_csv,
     from_kafka,
+    from_nats,
     from_ndjson,
     from_otel,
     from_prometheus,
+    from_pulsar,
+    from_rabbitmq,
     from_redis_stream,
     from_statsd,
     from_syslog,
@@ -26,6 +29,9 @@ from graphrefly.extra.adapters import (
     parse_statsd,
     parse_syslog,
     to_kafka,
+    to_nats,
+    to_pulsar,
+    to_rabbitmq,
     to_redis_stream,
 )
 from graphrefly.extra.sources import from_iter, to_list
@@ -539,3 +545,549 @@ class TestFromStatsD:
 
         assert received[0]["name"] == "req.count"
         assert received[0]["tags"] == {"env": "prod"}
+
+
+# ——————————————————————————————————————————————————————————————
+#  from_pulsar / to_pulsar
+# ——————————————————————————————————————————————————————————————
+
+
+class TestFromPulsar:
+    def test_consumer_emits_messages(self) -> None:
+        received: list[Any] = []
+        done = threading.Event()
+        call_count = [0]
+
+        class MockMsgId:
+            def __str__(self) -> str:
+                return "msg-1"
+
+        class MockMsg:
+            def topic_name(self) -> str:
+                return "persistent://public/default/events"
+
+            def message_id(self) -> Any:
+                return MockMsgId()
+
+            def partition_key(self) -> str:
+                return "key1"
+
+            def data(self) -> bytes:
+                return b'{"action":"click"}'
+
+            def properties(self) -> dict[str, str]:
+                return {"source": "web"}
+
+            def publish_timestamp(self) -> int:
+                return 1704067200000
+
+            def event_timestamp(self) -> int:
+                return 1704067200001
+
+        class MockConsumer:
+            def receive(self) -> Any:
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    return MockMsg()
+                done.set()
+                # Block forever on second call.
+                threading.Event().wait()
+                return None  # Never reached.
+
+            def acknowledge(self, msg: Any) -> None:
+                pass
+
+        consumer = MockConsumer()
+        n = from_pulsar(consumer)
+
+        unsub = n.subscribe(
+            lambda msgs: [received.append(m[1]) for m in msgs if m[0] is MessageType.DATA]
+        )
+
+        done.wait(timeout=5.0)
+        _wait_for(lambda: len(received) > 0)
+        unsub()
+
+        assert len(received) >= 1
+        assert received[0]["topic"] == "persistent://public/default/events"
+        assert received[0]["message_id"] == "msg-1"
+        assert received[0]["key"] == "key1"
+        assert received[0]["value"] == {"action": "click"}
+        assert received[0]["publish_time"] == 1704067200000
+        assert received[0]["event_time"] == 1704067200001
+
+    def test_error_on_receive_failure(self) -> None:
+        errors: list[Any] = []
+
+        class MockConsumer:
+            def receive(self) -> Any:
+                raise RuntimeError("broker down")
+
+            def acknowledge(self, msg: Any) -> None:
+                pass
+
+        n = from_pulsar(MockConsumer())
+        unsub = n.subscribe(
+            lambda msgs: [errors.append(m[1]) for m in msgs if m[0] is MessageType.ERROR]
+        )
+
+        _wait_for(lambda: len(errors) > 0)
+        unsub()
+
+        assert len(errors) == 1
+        assert str(errors[0]) == "broker down"
+
+    def test_skips_ack_when_auto_ack_false(self) -> None:
+        acked: list[bool] = []
+        done = threading.Event()
+        call_count = [0]
+
+        class MockMsg:
+            def topic_name(self) -> str:
+                return "topic"
+
+            def message_id(self) -> str:
+                return "msg-1"
+
+            def partition_key(self) -> str:
+                return ""
+
+            def data(self) -> bytes:
+                return b'"hello"'
+
+            def properties(self) -> dict[str, str]:
+                return {}
+
+            def publish_timestamp(self) -> int:
+                return 0
+
+            def event_timestamp(self) -> int:
+                return 0
+
+        class MockConsumer:
+            def receive(self) -> Any:
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    return MockMsg()
+                done.set()
+                threading.Event().wait()
+                return None
+
+            def acknowledge(self, msg: Any) -> None:
+                acked.append(True)
+
+        n = from_pulsar(MockConsumer(), auto_ack=False)
+        unsub = n.subscribe(lambda _msgs: None)
+
+        done.wait(timeout=5.0)
+        unsub()
+
+        assert len(acked) == 0
+
+
+class TestToPulsar:
+    def test_producer_send_called(self) -> None:
+        sent: list[Any] = []
+
+        class MockProducer:
+            def send(self, data: bytes, **kwargs: Any) -> None:
+                sent.append({"data": data, **kwargs})
+
+        source = from_iter([1, 2])
+        unsub = to_pulsar(source, MockProducer())
+
+        _wait_for(lambda: len(sent) >= 2)
+        unsub()
+
+        assert len(sent) == 2
+        assert json.loads(sent[0]["data"]) == 1
+
+
+# ——————————————————————————————————————————————————————————————
+#  from_nats / to_nats
+# ——————————————————————————————————————————————————————————————
+
+
+class TestFromNATS:
+    def test_subscription_emits_messages(self) -> None:
+        received: list[Any] = []
+        done = threading.Event()
+
+        class MockMsg:
+            subject = "events.click"
+            data = b'{"action":"click"}'
+            headers = None
+            reply = "reply.1"
+            sid = 1
+
+        class MockClient:
+            def subscribe(self, subject: str, **kwargs: Any) -> Any:
+                def _iter() -> Any:
+                    yield MockMsg()
+                    done.set()
+
+                return _iter()
+
+            def publish(self, subject: str, data: bytes, **kwargs: Any) -> None:
+                pass
+
+        n = from_nats(MockClient(), "events.>")
+        unsub = n.subscribe(
+            lambda msgs: [received.append(m[1]) for m in msgs if m[0] is MessageType.DATA]
+        )
+
+        done.wait(timeout=5.0)
+        _wait_for(lambda: len(received) > 0)
+        unsub()
+
+        assert len(received) >= 1
+        assert received[0]["subject"] == "events.click"
+        assert received[0]["data"] == {"action": "click"}
+        assert received[0]["reply"] == "reply.1"
+
+    def test_complete_on_subscription_end(self) -> None:
+        completed: list[bool] = []
+
+        class MockClient:
+            def subscribe(self, subject: str, **kwargs: Any) -> Any:
+                return iter([])  # Empty iterator — immediate end.
+
+            def publish(self, subject: str, data: bytes, **kwargs: Any) -> None:
+                pass
+
+        n = from_nats(MockClient(), "test")
+        unsub = n.subscribe(
+            lambda msgs: [completed.append(True) for m in msgs if m[0] is MessageType.COMPLETE]
+        )
+
+        _wait_for(lambda: len(completed) > 0)
+        unsub()
+
+        assert len(completed) >= 1
+
+    def test_error_on_iteration_failure(self) -> None:
+        errors: list[Any] = []
+
+        class FailingIter:
+            def __iter__(self) -> Any:
+                return self
+
+            def __next__(self) -> Any:
+                raise RuntimeError("connection lost")
+
+        class MockClient:
+            def subscribe(self, subject: str, **kwargs: Any) -> Any:
+                return FailingIter()
+
+            def publish(self, subject: str, data: bytes, **kwargs: Any) -> None:
+                pass
+
+        n = from_nats(MockClient(), "test")
+        unsub = n.subscribe(
+            lambda msgs: [errors.append(m[1]) for m in msgs if m[0] is MessageType.ERROR]
+        )
+
+        _wait_for(lambda: len(errors) > 0)
+        unsub()
+
+    def test_async_subscription_emits_messages(self) -> None:
+        """Async nats-py v2+ client: subscribe() returns an AsyncIterable."""
+        received: list[Any] = []
+
+        class MockMsg:
+            subject = "events.click"
+            data = b'{"action":"click"}'
+            headers = None
+            reply = "reply.1"
+            sid = 1
+
+        class MockAsyncSub:
+            """Mimics nats-py v2 Subscription (AsyncIterable)."""
+
+            def __aiter__(self) -> Any:
+                return self
+
+            async def __anext__(self) -> Any:
+                if not hasattr(self, "_sent"):
+                    self._sent = True
+                    return MockMsg()
+                raise StopAsyncIteration
+
+        class MockAsyncClient:
+            def subscribe(self, subject: str, **kwargs: Any) -> Any:
+                return MockAsyncSub()
+
+            def publish(self, subject: str, data: bytes, **kwargs: Any) -> None:
+                pass
+
+        n = from_nats(MockAsyncClient(), "events.>")
+        unsub = n.subscribe(
+            lambda msgs: [received.append(m[1]) for m in msgs if m[0] is MessageType.DATA]
+        )
+
+        _wait_for(lambda: len(received) > 0)
+        unsub()
+
+        assert len(received) >= 1
+        assert received[0]["subject"] == "events.click"
+        assert received[0]["data"] == {"action": "click"}
+
+    def test_async_coroutine_subscribe(self) -> None:
+        """Async nats-py v2+ client: subscribe() returns a coroutine."""
+        received: list[Any] = []
+
+        class MockMsg:
+            subject = "events.test"
+            data = b'"hello"'
+            headers = None
+            reply = None
+            sid = 2
+
+        class MockAsyncSub:
+            def __aiter__(self) -> Any:
+                return self
+
+            async def __anext__(self) -> Any:
+                if not hasattr(self, "_sent"):
+                    self._sent = True
+                    return MockMsg()
+                raise StopAsyncIteration
+
+        class MockAsyncClient:
+            def subscribe(self, subject: str, **kwargs: Any) -> Any:
+                # Returns a coroutine (like nats-py v2 `await nc.subscribe(...)`)
+                async def _coro() -> Any:
+                    return MockAsyncSub()
+
+                return _coro()
+
+            def publish(self, subject: str, data: bytes, **kwargs: Any) -> None:
+                pass
+
+        n = from_nats(MockAsyncClient(), "events.test")
+        unsub = n.subscribe(
+            lambda msgs: [received.append(m[1]) for m in msgs if m[0] is MessageType.DATA]
+        )
+
+        _wait_for(lambda: len(received) > 0)
+        unsub()
+
+        assert len(received) >= 1
+        assert received[0]["data"] == "hello"
+
+    def test_async_complete_on_subscription_end(self) -> None:
+        """Async path: COMPLETE emitted when async iterator exhausts."""
+        completed: list[bool] = []
+
+        class MockEmptyAsyncSub:
+            def __aiter__(self) -> Any:
+                return self
+
+            async def __anext__(self) -> Any:
+                raise StopAsyncIteration
+
+        class MockAsyncClient:
+            def subscribe(self, subject: str, **kwargs: Any) -> Any:
+                return MockEmptyAsyncSub()
+
+            def publish(self, subject: str, data: bytes, **kwargs: Any) -> None:
+                pass
+
+        n = from_nats(MockAsyncClient(), "test")
+        unsub = n.subscribe(
+            lambda msgs: [completed.append(True) for m in msgs if m[0] is MessageType.COMPLETE]
+        )
+
+        _wait_for(lambda: len(completed) > 0)
+        unsub()
+
+        assert len(completed) >= 1
+
+
+class TestToNATS:
+    def test_publish_called(self) -> None:
+        published: list[Any] = []
+
+        class MockClient:
+            def subscribe(self, subject: str, **kwargs: Any) -> Any:
+                return iter([])
+
+            def publish(self, subject: str, data: bytes, **kwargs: Any) -> None:
+                published.append({"subject": subject, "data": data})
+
+        source = from_iter(["hello"])
+        unsub = to_nats(source, MockClient(), "events.out")
+
+        _wait_for(lambda: len(published) >= 1)
+        unsub()
+
+        assert len(published) == 1
+        assert published[0]["subject"] == "events.out"
+        assert json.loads(published[0]["data"]) == "hello"
+
+
+# ——————————————————————————————————————————————————————————————
+#  from_rabbitmq / to_rabbitmq
+# ——————————————————————————————————————————————————————————————
+
+
+class TestFromRabbitMQ:
+    def test_channel_emits_messages(self) -> None:
+        received: list[Any] = []
+        done = threading.Event()
+
+        class MockMethod:
+            routing_key = "events"
+            exchange = ""
+            delivery_tag = 1
+            redelivered = False
+
+        class MockProperties:
+            content_type = "application/json"
+
+        class MockChannel:
+            def basic_consume(
+                self, *, queue: str, on_message_callback: Any, auto_ack: bool
+            ) -> str:
+                # Deliver one message synchronously.
+                on_message_callback(self, MockMethod(), MockProperties(), b'{"action":"click"}')
+                done.set()
+                return "ctag-1"
+
+            def start_consuming(self) -> None:
+                # Block until teardown.
+                threading.Event().wait(timeout=5.0)
+
+            def basic_ack(self, *, delivery_tag: int) -> None:
+                pass
+
+            def basic_cancel(self, tag: str) -> None:
+                pass
+
+        n = from_rabbitmq(MockChannel(), "events")
+        unsub = n.subscribe(
+            lambda msgs: [received.append(m[1]) for m in msgs if m[0] is MessageType.DATA]
+        )
+
+        done.wait(timeout=5.0)
+        _wait_for(lambda: len(received) > 0)
+        unsub()
+
+        assert len(received) >= 1
+        assert received[0]["queue"] == "events"
+        assert received[0]["routing_key"] == "events"
+        assert received[0]["content"] == {"action": "click"}
+        assert received[0]["delivery_tag"] == 1
+        assert received[0]["redelivered"] is False
+
+    def test_error_on_consume_failure(self) -> None:
+        errors: list[Any] = []
+
+        class MockChannel:
+            def basic_consume(self, **kwargs: Any) -> str:
+                raise RuntimeError("channel closed")
+
+            def start_consuming(self) -> None:
+                pass
+
+            def basic_ack(self, **kwargs: Any) -> None:
+                pass
+
+            def basic_cancel(self, tag: str) -> None:
+                pass
+
+        n = from_rabbitmq(MockChannel(), "events")
+        unsub = n.subscribe(
+            lambda msgs: [errors.append(m[1]) for m in msgs if m[0] is MessageType.ERROR]
+        )
+
+        _wait_for(lambda: len(errors) > 0)
+        unsub()
+
+        assert len(errors) == 1
+        assert str(errors[0]) == "channel closed"
+
+    def test_broker_cancel_emits_error(self) -> None:
+        errors: list[Any] = []
+        done = threading.Event()
+
+        class MockChannel:
+            def basic_consume(
+                self, *, queue: str, on_message_callback: Any, auto_ack: bool
+            ) -> str:
+                # Simulate broker cancellation: deliver None method.
+                on_message_callback(self, None, None, b"")
+                done.set()
+                return "ctag-1"
+
+            def start_consuming(self) -> None:
+                threading.Event().wait(timeout=5.0)
+
+            def stop_consuming(self) -> None:
+                pass
+
+            def basic_ack(self, **kwargs: Any) -> None:
+                pass
+
+            def basic_cancel(self, tag: str) -> None:
+                pass
+
+        n = from_rabbitmq(MockChannel(), "events")
+        unsub = n.subscribe(
+            lambda msgs: [errors.append(m[1]) for m in msgs if m[0] is MessageType.ERROR]
+        )
+
+        done.wait(timeout=5.0)
+        _wait_for(lambda: len(errors) > 0)
+        unsub()
+
+        assert len(errors) == 1
+        assert str(errors[0]) == "Consumer cancelled by broker"
+
+
+class TestToRabbitMQ:
+    def test_basic_publish_called(self) -> None:
+        published: list[Any] = []
+
+        class MockChannel:
+            def basic_publish(
+                self, *, exchange: str, routing_key: str, body: bytes
+            ) -> None:
+                published.append(
+                    {"exchange": exchange, "routing_key": routing_key, "body": body}
+                )
+
+        source = from_iter(["hello"])
+        unsub = to_rabbitmq(source, MockChannel(), "my-exchange")
+
+        _wait_for(lambda: len(published) >= 1)
+        unsub()
+
+        assert len(published) == 1
+        assert published[0]["exchange"] == "my-exchange"
+        assert published[0]["routing_key"] == ""
+        assert json.loads(published[0]["body"]) == "hello"
+
+    def test_custom_routing_key(self) -> None:
+        published: list[Any] = []
+
+        class MockChannel:
+            def basic_publish(
+                self, *, exchange: str, routing_key: str, body: bytes
+            ) -> None:
+                published.append(
+                    {"exchange": exchange, "routing_key": routing_key, "body": body}
+                )
+
+        source = from_iter([{"type": "click", "data": "xyz"}])
+        unsub = to_rabbitmq(
+            source,
+            MockChannel(),
+            "events",
+            routing_key_extractor=lambda v: v["type"],
+        )
+
+        _wait_for(lambda: len(published) >= 1)
+        unsub()
+
+        assert published[0]["routing_key"] == "click"

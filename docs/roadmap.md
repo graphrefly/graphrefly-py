@@ -324,9 +324,9 @@ Connectors for the universal reduction layer (Phase 8). Each wraps an external p
 - [x] `from_redis_stream(client, key, opts)` / `to_redis_stream(source, client, key, opts)` — Redis Streams (duck-typed `RedisClientLike`).
 - [x] `from_csv(source, opts)` / `from_ndjson(source)` — `Iterable[str]` ingest for batch replay; threaded drain.
 - [x] `from_clickhouse_watch(client, query, opts)` — timer-driven query polling as reactive source.
-- [ ] `from_pulsar(consumer, topic, opts)` / `to_pulsar(source, producer, topic, opts)` — Apache Pulsar native client
-- [ ] `from_nats(consumer, subject, opts)` / `to_nats(source, client, subject, opts)` — NATS consumer/producer
-- [ ] `from_rabbitmq(channel, queue, opts)` / `to_rabbitmq(source, channel, exchange, opts)` — RabbitMQ consumer/producer
+- [x] `from_pulsar(consumer, opts)` / `to_pulsar(source, producer, opts)` — Apache Pulsar native client
+- [x] `from_nats(client, subject, opts)` / `to_nats(source, client, subject, opts)` — NATS consumer/producer
+- [x] `from_rabbitmq(channel, queue, opts)` / `to_rabbitmq(source, channel, exchange, opts)` — RabbitMQ consumer/producer
 
 ### 5.3c — Storage & sink adapters
 

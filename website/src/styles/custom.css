@@ -7,8 +7,8 @@
 	--gr-ink-raised: #080a0c;
 	--gr-aqua: #00d4e8;
 	--gr-aqua-dim: #00a8c0;
-	--gr-warm: #407888;
-	--gr-stone: #5a7a88;
+	--gr-warm: #5a9aaa;
+	--gr-stone: #7a9caa;
 	--gr-parchment: #d8e4e8;
 	--gr-purple: #0098b0;
 	--gr-border: #10181c;
@@ -20,8 +20,8 @@
 	--sl-color-white: var(--gr-parchment);
 	--sl-color-gray-1: #c0d0d8;
 	--sl-color-gray-2: var(--gr-stone);
-	--sl-color-gray-3: #4a6068;
-	--sl-color-gray-4: #2a3840;
+	--sl-color-gray-3: #6a8a98;
+	--sl-color-gray-4: #4a6878;
 	--sl-color-gray-5: var(--gr-border);
 	--sl-color-gray-6: var(--gr-ink-raised);
 	--sl-color-black: var(--gr-ink);

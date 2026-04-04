@@ -125,6 +125,8 @@ Union-find over node identity merges components when nodes list dependencies at 
 
 **Keep this section in sync with `graphrefly-ts/docs/optimizations.md` § Cross-language implementation notes** so you can open both files side by side.
 
+- **Storage & sink adapter pattern parity (Phase 5.2d, 2026-04-03):** All 5.2d sinks follow the same pattern in both TS and PY: duck-typed client protocols, `on_message` intercepting `DATA`, `SinkTransportError` for serialize/send failures. Buffered sinks (`to_clickhouse`, `to_s3`, `to_file`, `to_csv`) return a `BufferedSinkHandle` with `dispose()` + `flush()`. Per-record sinks (`to_postgres`, `to_mongo`, `to_loki`, `to_tempo`) return an unsubscribe callable. Checkpoint adapters (`checkpoint_to_s3`, `checkpoint_to_redis`) wire `graph.auto_checkpoint()`. PY uses `threading.Timer` for flush timers; TS uses `setTimeout`. PY `to_postgres` calls `client.execute(sql, params)` (psycopg2/3 style); TS calls `client.query(sql, params)` (pg style). PY `json.dumps` includes spaces after separators; TS `JSON.stringify` does not — NDJSON output is semantically equivalent but not byte-identical across languages.
+
 ### 1. Message type wire encoding
 
 | | |
@@ -319,6 +321,12 @@ Applies to `src/extra/adapters.ts` and `graphrefly.extra.adapters`. **Keep the t
 | **`fromPrometheus` / `fromClickHouseWatch` `signal` option** | `signal: AbortSignal` for external cancellation | No equivalent; uses `active[0]` flag on teardown | PY has no standard `AbortSignal`. External cancellation in PY is handled by unsubscribing (which triggers the cleanup/stop function). Both ports stop cleanly on teardown. |
 | **`SyslogMessage` field naming** | camelCase: `appName`, `procId`, `msgId` | snake_case: `app_name`, `proc_id`, `msg_id` | Language convention applied to output data structures. Each port follows its ecosystem's naming idiom. |
 | **`fromCSV` / `fromNDJSON` source type** | `AsyncIterable<string>` (async streams with chunk buffering) | `Iterable[str]` (sync iterators via threads) | PY uses threads for I/O concurrency; sync iterables are natural for `csv.reader` integration. TS uses async iteration for streaming I/O. |
+| **`PulsarConsumerLike` protocol** | `pulsar-client` JS shape: `receive()` returns Promise, `acknowledge(msg)` returns Promise, getter methods (`getData()`, `getTopicName()`, etc.) | `pulsar-client` PY shape: `receive()` blocking, `acknowledge(msg)` sync, attribute methods (`data()`, `topic_name()`, etc.) | Each port matches the native Pulsar client API for its ecosystem. TS uses async loop; PY uses threaded blocking loop. |
+| **`PulsarProducerLike.send()` call shape** | Single object: `send({data, partitionKey, properties})` | Positional + kwargs: `send(data, partition_key=..., properties=...)` | Matches respective native Pulsar client SDK calling conventions. |
+| **`PulsarMessage` field naming** | camelCase: `messageId`, `publishTime`, `eventTime` | snake_case: `message_id`, `publish_time`, `event_time` | Language convention applied to output data structures. |
+| **`NATSClientLike` protocol** | nats.js shape: `subscribe()` returns `AsyncIterable`, `publish(subject, data)` | Dual: sync iterable (threaded drain) or async iterable/coroutine (via `Runner`). Auto-detected at subscribe time. Optional `runner` kwarg. | TS uses native async iteration. PY auto-detects sync vs async subscriptions: sync uses threaded drain, async uses `resolve_runner().schedule()`. Both support queue groups. |
+| **`RabbitMQChannelLike` protocol** | amqplib shape: `consume(queue, callback)` returns `Promise<{consumerTag}>`, `cancel(tag)`, `ack(msg)`, `publish(exchange, routingKey, content)` | pika shape: `basic_consume(queue, on_message_callback, auto_ack)`, `start_consuming()`, `basic_ack(delivery_tag)`, `basic_publish(exchange, routing_key, body)` | Each port matches its ecosystem's dominant AMQP library. Pika requires `start_consuming()` to enter the event loop; amqplib's consume is promise-based. |
+| **`RabbitMQMessage` field naming** | camelCase: `routingKey`, `deliveryTag` | snake_case: `routing_key`, `delivery_tag` | Language convention applied to output data structures. |
 
 ---
 
