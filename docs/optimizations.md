@@ -119,12 +119,18 @@ Union-find over node identity merges components when nodes list dependencies at 
 - **`Graph.signal`:** `GuardDenied` aborts the walk on first rejection; nodes visited earlier in the traversal may already have received the message (non-transactional). Prefer guards that allow **system** `signal` when using `destroy()` / lifecycle if you need guaranteed completion.
 - **`Graph.remove` / `_teardown_mounted_graph`:** after the registry drops a name, primary `TEARDOWN` uses `Node.down(..., internal=True)` so a guard cannot reject teardown **after** unregister (would orphan the node instance).
 
+## Open design decisions
+
+- **Sink adapter silent error swallowing (Phase 5.2b–5.2d, noted 2026-04-04):** All per-record sink adapters (`to_postgres`, `to_mongo`, `to_loki`, `to_tempo`, `to_sqlite`) silently swallow transport errors when `on_transport_error` is not provided. If the user omits the callback, failed inserts/sends are lost with zero indication. Options: (a) default to `warnings.warn`; (b) require the callback; (c) add an `errors` meta companion node. Sweep deferred — affects all sinks uniformly.
+- **Synchronous SQLite blocking in `to_sqlite` sink (Phase 5.2b, noted 2026-04-04):** Unlike async sinks (`to_postgres`, `to_kafka`) which fire-and-forget, `to_sqlite` calls `db.query()` synchronously inside the `on_message` handler. During a batch drain of N DATA messages, each insert blocks the thread sequentially. For high-throughput sources this can starve other nodes waiting for batch-deferred settlements. Options: (a) add a `batch_insert` option with multi-row INSERT or transaction wrapper; (b) document the performance cliff.
+
 ---
 
 ## Cross-language implementation notes
 
 **Keep this section in sync with `graphrefly-ts/docs/optimizations.md` § Cross-language implementation notes** so you can open both files side by side.
 
+- **SQLite adapter parity (Phase 5.2b, 2026-04-04):** Both TS and PY use duck-typed `SqliteDbLike` with a `query(sql, params)` method — matching the `PostgresClientLike`/`ClickHouseClientLike` convention. TS `SqliteDbLike.query()` returns `unknown[]`; PY `SqliteDbLike.query()` returns `list[Any]`. Both are fully synchronous (no Promises/async). `from_sqlite`/`fromSqlite` is one-shot (DATA per row, then COMPLETE); compose with `switch_map` + `from_timer` for periodic re-query. `to_sqlite`/`toSqlite` follows per-record sink pattern (same as `to_postgres`/`toPostgres`). Default insert SQL uses JSON column; custom `to_sql` override available. TS uses `node:sqlite` `DatabaseSync` or `better-sqlite3`; PY uses stdlib `sqlite3` — both zero-dep from GraphReFly's perspective (user provides instance).
 - **Storage & sink adapter pattern parity (Phase 5.2d, 2026-04-03):** All 5.2d sinks follow the same pattern in both TS and PY: duck-typed client protocols, `on_message` intercepting `DATA`, `SinkTransportError` for serialize/send failures. Buffered sinks (`to_clickhouse`, `to_s3`, `to_file`, `to_csv`) return a `BufferedSinkHandle` with `dispose()` + `flush()`. Per-record sinks (`to_postgres`, `to_mongo`, `to_loki`, `to_tempo`) return an unsubscribe callable. Checkpoint adapters (`checkpoint_to_s3`, `checkpoint_to_redis`) wire `graph.auto_checkpoint()`. PY uses `threading.Timer` for flush timers; TS uses `setTimeout`. PY `to_postgres` calls `client.execute(sql, params)` (psycopg2/3 style); TS calls `client.query(sql, params)` (pg style). PY `json.dumps` includes spaces after separators; TS `JSON.stringify` does not — NDJSON output is semantically equivalent but not byte-identical across languages.
 
 ### 1. Message type wire encoding

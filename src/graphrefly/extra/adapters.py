@@ -3433,6 +3433,128 @@ def checkpoint_to_redis(
     )
 
 
+# ——— SQLite ———
+
+
+@runtime_checkable
+class SqliteDbLike(Protocol):
+    """Duck-typed SQLite database handle.
+
+    Compatible with any driver that exposes a ``query(sql, params)`` method
+    returning a list of row objects.  Method name matches the project-wide
+    convention (``PostgresClientLike.query``, ``ClickHouseClientLike.query``).
+    """
+
+    def query(self, sql: str, params: Any = ()) -> list[Any]: ...
+
+
+def from_sqlite(
+    db: Any,
+    query: str,
+    *,
+    params: Any = (),
+    map_row: Callable[[Any], Any] | None = None,
+) -> Node[Any]:
+    """One-shot SQLite query as a reactive source.
+
+    Executes *query* synchronously via ``db.query()``, emits one ``DATA`` per
+    result row, then ``COMPLETE``.  Compose with ``switch_map`` +
+    ``from_timer`` / ``from_fs_watch`` for periodic or change-driven re-query.
+
+    Args:
+        db: SQLite database handle (caller owns connection).
+        query: SQL string to execute.
+        params: Bind parameters for the query.
+        map_row: Map a raw row object to the desired type. Default: identity.
+
+    Returns:
+        A :class:`~graphrefly.core.node.Node` — one ``DATA`` per row, then ``COMPLETE``.
+    """
+    if map_row is None:
+        map_row = lambda r: r  # noqa: E731
+
+    def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
+        try:
+            rows = db.query(query, params)
+            mapped = [map_row(row) for row in rows]  # type: ignore[misc]
+        except Exception as err:
+            actions.down([(MessageType.ERROR, err)])
+            return lambda: None
+        with batch():
+            for item in mapped:
+                actions.emit(item)
+            actions.down([(MessageType.COMPLETE,)])
+        return lambda: None
+
+    return node(start, describe_kind="producer", complete_when_deps_complete=False)
+
+
+def to_sqlite(
+    source: Node[Any],
+    db: Any,
+    table: str,
+    *,
+    to_sql: Callable[[Any, str], tuple[str, list[Any]]] | None = None,
+    on_transport_error: Callable[[SinkTransportError], None] | None = None,
+    **kwargs: Any,
+) -> Callable[[], None]:
+    """SQLite sink -- inserts each upstream ``DATA`` value as a row.
+
+    Follows the same pattern as :func:`to_postgres` / :func:`to_mongo`.
+    Since SQLite is synchronous, errors propagate immediately.
+
+    Args:
+        source: Upstream node.
+        db: SQLite database handle (caller owns connection).
+        table: Target table name.
+        to_sql: Build the SQL + params for an insert.  Default: JSON insert into
+            ``(data)`` column.
+        on_transport_error: Optional callback for transport errors.
+
+    Returns:
+        An unsubscribe ``Callable[[], None]``.
+    """
+    if not table or "\x00" in table:
+        raise ValueError(f"to_sqlite: invalid table name: {table!r}")
+
+    if to_sql is None:
+
+        def _default_to_sql(v: Any, t: str) -> tuple[str, list[Any]]:
+            quoted = '"' + t.replace('"', '""') + '"'
+            return (f"INSERT INTO {quoted} (data) VALUES (?)", [json.dumps(v, separators=(",", ":"))])
+
+        to_sql = _default_to_sql
+
+    def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
+        if msg[0] is MessageType.DATA:
+            value = msg[1] if len(msg) > 1 else None
+            try:
+                sql, params = to_sql(value, table)  # type: ignore[misc]
+            except Exception as err:
+                if on_transport_error is not None:
+                    on_transport_error(
+                        SinkTransportError(stage="serialize", error=err, value=value)
+                    )
+                return True
+            try:
+                db.query(sql, params)
+            except Exception as err:
+                if on_transport_error is not None:
+                    on_transport_error(SinkTransportError(stage="send", error=err, value=value))
+            return True
+        return False
+
+    effect = node(
+        [source],
+        lambda _deps, _actions: lambda: None,
+        describe_kind="effect",
+        on_message=_on_message,
+        **kwargs,
+    )
+    unsub = effect.subscribe(lambda _msgs: None)
+    return unsub
+
+
 # ---------------------------------------------------------------------------
 #  __all__
 # ---------------------------------------------------------------------------
@@ -3490,4 +3612,8 @@ __all__ = [
     "to_tempo",
     "checkpoint_to_s3",
     "checkpoint_to_redis",
+    # 5.2d -- SQLite
+    "SqliteDbLike",
+    "from_sqlite",
+    "to_sqlite",
 ]

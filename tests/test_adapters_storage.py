@@ -6,12 +6,15 @@ import json
 import time
 from typing import Any
 
+import pytest
+
 from graphrefly.core.clock import monotonic_ns
 from graphrefly.extra.adapters import (
     BufferedSinkHandle,
     SinkTransportError,
     checkpoint_to_redis,
     checkpoint_to_s3,
+    from_sqlite,
     to_clickhouse,
     to_csv,
     to_file,
@@ -19,6 +22,7 @@ from graphrefly.extra.adapters import (
     to_mongo,
     to_postgres,
     to_s3,
+    to_sqlite,
     to_tempo,
 )
 from graphrefly.extra.sources import from_iter
@@ -428,3 +432,166 @@ class TestCheckpointToRedis:
         assert len(saved) == 1
         assert saved[0]["key"] == "graphrefly:checkpoint:my-graph"
         assert json.loads(saved[0]["value"]) == {"snapshot": True}
+
+
+# ——————————————————————————————————————————————————————————————
+#  from_sqlite
+# ——————————————————————————————————————————————————————————————
+
+
+class MockSqliteDb:
+    """Mock SQLite database with a ``query`` method."""
+
+    def __init__(self, rows: list[Any] | None = None, error: Exception | None = None) -> None:
+        self.rows = rows or []
+        self.error = error
+        self.calls: list[dict[str, Any]] = []
+
+    def query(self, sql: str, params: tuple = ()) -> list[Any]:
+        self.calls.append({"sql": sql, "params": params})
+        if self.error is not None:
+            raise self.error
+        return list(self.rows)
+
+
+class TestFromSqlite:
+    def test_emits_data_per_row_then_complete(self) -> None:
+        db = MockSqliteDb(rows=[{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}])
+        source = from_sqlite(db, "SELECT * FROM users")
+        from graphrefly.extra.sources import to_list
+
+        result = to_list(source)
+        assert result == [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]
+
+    def test_passes_params(self) -> None:
+        db = MockSqliteDb(rows=[{"id": 1}])
+        source = from_sqlite(db, "SELECT * FROM users WHERE id = ?", params=(1,))
+        from graphrefly.extra.sources import to_list
+
+        to_list(source)
+        assert db.calls[0]["params"] == (1,)
+
+    def test_applies_map_row(self) -> None:
+        db = MockSqliteDb(rows=[{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}])
+        source = from_sqlite(db, "SELECT * FROM users", map_row=lambda r: r["name"])
+        from graphrefly.extra.sources import to_list
+
+        result = to_list(source)
+        assert result == ["Alice", "Bob"]
+
+    def test_error_on_throw(self) -> None:
+        db = MockSqliteDb(error=RuntimeError("db locked"))
+        source = from_sqlite(db, "SELECT 1")
+        from graphrefly.core.protocol import MessageType
+
+        errors: list[Any] = []
+
+        def sink(msgs: Any) -> None:
+            for m in msgs:
+                if m[0] is MessageType.ERROR:
+                    errors.append(m[1])
+
+        source.subscribe(sink)
+        assert len(errors) == 1
+        assert isinstance(errors[0], RuntimeError)
+        assert str(errors[0]) == "db locked"
+
+    def test_complete_with_zero_rows(self) -> None:
+        db = MockSqliteDb(rows=[])
+        source = from_sqlite(db, "SELECT * FROM empty_table")
+        from graphrefly.extra.sources import to_list
+
+        result = to_list(source)
+        assert result == []
+
+    def test_error_with_no_partial_data_when_map_row_throws(self) -> None:
+        call_count = 0
+
+        def bad_map(r: Any) -> Any:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                raise ValueError("bad row")
+            return r
+
+        db = MockSqliteDb(rows=[{"v": 1}, {"v": 2}, {"v": 3}])
+        source = from_sqlite(db, "SELECT v FROM t", map_row=bad_map)
+        from graphrefly.core.protocol import MessageType
+
+        msgs: list[Any] = []
+
+        def sink(m: Any) -> None:
+            for msg in m:
+                msgs.append(msg)
+
+        source.subscribe(sink)
+        # Pre-map: error before batch, no partial DATA
+        assert len(msgs) == 1
+        assert msgs[0][0] is MessageType.ERROR
+        assert str(msgs[0][1]) == "bad row"
+
+
+# ——————————————————————————————————————————————————————————————
+#  to_sqlite
+# ——————————————————————————————————————————————————————————————
+
+
+class TestToSqlite:
+    def test_inserts_each_value(self) -> None:
+        db = MockSqliteDb()
+        source = from_iter([{"x": 1}, {"x": 2}])
+        unsub = to_sqlite(source, db, "events")
+        assert len(db.calls) == 2
+        assert 'INSERT INTO "events"' in db.calls[0]["sql"]
+        assert db.calls[0]["params"] == ['{"x":1}']
+        assert db.calls[1]["params"] == ['{"x":2}']
+        unsub()
+
+    def test_custom_to_sql(self) -> None:
+        db = MockSqliteDb()
+        source = from_iter([42])
+
+        def custom_sql(v: Any, t: str) -> tuple[str, list[Any]]:
+            return (f'INSERT INTO "{t}" (value) VALUES (?)', [v])
+
+        unsub = to_sqlite(source, db, "numbers", to_sql=custom_sql)
+        assert db.calls[0]["sql"] == 'INSERT INTO "numbers" (value) VALUES (?)'
+        assert db.calls[0]["params"] == [42]
+        unsub()
+
+    def test_serialize_error(self) -> None:
+        errors: list[SinkTransportError] = []
+        db = MockSqliteDb()
+
+        def bad_sql(_v: Any, _t: str) -> tuple[str, list[Any]]:
+            raise ValueError("bad sql")
+
+        source = from_iter([1])
+        unsub = to_sqlite(
+            source, db, "t", to_sql=bad_sql, on_transport_error=errors.append
+        )
+        assert len(errors) == 1
+        assert errors[0].stage == "serialize"
+        unsub()
+
+    def test_send_error(self) -> None:
+        errors: list[SinkTransportError] = []
+        db = MockSqliteDb(error=RuntimeError("disk full"))
+        source = from_iter([{"a": 1}])
+        unsub = to_sqlite(source, db, "t", on_transport_error=errors.append)
+        assert len(errors) == 1
+        assert errors[0].stage == "send"
+        assert str(errors[0].error) == "disk full"
+        unsub()
+
+    def test_rejects_empty_table_name(self) -> None:
+        db = MockSqliteDb()
+        source = from_iter([1])
+        with pytest.raises(ValueError, match="invalid table name"):
+            to_sqlite(source, db, "")
+
+    def test_rejects_null_byte_in_table_name(self) -> None:
+        db = MockSqliteDb()
+        source = from_iter([1])
+        with pytest.raises(ValueError, match="invalid table name"):
+            to_sqlite(source, db, "foo\x00bar")
