@@ -2,6 +2,22 @@
 
 <!-- version list -->
 
+## v0.3.0 (2026-04-04)
+
+### Chores
+
+- Fix code pane
+  ([`a844d7f`](https://github.com/graphrefly/graphrefly-py/commit/a844d7f3e5d5a34169d67d668f0b9556888814e1))
+
+- Update readme and fix site
+  ([`dbcd4d1`](https://github.com/graphrefly/graphrefly-py/commit/dbcd4d11f878b77a3f4ab95ae359d528b1b073af))
+
+### Features
+
+- Fix website's contrast
+  ([`002ac99`](https://github.com/graphrefly/graphrefly-py/commit/002ac9988c9051bbbfc2c857a7259ff6f66e3def))
+
+
 ## v0.2.0 (2026-04-04)
 
 ### Features
