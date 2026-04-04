@@ -4,9 +4,9 @@
 
 One primitive. Zero dependencies. Composable nodes with glitch-free diamond resolution, two-phase push propagation, durable streaming, and async runners for asyncio and trio.
 
-[![PyPI](https://img.shields.io/pypi/v/graphrefly-py?color=blue)](https://pypi.org/project/graphrefly/)
+[![PyPI](https://img.shields.io/pypi/v/graphrefly?color=blue)](https://pypi.org/project/graphrefly/)
 [![license](https://img.shields.io/github/license/graphrefly/graphrefly-py)](./LICENSE)
-[![Python](https://img.shields.io/pypi/pyversions/graphrefly-py)](https://pypi.org/project/graphrefly/)
+[![Python](https://img.shields.io/pypi/pyversions/graphrefly)](https://pypi.org/project/graphrefly/)
 
 [Docs](https://py.graphrefly.dev) | [Spec](https://py.graphrefly.dev/spec/) | [TypeScript](https://graphrefly.dev) | [API Reference](https://py.graphrefly.dev/api/)
 
