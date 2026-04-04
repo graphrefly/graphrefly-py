@@ -1,5 +1,7 @@
 # Versions from conventional commits, GitHub releases + PyPI publish on main.
-# Secrets: PYPI_API_TOKEN (PyPI API token with upload scope) or configure trusted publishing separately.
+# PyPI: add a Trusted Publisher (GitHub) for this repo — workflow file must match PyPI
+# (this file: release.yml). Leave PyPI "Environment name" empty unless you add a GitHub
+# Environment (e.g. "pypi") to this job and enter the same name on PyPI.
 # python-semantic-release infers the last version from git tags; tag the current release line first
 # (e.g. v0.1.0) if it is not already tagged, so bumps continue from the right baseline.
 # Ensure GitHub Actions has workflow "Read and write" permissions (repo Settings → Actions → General).
@@ -51,8 +53,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: uv run semantic-release version
 
-      - name: Publish to PyPI
+      - name: Publish to PyPI (Trusted Publishing / OIDC)
         if: steps.psr.outputs.released == 'true'
-        env:
-          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         run: uv publish
