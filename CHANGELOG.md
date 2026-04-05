@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.5.0 (2026-04-05)
+
+### Chores
+
+- Fix mobile nav
+  ([`a372c40`](https://github.com/graphrefly/graphrefly-py/commit/a372c40274d1cd7ec57b69414ada245605177334))
+
+### Features
+
+- Address optimization items
+  ([`8911fd4`](https://github.com/graphrefly/graphrefly-py/commit/8911fd41a177fe9cfaa7e8932f24f2c2af44135a))
+
+
 ## v0.4.0 (2026-04-04)
 
 ### Features
