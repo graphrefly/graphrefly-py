@@ -119,6 +119,7 @@ class CqrsEvent:
 # Event store adapter
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True, slots=True)
 class EventStoreCursor:
     """Opaque cursor for resumable event loading."""

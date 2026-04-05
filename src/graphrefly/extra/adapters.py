@@ -1546,15 +1546,17 @@ def parse_prometheus_text(text: str) -> list[PrometheusMetric]:
         base_name = re.sub(r"(_total|_count|_sum|_bucket|_created|_info)$", "", name)
         t = types.get(base_name) or types.get(name)
         h = helps.get(base_name) or helps.get(name)
-        results.append(PrometheusMetric(
-            name=name,
-            labels=labels,
-            value=float(value_str),
-            timestamp_ns=wall_clock_ns(),
-            timestamp_ms=float(ts_str) if ts_str else None,
-            type=t,
-            help=h,
-        ))
+        results.append(
+            PrometheusMetric(
+                name=name,
+                labels=labels,
+                value=float(value_str),
+                timestamp_ns=wall_clock_ns(),
+                timestamp_ms=float(ts_str) if ts_str else None,
+                type=t,
+                help=h,
+            )
+        )
 
     return results
 
@@ -2590,9 +2592,20 @@ class RabbitMQMessage:
 
 # Known AMQP 0-9-1 BasicProperties fields (pika / spec-stable).
 _AMQP_PROPERTY_FIELDS = (
-    "content_type", "content_encoding", "headers", "delivery_mode", "priority",
-    "correlation_id", "reply_to", "expiration", "message_id", "timestamp",
-    "type", "user_id", "app_id", "cluster_id",
+    "content_type",
+    "content_encoding",
+    "headers",
+    "delivery_mode",
+    "priority",
+    "correlation_id",
+    "reply_to",
+    "expiration",
+    "message_id",
+    "timestamp",
+    "type",
+    "user_id",
+    "app_id",
+    "cluster_id",
 )
 
 
@@ -2765,6 +2778,7 @@ def to_rabbitmq(
         on_message=_on_message,
     )
     unsub = effect.subscribe(lambda _msgs: None)
+
     def dispose() -> None:
         unsub()
         with suppress(Exception):
@@ -2968,9 +2982,7 @@ def to_csv(
     def serialize_row(row: Any) -> str:
         if not header_written[0] and write_header:
             header_written[0] = True
-            header = delimiter.join(
-                _escape_csv_field(c, delimiter) for c in columns
-            )
+            header = delimiter.join(_escape_csv_field(c, delimiter) for c in columns)
             data = delimiter.join(
                 _escape_csv_field(cell_extractor(row, c), delimiter)  # type: ignore[misc]
                 for c in columns
@@ -3118,7 +3130,12 @@ class S3ClientLike(Protocol):
     """Duck-typed S3 client (compatible with boto3 ``S3.Client``)."""
 
     def put_object(  # noqa: N803
-        self, *, Bucket: str, Key: str, Body: str | bytes, ContentType: str = "",
+        self,
+        *,
+        Bucket: str,
+        Key: str,
+        Body: str | bytes,
+        ContentType: str = "",
     ) -> Any: ...
 
 
@@ -3527,9 +3544,9 @@ def checkpoint_to_s3(
     """
 
     class _Adapter:
-        def save(self, data: Any) -> None:
+        def save(self, key: str, data: Any) -> None:
             ms = wall_clock_ns() // 1_000_000
-            key = f"{prefix}{graph.name}/checkpoint-{ms}.json"
+            s3_key = f"{prefix}{graph.name}/checkpoint-{ms}.json"
             try:
                 body = json.dumps(data)
             except Exception as err:
@@ -3538,7 +3555,7 @@ def checkpoint_to_s3(
                 return
             try:
                 client.put_object(
-                    Bucket=bucket, Key=key, Body=body, ContentType="application/json"
+                    Bucket=bucket, Key=s3_key, Body=body, ContentType="application/json"
                 )
             except Exception as err:
                 if on_error is not None:
@@ -3577,7 +3594,7 @@ def checkpoint_to_redis(
     redis_key = f"{prefix}{graph.name}"
 
     class _Adapter:
-        def save(self, data: Any) -> None:
+        def save(self, key: str, data: Any) -> None:
             try:
                 body = json.dumps(data)
             except Exception as err:
@@ -3777,7 +3794,9 @@ def to_sqlite(
                 errors_node.down([(MessageType.TEARDOWN,)])
 
         return BufferedSinkHandle(
-            dispose=_batch_dispose, errors=errors_node, flush=_flush_transaction,
+            dispose=_batch_dispose,
+            errors=errors_node,
+            flush=_flush_transaction,
         )
 
     def _simple_dispose() -> None:

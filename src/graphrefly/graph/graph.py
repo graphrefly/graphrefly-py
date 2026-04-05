@@ -740,10 +740,12 @@ class Graph:
         raw = self.describe(detail="full")
         # Strip non-restorable fields (runtime attribution) so snapshot → restore → snapshot
         # is idempotent. Use describe(detail="full") for audit snapshots instead.
-        nodes_sorted = dict(sorted(
-            (p, {k: v for k, v in nd.items() if k not in ("last_mutation", "guard")})
-            for p, nd in raw["nodes"].items()
-        ))
+        nodes_sorted = dict(
+            sorted(
+                (p, {k: v for k, v in nd.items() if k not in ("last_mutation", "guard")})
+                for p, nd in raw["nodes"].items()
+            )
+        )
         subgraphs_sorted = sorted(raw["subgraphs"])
         return {
             "version": GRAPH_SNAPSHOT_VERSION,
@@ -822,11 +824,12 @@ class Graph:
                 snapshot = {**described, "version": GRAPH_SNAPSHOT_VERSION}
                 seq += 1
                 if last_describe is None or seq % compact_every == 0:
-                    adapter.save({"mode": "full", "snapshot": snapshot, "seq": seq})
+                    adapter.save(self.name, {"mode": "full", "snapshot": snapshot, "seq": seq})
                 else:
                     diff = Graph.diff(last_describe, described)
                     adapter.save(
-                        {"mode": "diff", "diff": diff.__dict__, "snapshot": snapshot, "seq": seq}
+                        self.name,
+                        {"mode": "diff", "diff": diff.__dict__, "snapshot": snapshot, "seq": seq},
                     )
                 last_describe = described
             except Exception as exc:
@@ -2037,9 +2040,7 @@ class Graph:
 
         a_edges = {(e["from"], e["to"]) for e in a.get("edges", [])}
         b_edges = {(e["from"], e["to"]) for e in b.get("edges", [])}
-        added_edges = [
-            GraphDiffEdge(from_node=f, to_node=t) for f, t in sorted(b_edges - a_edges)
-        ]
+        added_edges = [GraphDiffEdge(from_node=f, to_node=t) for f, t in sorted(b_edges - a_edges)]
         removed_edges = [
             GraphDiffEdge(from_node=f, to_node=t) for f, t in sorted(a_edges - b_edges)
         ]

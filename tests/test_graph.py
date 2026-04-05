@@ -966,7 +966,7 @@ def test_auto_checkpoint_triggers_only_for_message_tier_gte_2() -> None:
         def __init__(self) -> None:
             self.saved: list[dict[str, Any]] = []
 
-        def save(self, data: dict[str, Any]) -> None:
+        def save(self, key: str, data: dict[str, Any]) -> None:
             self.saved.append(data)
 
     g = Graph("g")

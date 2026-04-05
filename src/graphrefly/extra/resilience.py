@@ -1,7 +1,10 @@
-"""Resilience utilities — roadmap §3.1 (retry, breaker, rate limit, status companions)."""
+"""Resilience utilities — roadmap §3.1 + §3.1c (retry, breaker, rate limit, status,
+fallback, cache, timeout).
+"""
 
 from __future__ import annotations
 
+import builtins
 import math
 import threading
 from collections import deque
@@ -23,12 +26,16 @@ if TYPE_CHECKING:
 __all__ = [
     "CircuitBreaker",
     "CircuitOpenError",
+    "TimeoutError",
     "TokenBucket",
     "WithBreakerBundle",
     "WithStatusBundle",
+    "cache",
     "circuit_breaker",
+    "fallback",
     "rate_limiter",
     "retry",
+    "timeout",
     "token_bucket",
     "token_tracker",
     "with_breaker",
@@ -162,6 +169,8 @@ def retry(
                         return
                 connect()
 
+            # §5.10: threading.Timer (not from_timer) — retry delay needs cancel/restart;
+            # from_timer creates a new Node per reset, adding lifecycle overhead per retry.
             tt = threading.Timer(safe_delay, fire)
             tt.daemon = True
             tt.start()
@@ -501,7 +510,7 @@ def token_bucket(capacity: float, refill_per_second: float) -> TokenBucket:
 
 
 def token_tracker(capacity: float, refill_per_second: float) -> TokenBucket:
-    """Create a token bucket (alias for :func:`token_bucket`, kept for backward compat).
+    """Create a token bucket (alias for :func:`token_bucket`, naming parity with graphrefly-ts).
 
     Args:
         capacity: Maximum number of tokens.
@@ -578,6 +587,8 @@ def rate_limiter(source: Node[Any], max_events: int, window_ns: int) -> Node[Any
                 timer[0] = None
                 try_emit()
 
+            # §5.10: threading.Timer (not from_timer) — sliding-window
+            # needs cancel/restart; from_timer adds Node overhead per check.
             tt = threading.Timer(delay, fire)
             tt.daemon = True
             tt.start()
@@ -725,3 +736,260 @@ def with_status(
         initial=src.get(),
     )
     return WithStatusBundle(node=out, status=out.meta["status"], error=out.meta["error"])
+
+
+class TimeoutError(builtins.TimeoutError):  # noqa: A001
+    """Raised when :func:`timeout` fires before upstream delivers ``DATA``.
+
+    Subclasses the built-in :class:`builtins.TimeoutError` so ``except TimeoutError``
+    catches both GraphReFly timeouts and stdlib timeouts.
+    """
+
+    def __init__(self, timeout_ns: int) -> None:
+        super().__init__(f"Timed out after {timeout_ns / 1_000_000}ms")
+        self.timeout_ns = timeout_ns
+
+
+def fallback(source: Node[Any], fb: Any) -> Node[Any]:
+    """On upstream terminal ``ERROR``, substitute *fb*.
+
+    If *fb* is a plain value, emit ``[(DATA, fb), (COMPLETE,)]``.
+    If *fb* is a :class:`~graphrefly.core.node.Node`, subscribe to it and
+    forward its messages.
+
+    All non-``ERROR`` messages pass through unchanged.
+
+    Args:
+        source: The upstream :class:`~graphrefly.core.node.Node`.
+        fb: Fallback value or :class:`~graphrefly.core.node.Node`.
+
+    Returns:
+        A new :class:`~graphrefly.core.node.Node` with fallback logic.
+
+    Example:
+        ```python
+        from graphrefly.extra.resilience import fallback
+        from graphrefly.extra.sources import throw_error
+        n = fallback(throw_error(ValueError("boom")), 42)
+        ```
+    """
+    is_fb_node = isinstance(fb, Node)
+
+    def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
+        fb_unsub: list[Callable[[], None] | None] = [None]
+
+        unsub_holder: list[Callable[[], None] | None] = [None]
+
+        def sink(msgs: Messages) -> None:
+            for m in msgs:
+                t = m[0]
+                if t is MessageType.ERROR:
+                    if unsub_holder[0] is not None:
+                        unsub_holder[0]()  # release source subscription
+                    if is_fb_node:
+
+                        def fb_sink(fb_msgs: Messages) -> None:
+                            actions.down(list(fb_msgs))
+
+                        fb_unsub[0] = fb.subscribe(fb_sink)
+                        cur = fb.get()
+                        if cur is not None:
+                            actions.down([(MessageType.DATA, cur)])
+                    else:
+                        actions.down([(MessageType.DATA, fb), (MessageType.COMPLETE,)])
+                    return
+                if t is MessageType.TEARDOWN:
+                    if fb_unsub[0] is not None:
+                        fb_unsub[0]()
+                    actions.down([m])
+                    return
+                if t is MessageType.DATA:
+                    actions.emit(_msg_val(m))
+                else:
+                    actions.down([m])
+
+        unsub_holder[0] = source.subscribe(sink)
+        unsub = unsub_holder[0]
+
+        def cleanup() -> None:
+            unsub()
+            if fb_unsub[0] is not None:
+                fb_unsub[0]()
+
+        return cleanup
+
+    return node(
+        start,
+        describe_kind="operator",
+        complete_when_deps_complete=False,
+        initial=source.get(),
+    )
+
+
+def timeout(source: Node[Any], timeout_ns: int) -> Node[Any]:
+    """Emit ``ERROR(TimeoutError)`` if no ``DATA`` arrives within *timeout_ns*.
+
+    Timer starts on subscription and resets on each ``DATA``.
+    ``COMPLETE`` or ``ERROR`` from upstream cancel the timer.
+
+    Args:
+        source: The upstream :class:`~graphrefly.core.node.Node`.
+        timeout_ns: Timeout duration in nanoseconds.
+
+    Returns:
+        A new :class:`~graphrefly.core.node.Node` with timeout logic.
+
+    Example:
+        ```python
+        from graphrefly.extra.resilience import timeout
+        from graphrefly.extra.sources import never
+        n = timeout(never(), 50_000_000)
+        ```
+    """
+    if timeout_ns <= 0:
+        msg = "timeout_ns must be > 0"
+        raise ValueError(msg)
+
+    def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
+        timer_holder: list[threading.Timer | None] = [None]
+        timer_gen = [0]
+        done = [False]
+
+        def cancel_timer() -> None:
+            if timer_holder[0] is not None:
+                timer_holder[0].cancel()
+                timer_holder[0] = None
+
+        def arm_timer() -> None:
+            cancel_timer()
+            timer_gen[0] += 1
+            gen = timer_gen[0]
+            delay_s = timeout_ns / 1_000_000_000
+
+            def fire() -> None:
+                if gen != timer_gen[0] or done[0]:
+                    return
+                done[0] = True
+                # §5.10: threading.Timer (not from_timer) — resettable
+                # deadline; from_timer adds Node overhead per DATA reset.
+                unsub_holder[0]()
+                actions.down([(MessageType.ERROR, TimeoutError(timeout_ns))])
+
+            tt = threading.Timer(delay_s, fire)
+            tt.daemon = True
+            tt.start()
+            timer_holder[0] = tt
+
+        unsub_holder: list[Callable[[], None] | None] = [None]
+
+        def sink(msgs: Messages) -> None:
+            for m in msgs:
+                if done[0]:
+                    return
+                t = m[0]
+                if t is MessageType.DATA:
+                    arm_timer()
+                    actions.emit(_msg_val(m))
+                elif t is MessageType.COMPLETE:
+                    cancel_timer()
+                    done[0] = True
+                    actions.down([(MessageType.COMPLETE,)])
+                elif t is MessageType.ERROR:
+                    cancel_timer()
+                    done[0] = True
+                    actions.down([m])
+                elif t is MessageType.TEARDOWN:
+                    cancel_timer()
+                    done[0] = True
+                    actions.down([m])
+                    return
+                elif t is MessageType.DIRTY:
+                    actions.down([(MessageType.DIRTY,)])
+                elif t is MessageType.RESOLVED:
+                    actions.down([(MessageType.RESOLVED,)])
+                else:
+                    actions.down([m])
+
+        arm_timer()
+        unsub_holder[0] = source.subscribe(sink)
+        unsub = unsub_holder[0]
+
+        def cleanup() -> None:
+            done[0] = True
+            timer_gen[0] += 1
+            cancel_timer()
+            unsub()
+
+        return cleanup
+
+    return node(
+        start,
+        describe_kind="operator",
+        complete_when_deps_complete=False,
+        initial=source.get(),
+    )
+
+
+def cache(source: Node[Any], ttl_ns: int) -> Node[Any]:
+    """Memoize last ``DATA`` value with a TTL.
+
+    On new subscriber, if a cached value exists within TTL, replay it
+    immediately then forward live messages.
+
+    Args:
+        source: The upstream :class:`~graphrefly.core.node.Node`.
+        ttl_ns: Time-to-live in nanoseconds for the cached value.
+
+    Returns:
+        A new :class:`~graphrefly.core.node.Node` with caching logic.
+
+    Example:
+        ```python
+        from graphrefly.extra.resilience import cache
+        from graphrefly.extra.sources import of
+        n = cache(of(1), 60_000_000_000)
+        ```
+    """
+    if ttl_ns <= 0:
+        msg = "ttl_ns must be > 0"
+        raise ValueError(msg)
+
+    cached_value: list[Any] = [None]
+    cached_at: list[int] = [0]
+    has_cache = [False]
+
+    def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
+        # Replay cached value if still within TTL
+        if has_cache[0] and (monotonic_ns() - cached_at[0]) < ttl_ns:
+            actions.down([(MessageType.DATA, cached_value[0])])
+
+        def sink(msgs: Messages) -> None:
+            for m in msgs:
+                t = m[0]
+                if t is MessageType.DATA:
+                    val = _msg_val(m)
+                    cached_value[0] = val
+                    cached_at[0] = monotonic_ns()
+                    has_cache[0] = True
+                    actions.emit(val)
+                elif t is MessageType.DIRTY:
+                    actions.down([(MessageType.DIRTY,)])
+                elif t is MessageType.RESOLVED:
+                    actions.down([(MessageType.RESOLVED,)])
+                elif t is MessageType.COMPLETE:
+                    actions.down([(MessageType.COMPLETE,)])
+                elif t is MessageType.ERROR:
+                    actions.down([m])
+                else:
+                    actions.down([m])
+
+        unsub = source.subscribe(sink)
+        return unsub
+
+    return node(
+        start,
+        describe_kind="operator",
+        complete_when_deps_complete=False,
+        resubscribable=True,
+        initial=source.get(),
+    )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import tempfile
 import warnings
@@ -26,13 +27,16 @@ __all__ = [
     "save_graph_checkpoint",
 ]
 
+_SANITIZE_RE = re.compile(r"[^a-zA-Z0-9_-]")
+
 
 @runtime_checkable
 class CheckpointAdapter(Protocol):
-    """JSON-friendly snapshot persistence (single blob in / out)."""
+    """Key-value checkpoint persistence (§3.1c)."""
 
-    def save(self, data: dict[str, Any]) -> None: ...
-    def load(self) -> dict[str, Any] | None: ...
+    def save(self, key: str, data: Any) -> None: ...
+    def load(self, key: str) -> Any | None: ...
+    def clear(self, key: str) -> None: ...
 
 
 class MemoryCheckpointAdapter:
@@ -48,108 +52,122 @@ class MemoryCheckpointAdapter:
         g = Graph("g"); g.add("x", state(1))
         adapter = MemoryCheckpointAdapter()
         save_graph_checkpoint(g, adapter)
-        assert adapter.load()["nodes"]["x"]["value"] == 1
+        assert adapter.load("g")["nodes"]["x"]["value"] == 1
         ```
     """
 
-    __slots__ = ("_data",)
+    __slots__ = ("_store",)
 
     def __init__(self) -> None:
-        self._data: dict[str, Any] | None = None
+        self._store: dict[str, Any] = {}
 
-    def save(self, data: dict[str, Any]) -> None:
-        self._data = json.loads(json.dumps(data, ensure_ascii=False))
+    def save(self, key: str, data: Any) -> None:
+        self._store[key] = json.loads(json.dumps(data, ensure_ascii=False))
 
-    def load(self) -> dict[str, Any] | None:
-        return None if self._data is None else dict(self._data)
+    def load(self, key: str) -> Any | None:
+        raw = self._store.get(key)
+        return None if raw is None else dict(raw) if isinstance(raw, dict) else raw
+
+    def clear(self, key: str) -> None:
+        self._store.pop(key, None)
 
 
 class DictCheckpointAdapter:
-    """Store a checkpoint under a fixed key inside a caller-owned ``dict``.
-
-    Useful for tests or environments where you already manage a shared dict.
-
-    Args:
-        storage: The dict to store the checkpoint in.
-        key: Key under which the snapshot is stored (default ``"graphrefly_checkpoint"``).
+    """Store checkpoints by key inside a caller-owned ``dict``.
 
     Example:
         ```python
         from graphrefly.extra.checkpoint import DictCheckpointAdapter
         store = {}
         adapter = DictCheckpointAdapter(store)
-        adapter.save({"version": 1, "nodes": {}, "edges": [], "subgraphs": [], "name": "g"})
-        assert "graphrefly_checkpoint" in store
+        data = {"version": 1, "nodes": {}, "edges": [], "subgraphs": [], "name": "g"}
+        adapter.save("mykey", data)
+        assert "mykey" in store
         ```
     """
 
-    __slots__ = ("_key", "_storage")
+    __slots__ = ("_storage",)
 
-    def __init__(self, storage: dict[str, Any], *, key: str = "graphrefly_checkpoint") -> None:
+    def __init__(self, storage: dict[str, Any]) -> None:
         self._storage = storage
-        self._key = key
 
-    def save(self, data: dict[str, Any]) -> None:
-        self._storage[self._key] = json.loads(json.dumps(data, ensure_ascii=False))
+    def save(self, key: str, data: Any) -> None:
+        self._storage[key] = json.loads(json.dumps(data, ensure_ascii=False))
 
-    def load(self) -> dict[str, Any] | None:
-        raw = self._storage.get(self._key)
-        return dict(raw) if isinstance(raw, dict) else None
+    def load(self, key: str) -> Any | None:
+        raw = self._storage.get(key)
+        return None if raw is None else (dict(raw) if isinstance(raw, dict) else raw)
+
+    def clear(self, key: str) -> None:
+        self._storage.pop(key, None)
+
+
+def _sanitize_key(key: str) -> str:
+    return _SANITIZE_RE.sub(lambda m: f"%{ord(m.group()):02x}", key) + ".json"
 
 
 class FileCheckpointAdapter:
-    """Persist checkpoint data as JSON to a file using atomic write-then-replace.
+    """Persist checkpoint data as JSON files in a directory, keyed by sanitized filename.
 
     Writes to a temporary file in the same directory, then renames it over the
     target path to avoid partial writes.
 
     Args:
-        path: Destination file path (``str`` or :class:`pathlib.Path`).
+        directory: Destination directory path (``str`` or :class:`pathlib.Path`).
 
     Example:
         ```python
         import tempfile, os
         from graphrefly.extra.checkpoint import FileCheckpointAdapter
-        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
-            tmp = f.name
-        adapter = FileCheckpointAdapter(tmp)
-        adapter.save({"version": 1, "nodes": {}, "edges": [], "subgraphs": [], "name": "g"})
-        assert os.path.exists(tmp)
-        os.unlink(tmp)
+        with tempfile.TemporaryDirectory() as d:
+            adapter = FileCheckpointAdapter(d)
+            data = {"version": 1, "nodes": {}, "edges": [], "subgraphs": [], "name": "g"}
+            adapter.save("g", data)
+            assert os.path.exists(os.path.join(d, "g.json"))
         ```
     """
 
-    __slots__ = ("_path",)
+    __slots__ = ("_dir",)
 
-    def __init__(self, path: str | Path) -> None:
-        self._path = Path(path)
+    def __init__(self, directory: str | Path) -> None:
+        self._dir = Path(directory)
 
-    def save(self, data: dict[str, Any]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+    def _path_for(self, key: str) -> Path:
+        return self._dir / _sanitize_key(key)
+
+    def save(self, key: str, data: Any) -> None:
+        self._dir.mkdir(parents=True, exist_ok=True)
+        path = self._path_for(key)
         payload = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         fd, tmp = tempfile.mkstemp(
-            dir=self._path.parent,
-            prefix=f".{self._path.name}.",
+            dir=self._dir,
+            prefix=f".{path.name}.",
             suffix=".tmp",
         )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(payload)
                 f.write("\n")
-            os.replace(tmp, self._path)
+            os.replace(tmp, path)
         except BaseException:
             with suppress(FileNotFoundError):
                 os.unlink(tmp)
             raise
 
-    def load(self) -> dict[str, Any] | None:
-        if not self._path.is_file():
+    def load(self, key: str) -> Any | None:
+        path = self._path_for(key)
+        if not path.is_file():
             return None
-        text = self._path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
         if not text.strip():
             return None
         data = json.loads(text)
-        return data if isinstance(data, dict) else None
+        return data
+
+    def clear(self, key: str) -> None:
+        path = self._path_for(key)
+        with suppress(FileNotFoundError):
+            path.unlink()
 
 
 def _stable_snapshot_json(data: dict[str, Any]) -> str:
@@ -157,13 +175,12 @@ def _stable_snapshot_json(data: dict[str, Any]) -> str:
 
 
 class SqliteCheckpointAdapter:
-    """Persist one checkpoint blob under a fixed key using :mod:`sqlite3` (stdlib, zero deps).
+    """Persist checkpoint blobs by key using :mod:`sqlite3` (stdlib, zero deps).
 
-    Uses a single-row table. Call :meth:`close` when the adapter is no longer needed.
+    Uses a key-value table. Call :meth:`close` when the adapter is no longer needed.
 
     Args:
         path: Path to the SQLite database file (``str`` or :class:`pathlib.Path`).
-        key: Row key for the checkpoint (default ``"graphrefly_checkpoint"``).
 
     Example:
         ```python
@@ -172,39 +189,41 @@ class SqliteCheckpointAdapter:
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             tmp = f.name
         adapter = SqliteCheckpointAdapter(tmp)
-        adapter.save({"version": 1, "nodes": {}, "edges": [], "subgraphs": [], "name": "g"})
-        assert adapter.load()["version"] == 1
+        adapter.save("g", {"version": 1, "nodes": {}, "edges": [], "subgraphs": [], "name": "g"})
+        assert adapter.load("g")["version"] == 1
         adapter.close()
         os.unlink(tmp)
         ```
     """
 
-    __slots__ = ("_conn", "_key")
+    __slots__ = ("_conn",)
 
-    def __init__(self, path: str | Path, *, key: str = "graphrefly_checkpoint") -> None:
+    def __init__(self, path: str | Path) -> None:
         self._conn = sqlite3.connect(str(path))
-        self._key = key
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS graphrefly_checkpoint (k TEXT PRIMARY KEY, v TEXT NOT NULL)"
         )
         self._conn.commit()
 
-    def save(self, data: dict[str, Any]) -> None:
+    def save(self, key: str, data: Any) -> None:
         payload = _stable_snapshot_json(data)
         self._conn.execute(
             "INSERT OR REPLACE INTO graphrefly_checkpoint (k, v) VALUES (?, ?)",
-            (self._key, payload),
+            (key, payload),
         )
         self._conn.commit()
 
-    def load(self) -> dict[str, Any] | None:
+    def load(self, key: str) -> Any | None:
         row = self._conn.execute(
-            "SELECT v FROM graphrefly_checkpoint WHERE k = ?", (self._key,)
+            "SELECT v FROM graphrefly_checkpoint WHERE k = ?", (key,)
         ).fetchone()
         if row is None or not isinstance(row[0], str) or not row[0].strip():
             return None
-        parsed = json.loads(row[0])
-        return parsed if isinstance(parsed, dict) else None
+        return json.loads(row[0])
+
+    def clear(self, key: str) -> None:
+        self._conn.execute("DELETE FROM graphrefly_checkpoint WHERE k = ?", (key,))
+        self._conn.commit()
 
     def close(self) -> None:
         """Close the underlying SQLite connection (safe to call more than once)."""
@@ -242,7 +261,7 @@ def save_graph_checkpoint(graph: Graph, adapter: CheckpointAdapter) -> None:
     """
     snap = graph.snapshot()
     _check_json_serializable(snap)
-    adapter.save(snap)
+    adapter.save(graph.name, snap)
 
 
 def restore_graph_checkpoint(graph: Graph, adapter: CheckpointAdapter) -> bool:
@@ -274,7 +293,7 @@ def restore_graph_checkpoint(graph: Graph, adapter: CheckpointAdapter) -> bool:
         assert restored and g.get("x") == 0
         ```
     """
-    data = adapter.load()
+    data = adapter.load(graph.name)
     if data is None:
         return False
     graph.restore(data)

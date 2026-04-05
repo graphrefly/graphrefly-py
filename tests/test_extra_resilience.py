@@ -35,14 +35,21 @@ from graphrefly.extra.resilience import (
     CircuitBreaker,
     CircuitOpenError,
     TokenBucket,
+    cache,
     circuit_breaker,
+    fallback,
     rate_limiter,
     retry,
+    timeout,
     token_bucket,
     token_tracker,
     with_breaker,
     with_status,
 )
+from graphrefly.extra.resilience import (
+    TimeoutError as ResTimeoutError,
+)
+from graphrefly.extra.sources import never, of, throw_error
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -257,11 +264,11 @@ def test_memory_checkpoint_graph_round_trip() -> None:
 
 def test_dict_checkpoint_adapter() -> None:
     store: dict[str, Any] = {}
-    ad = DictCheckpointAdapter(store, key="ck")
+    ad = DictCheckpointAdapter(store)
     g = Graph("x")
     g.add("n", state("hi"))
     save_graph_checkpoint(g, ad)
-    assert "ck" in store
+    assert "x" in store
     g.set("n", "bye")
     restore_graph_checkpoint(g, ad)
     assert g.get("n") == "hi"
@@ -269,14 +276,14 @@ def test_dict_checkpoint_adapter() -> None:
 
 def test_file_checkpoint_adapter_round_trip() -> None:
     with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "c.json"
-        ad = FileCheckpointAdapter(path)
+        ad = FileCheckpointAdapter(d)
         g = Graph("fg")
         g.add("z", state({"k": 1}))
         save_graph_checkpoint(g, ad)
         g.set("z", {"k": 2})
         assert restore_graph_checkpoint(g, ad) is True
         assert g.get("z") == {"k": 1}
+        path = Path(d) / "fg.json"
         assert json.loads(path.read_text(encoding="utf-8"))["name"] == "fg"
 
 
@@ -296,6 +303,9 @@ def test_sqlite_checkpoint_adapter_round_trip() -> None:
         g2.add("z", state(0))
         assert restore_graph_checkpoint(g2, ad) is True
         assert g2.get("z") == 99
+        # Test clear
+        ad.clear("g")
+        assert ad.load("g") is None
         ad.close()
 
 
@@ -421,3 +431,135 @@ def test_resolve_decorrelated_jitter_preset() -> None:
     d = s(0, None, None)
     assert isinstance(d, int)
     assert d >= 0
+
+
+# --- fallback, timeout, cache ---
+
+
+def test_fallback_plain_value() -> None:
+    src = throw_error(ValueError("boom"))
+    n = fallback(src, 42)
+    sink: list[Messages] = []
+    n.subscribe(sink.append)
+    time.sleep(0.02)
+    vals = _values(sink)
+    assert 42 in vals
+    assert any(m[0] is MessageType.COMPLETE for b in sink for m in b)
+
+
+def test_fallback_passthrough_on_data() -> None:
+    src = of(1, 2, 3)
+    n = fallback(src, 99)
+    sink: list[Messages] = []
+    n.subscribe(sink.append)
+    time.sleep(0.02)
+    vals = _values(sink)
+    assert vals == [1, 2, 3]
+
+
+def test_fallback_node() -> None:
+    src = throw_error(ValueError("boom"))
+    fb_node = of(100)
+    n = fallback(src, fb_node)
+    sink: list[Messages] = []
+    n.subscribe(sink.append)
+    time.sleep(0.02)
+    vals = _values(sink)
+    assert 100 in vals
+
+
+def test_timeout_fires() -> None:
+    src = never()
+    n = timeout(src, 20_000_000)  # 20ms
+    sink: list[Messages] = []
+    n.subscribe(sink.append)
+    time.sleep(0.1)
+    assert any(
+        m[0] is MessageType.ERROR and isinstance(m[1], ResTimeoutError) for b in sink for m in b
+    )
+
+
+def test_timeout_resets_on_data() -> None:
+    s = state(0)
+    n = timeout(s, 80_000_000)  # 80ms
+    sink: list[Messages] = []
+    n.subscribe(sink.append)
+    time.sleep(0.03)
+    s.down([(MessageType.DATA, 1)])
+    time.sleep(0.03)
+    s.down([(MessageType.DATA, 2)])
+    time.sleep(0.03)
+    # No timeout yet - we kept resetting
+    assert not any(
+        m[0] is MessageType.ERROR and isinstance(m[1], ResTimeoutError) for b in sink for m in b
+    )
+    vals = _values(sink)
+    assert 1 in vals
+    assert 2 in vals
+
+
+def test_timeout_cancelled_by_complete() -> None:
+    src = of(1)
+    n = timeout(src, 50_000_000)
+    sink: list[Messages] = []
+    n.subscribe(sink.append)
+    time.sleep(0.1)
+    # Should have completed, no timeout error
+    assert any(m[0] is MessageType.COMPLETE for b in sink for m in b)
+    assert not any(
+        m[0] is MessageType.ERROR and isinstance(m[1], ResTimeoutError) for b in sink for m in b
+    )
+
+
+def test_cache_stores_and_replays() -> None:
+    s = state(0)
+    n = cache(s, 1_000_000_000)  # 1s TTL
+    sink: list[Messages] = []
+    n.subscribe(sink.append)
+    s.down([(MessageType.DATA, 42)])
+    time.sleep(0.02)
+    vals = _values(sink)
+    assert 42 in vals
+    # The node retains the cached value
+    assert n.get() == 42
+
+
+def test_cache_forwards_live_data() -> None:
+    s = state(0)
+    n = cache(s, 1_000_000_000)
+    sink: list[Messages] = []
+    n.subscribe(sink.append)
+    s.down([(MessageType.DATA, 1)])
+    s.down([(MessageType.DATA, 2)])
+    s.down([(MessageType.DATA, 3)])
+    time.sleep(0.02)
+    vals = _values(sink)
+    assert vals == [1, 2, 3]
+
+
+def test_timeout_range_error() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="timeout_ns must be > 0"):
+        timeout(state(0), 0)
+    with pytest.raises(ValueError, match="timeout_ns must be > 0"):
+        timeout(state(0), -1)
+
+
+def test_cache_range_error() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="ttl_ns must be > 0"):
+        cache(state(0), 0)
+    with pytest.raises(ValueError, match="ttl_ns must be > 0"):
+        cache(state(0), -1)
+
+
+def test_fallback_with_retry_composition() -> None:
+    src = throw_error(ValueError("x"))
+    n = fallback(retry(src, count=0), "safe")
+    sink: list[Messages] = []
+    n.subscribe(sink.append)
+    time.sleep(0.05)
+    vals = _values(sink)
+    assert "safe" in vals

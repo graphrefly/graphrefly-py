@@ -946,9 +946,7 @@ class TestFromRabbitMQ:
             content_type = "application/json"
 
         class MockChannel:
-            def basic_consume(
-                self, *, queue: str, on_message_callback: Any, auto_ack: bool
-            ) -> str:
+            def basic_consume(self, *, queue: str, on_message_callback: Any, auto_ack: bool) -> str:
                 # Deliver one message synchronously.
                 on_message_callback(self, MockMethod(), MockProperties(), b'{"action":"click"}')
                 done.set()
@@ -1012,9 +1010,7 @@ class TestFromRabbitMQ:
         done = threading.Event()
 
         class MockChannel:
-            def basic_consume(
-                self, *, queue: str, on_message_callback: Any, auto_ack: bool
-            ) -> str:
+            def basic_consume(self, *, queue: str, on_message_callback: Any, auto_ack: bool) -> str:
                 # Simulate broker cancellation: deliver None method.
                 on_message_callback(self, None, None, b"")
                 done.set()
@@ -1050,12 +1046,8 @@ class TestToRabbitMQ:
         published: list[Any] = []
 
         class MockChannel:
-            def basic_publish(
-                self, *, exchange: str, routing_key: str, body: bytes
-            ) -> None:
-                published.append(
-                    {"exchange": exchange, "routing_key": routing_key, "body": body}
-                )
+            def basic_publish(self, *, exchange: str, routing_key: str, body: bytes) -> None:
+                published.append({"exchange": exchange, "routing_key": routing_key, "body": body})
 
         source = from_iter(["hello"])
         handle = to_rabbitmq(source, MockChannel(), "my-exchange")
@@ -1072,12 +1064,8 @@ class TestToRabbitMQ:
         published: list[Any] = []
 
         class MockChannel:
-            def basic_publish(
-                self, *, exchange: str, routing_key: str, body: bytes
-            ) -> None:
-                published.append(
-                    {"exchange": exchange, "routing_key": routing_key, "body": body}
-                )
+            def basic_publish(self, *, exchange: str, routing_key: str, body: bytes) -> None:
+                published.append({"exchange": exchange, "routing_key": routing_key, "body": body})
 
         source = from_iter([{"type": "click", "data": "xyz"}])
         handle = to_rabbitmq(

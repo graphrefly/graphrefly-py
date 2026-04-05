@@ -101,7 +101,7 @@ def _normalize_graphs(
     if not graphs:
         raise TypeError(
             "graphrefly_lifespan() requires at least one Graph or "
-            'dict argument, e.g. graphrefly_lifespan(my_graph) or '
+            "dict argument, e.g. graphrefly_lifespan(my_graph) or "
             'graphrefly_lifespan({"main": g1}).'
         )
     if len(graphs) == 1 and isinstance(graphs[0], dict):

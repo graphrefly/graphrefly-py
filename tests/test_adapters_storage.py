@@ -89,9 +89,7 @@ class TestToFile:
             raise ValueError("bad")
 
         source = from_iter([1])
-        handle = to_file(
-            source, writer, serialize=bad_serialize, on_transport_error=errors.append
-        )
+        handle = to_file(source, writer, serialize=bad_serialize, on_transport_error=errors.append)
         assert len(errors) == 1
         assert errors[0].stage == "serialize"
         handle.dispose()
@@ -203,7 +201,11 @@ class TestToClickHouse:
             raise ValueError("bad transform")
 
         handle = to_clickhouse(
-            source, MockCH(), "t", batch_size=10, transform=bad_transform,
+            source,
+            MockCH(),
+            "t",
+            batch_size=10,
+            transform=bad_transform,
             on_transport_error=errors.append,
         )
         assert len(errors) == 1
@@ -222,13 +224,21 @@ class TestToS3:
 
         class MockS3:
             def put_object(  # noqa: N803
-                self, *, Bucket: str, Key: str, Body: str, ContentType: str = "",
+                self,
+                *,
+                Bucket: str,
+                Key: str,
+                Body: str,
+                ContentType: str = "",
             ) -> None:
                 uploads.append({"Bucket": Bucket, "Key": Key, "Body": Body})
 
         source = from_iter([{"a": 1}, {"b": 2}])
         handle = to_s3(
-            source, MockS3(), "my-bucket", batch_size=10,
+            source,
+            MockS3(),
+            "my-bucket",
+            batch_size=10,
             key_generator=lambda seq, _ts: f"batch-{seq}.ndjson",
         )
         handle.dispose()
@@ -241,13 +251,22 @@ class TestToS3:
 
         class MockS3:
             def put_object(  # noqa: N803
-                self, *, Bucket: str, Key: str, Body: str, ContentType: str = "",
+                self,
+                *,
+                Bucket: str,
+                Key: str,
+                Body: str,
+                ContentType: str = "",
             ) -> None:
                 uploads.append({"Body": Body})
 
         source = from_iter([1, 2])
         handle = to_s3(
-            source, MockS3(), "b", fmt="json", batch_size=10,
+            source,
+            MockS3(),
+            "b",
+            fmt="json",
+            batch_size=10,
             key_generator=lambda seq, _ts: f"batch-{seq}.json",
         )
         handle.dispose()
@@ -332,9 +351,7 @@ class TestToMongo:
                 docs.append(doc)
 
         source = from_iter([1, 2])
-        handle = to_mongo(
-            source, MockCollection(), to_document=lambda v: {"value": v, "ts": "now"}
-        )
+        handle = to_mongo(source, MockCollection(), to_document=lambda v: {"value": v, "ts": "now"})
         assert docs == [{"value": 1, "ts": "now"}, {"value": 2, "ts": "now"}]
         handle.dispose()
 
@@ -368,7 +385,8 @@ class TestToLoki:
 
         source = from_iter([{"level": "error", "msg": "fail"}])
         handle = to_loki(
-            source, MockLoki(),
+            source,
+            MockLoki(),
             labels={"job": "app"},
             to_line=lambda v: v["msg"],
             to_labels=lambda v: {"level": v["level"]},
@@ -409,7 +427,12 @@ class TestCheckpointToS3:
 
         class MockS3:
             def put_object(  # noqa: N803
-                self, *, Bucket: str, Key: str, Body: str, ContentType: str = "",
+                self,
+                *,
+                Bucket: str,
+                Key: str,
+                Body: str,
+                ContentType: str = "",
             ) -> None:
                 saved.append({"Bucket": Bucket, "Key": Key, "Body": Body})
 
@@ -429,7 +452,7 @@ class TestCheckpointToS3:
 
         handle = checkpoint_to_s3(MockGraph(), MockS3(), "my-bucket", prefix="cp/")
         assert hasattr(handle, "dispose")
-        saved_adapter[0].save({"snapshot": True})
+        saved_adapter[0].save("test-graph", {"snapshot": True})
         assert len(saved) == 1
         assert saved[0]["Bucket"] == "my-bucket"
         assert saved[0]["Key"].startswith("cp/test-graph/checkpoint-")
@@ -467,7 +490,7 @@ class TestCheckpointToRedis:
 
         handle = checkpoint_to_redis(MockGraph(), MockRedis())
         assert hasattr(handle, "dispose")
-        saved_adapter[0].save({"snapshot": True})
+        saved_adapter[0].save("my-graph", {"snapshot": True})
         assert len(saved) == 1
         assert saved[0]["key"] == "graphrefly:checkpoint:my-graph"
         assert json.loads(saved[0]["value"]) == {"snapshot": True}
@@ -610,9 +633,7 @@ class TestToSqlite:
             raise ValueError("bad sql")
 
         source = from_iter([1])
-        handle = to_sqlite(
-            source, db, "t", to_sql=bad_sql, on_transport_error=errors.append
-        )
+        handle = to_sqlite(source, db, "t", to_sql=bad_sql, on_transport_error=errors.append)
         assert len(errors) == 1
         assert errors[0].stage == "serialize"
         handle.dispose()
@@ -656,9 +677,7 @@ class TestToSqlite:
         # Fail on the 3rd call (second INSERT)
         db._fail_on_call = 3
         source = from_iter([1, 2, 3])
-        handle = to_sqlite(
-            source, db, "t", batch_insert=True, on_transport_error=errors.append
-        )
+        handle = to_sqlite(source, db, "t", batch_insert=True, on_transport_error=errors.append)
         sqls = [c["sql"] for c in db.calls]
         assert sqls[0] == "BEGIN"
         assert sqls[-1] == "ROLLBACK"
