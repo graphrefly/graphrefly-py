@@ -60,6 +60,8 @@ dev = [
 	"croniter>=2.0",
 	"fastapi>=0.100",
 	"httpx>=0.24",
+	"pillow>=12.2.0",
+	"trio>=0.33.0",
 ]
 
 [tool.semantic_release]

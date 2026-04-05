@@ -9,6 +9,7 @@ from __future__ import annotations
 import inspect
 import json
 import math
+import re as _re
 import threading
 from collections.abc import AsyncIterable
 from dataclasses import dataclass, field
@@ -675,9 +676,7 @@ def admission_filter_3d(
             return False
         if scores.personal_value < personal_value_threshold:
             return False
-        if require_structured and scores.structure <= 0:
-            return False
-        return True
+        return not (require_structured and scores.structure <= 0)
 
     return _filter
 
@@ -1832,8 +1831,6 @@ def validate_graph_def(definition: Any) -> GraphDefValidation:
 # ---------------------------------------------------------------------------
 # graphFromSpec
 # ---------------------------------------------------------------------------
-
-import re as _re
 
 _FENCE_PATTERN = _re.compile(r"^```(?:json)?\s*([\s\S]*?)\s*```[\s\S]*$")
 

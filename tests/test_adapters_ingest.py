@@ -325,10 +325,10 @@ class TestToKafka:
 
         source = from_iter([1, 2, 3])
         producer = MockProducer()
-        unsub = to_kafka(source, producer, "output")
+        handle = to_kafka(source, producer, "output")
 
         _wait_for(lambda: len(sent) >= 3)
-        unsub()
+        handle.dispose()
 
         assert len(sent) == 3
         assert sent[0]["topic"] == "output"
@@ -389,10 +389,10 @@ class TestToRedisStream:
 
         source = from_iter(["hello", "world"])
         client = MockRedis()
-        unsub = to_redis_stream(source, client, "mystream")
+        handle = to_redis_stream(source, client, "mystream")
 
         _wait_for(lambda: len(added) >= 2)
-        unsub()
+        handle.dispose()
 
         assert len(added) == 2
         assert added[0]["name"] == "mystream"
@@ -694,10 +694,10 @@ class TestToPulsar:
                 sent.append({"data": data, **kwargs})
 
         source = from_iter([1, 2])
-        unsub = to_pulsar(source, MockProducer())
+        handle = to_pulsar(source, MockProducer())
 
         _wait_for(lambda: len(sent) >= 2)
-        unsub()
+        handle.dispose()
 
         assert len(sent) == 2
         assert json.loads(sent[0]["data"]) == 1
@@ -916,10 +916,10 @@ class TestToNATS:
                 published.append({"subject": subject, "data": data})
 
         source = from_iter(["hello"])
-        unsub = to_nats(source, MockClient(), "events.out")
+        handle = to_nats(source, MockClient(), "events.out")
 
         _wait_for(lambda: len(published) >= 1)
-        unsub()
+        handle.dispose()
 
         assert len(published) == 1
         assert published[0]["subject"] == "events.out"
@@ -1058,10 +1058,10 @@ class TestToRabbitMQ:
                 )
 
         source = from_iter(["hello"])
-        unsub = to_rabbitmq(source, MockChannel(), "my-exchange")
+        handle = to_rabbitmq(source, MockChannel(), "my-exchange")
 
         _wait_for(lambda: len(published) >= 1)
-        unsub()
+        handle.dispose()
 
         assert len(published) == 1
         assert published[0]["exchange"] == "my-exchange"
@@ -1080,7 +1080,7 @@ class TestToRabbitMQ:
                 )
 
         source = from_iter([{"type": "click", "data": "xyz"}])
-        unsub = to_rabbitmq(
+        handle = to_rabbitmq(
             source,
             MockChannel(),
             "events",
@@ -1088,6 +1088,6 @@ class TestToRabbitMQ:
         )
 
         _wait_for(lambda: len(published) >= 1)
-        unsub()
+        handle.dispose()
 
         assert published[0]["routing_key"] == "click"

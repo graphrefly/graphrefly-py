@@ -22,19 +22,20 @@ import os
 import re
 import threading
 import urllib.error
-from collections.abc import AsyncIterable as ABCAsyncIterable
 import urllib.request
+from collections.abc import AsyncIterable as ABCAsyncIterable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
 
 from graphrefly.core.clock import wall_clock_ns
 from graphrefly.core.node import Node, NodeActions, node
-from graphrefly.core.protocol import Messages, MessageType, batch
+from graphrefly.core.protocol import Messages, MessageType, batch, message_tier
+from graphrefly.core.sugar import state
 from graphrefly.extra.resilience import WithStatusBundle, with_status
 
 
@@ -47,9 +48,42 @@ def _msg_val(m: tuple[Any, ...]) -> Any:
 class SinkTransportError:
     """Error context for sink transport failures (to_kafka, to_redis_stream)."""
 
-    stage: str
+    stage: Literal["serialize", "send", "routing_key"]
     error: Exception
     value: Any
+
+
+@dataclass
+class SinkHandle:
+    """Unified return type for per-record sinks.
+
+    ``dispose()`` stops the sink (unsubscribes from source).
+    ``errors`` is a reactive :class:`~graphrefly.core.node.Node` that emits the
+    latest transport error (or ``None``).
+    """
+
+    dispose: Callable[[], None]
+    errors: Node[SinkTransportError | None]
+
+
+def _create_sink_error_handler(
+    user_handler: Callable[[SinkTransportError], None] | None,
+) -> tuple[Node[SinkTransportError | None], Callable[[SinkTransportError], None]]:
+    """Create an errors state node and a handler that writes to it.
+
+    If the user supplied their own ``on_transport_error``, it is called first;
+    the error is always forwarded to the companion node.
+    """
+    errors_node: Node[SinkTransportError | None] = state(None)
+
+    def handler(err: SinkTransportError) -> None:
+        if user_handler is not None:
+            user_handler(err)
+        # setting error state during batch drain may re-enter; swallow
+        with suppress(Exception):
+            errors_node.down([(MessageType.DATA, err)])
+
+    return errors_node, handler
 
 
 # ---------------------------------------------------------------------------
@@ -1702,10 +1736,10 @@ def to_kafka(
     serialize: Callable[[Any], Any] | None = None,
     key_extractor: Callable[[Any], str | None] | None = None,
     on_transport_error: Callable[[SinkTransportError], None] | None = None,
-) -> Callable[[], None]:
+) -> SinkHandle:
     """Kafka producer sink -- forwards upstream ``DATA`` to a Kafka topic.
 
-    Auto-subscribes and returns an unsubscribe function.
+    Auto-subscribes and returns a :class:`SinkHandle`.
 
     Args:
         source: Upstream node to forward.
@@ -1717,10 +1751,12 @@ def to_kafka(
             :class:`SinkTransportError` with ``stage``, ``error``, and ``value``.
 
     Returns:
-        An unsubscribe ``Callable[[], None]`` to tear down the sink.
+        A :class:`SinkHandle` with ``dispose()`` and ``errors``.
     """
     if serialize is None:
         serialize = json.dumps
+
+    errors_node, handler = _create_sink_error_handler(on_transport_error)
 
     def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
         if msg[0] is MessageType.DATA:
@@ -1729,16 +1765,12 @@ def to_kafka(
             try:
                 serialized = serialize(value)
             except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(
-                        SinkTransportError(stage="serialize", error=err, value=value)
-                    )
+                handler(SinkTransportError(stage="serialize", error=err, value=value))
                 return True
             try:
                 producer.send(topic, key=key, value=serialized)
             except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(SinkTransportError(stage="send", error=err, value=value))
+                handler(SinkTransportError(stage="send", error=err, value=value))
             return True
         return False
 
@@ -1749,7 +1781,13 @@ def to_kafka(
         on_message=_on_message,
     )
     unsub = effect.subscribe(lambda _msgs: None)
-    return unsub
+
+    def dispose() -> None:
+        unsub()
+        with suppress(Exception):
+            errors_node.down([(MessageType.TEARDOWN,)])
+
+    return SinkHandle(dispose=dispose, errors=errors_node)
 
 
 # ---------------------------------------------------------------------------
@@ -1850,10 +1888,10 @@ def to_redis_stream(
     serialize: Callable[[Any], dict[str, str]] | None = None,
     max_len: int | None = None,
     on_transport_error: Callable[[SinkTransportError], None] | None = None,
-) -> Callable[[], None]:
+) -> SinkHandle:
     """Redis Streams producer sink -- forwards upstream ``DATA`` to a Redis stream.
 
-    Auto-subscribes and returns an unsubscribe function.
+    Auto-subscribes and returns a :class:`SinkHandle`.
 
     Args:
         source: Upstream node to forward.
@@ -1866,7 +1904,7 @@ def to_redis_stream(
             :class:`SinkTransportError` with ``stage``, ``error``, and ``value``.
 
     Returns:
-        An unsubscribe ``Callable[[], None]`` to tear down the sink.
+        A :class:`SinkHandle` with ``dispose()`` and ``errors``.
     """
     if serialize is None:
 
@@ -1875,16 +1913,15 @@ def to_redis_stream(
 
         serialize = _default_serialize
 
+    errors_node, handler = _create_sink_error_handler(on_transport_error)
+
     def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
         if msg[0] is MessageType.DATA:
             value = msg[1] if len(msg) > 1 else None
             try:
                 fields = serialize(value)
             except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(
-                        SinkTransportError(stage="serialize", error=err, value=value)
-                    )
+                handler(SinkTransportError(stage="serialize", error=err, value=value))
                 return True
             try:
                 xadd_kwargs: dict[str, Any] = {}
@@ -1892,8 +1929,7 @@ def to_redis_stream(
                     xadd_kwargs["maxlen"] = max_len
                 client.xadd(key, fields, **xadd_kwargs)
             except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(SinkTransportError(stage="send", error=err, value=value))
+                handler(SinkTransportError(stage="send", error=err, value=value))
             return True
         return False
 
@@ -1904,7 +1940,13 @@ def to_redis_stream(
         on_message=_on_message,
     )
     unsub = effect.subscribe(lambda _msgs: None)
-    return unsub
+
+    def dispose() -> None:
+        unsub()
+        with suppress(Exception):
+            errors_node.down([(MessageType.TEARDOWN,)])
+
+    return SinkHandle(dispose=dispose, errors=errors_node)
 
 
 # ---------------------------------------------------------------------------
@@ -2207,10 +2249,10 @@ def to_pulsar(
     key_extractor: Callable[[Any], str | None] | None = None,
     properties_extractor: Callable[[Any], dict[str, str] | None] | None = None,
     on_transport_error: Callable[[SinkTransportError], None] | None = None,
-) -> Callable[[], None]:
+) -> SinkHandle:
     """Pulsar producer sink -- forwards upstream ``DATA`` to a Pulsar topic.
 
-    Auto-subscribes and returns an unsubscribe function.
+    Auto-subscribes and returns a :class:`SinkHandle`.
 
     Args:
         source: Upstream node to forward.
@@ -2221,7 +2263,7 @@ def to_pulsar(
         on_transport_error: Optional callback for transport errors.
 
     Returns:
-        An unsubscribe ``Callable[[], None]`` to tear down the sink.
+        A :class:`SinkHandle` with ``dispose()`` and ``errors``.
     """
     if serialize is None:
 
@@ -2229,6 +2271,8 @@ def to_pulsar(
             return json.dumps(v).encode("utf-8")
 
         serialize = _default_serialize
+
+    errors_node, handler = _create_sink_error_handler(on_transport_error)
 
     def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
         if msg[0] is MessageType.DATA:
@@ -2238,10 +2282,7 @@ def to_pulsar(
             try:
                 data = serialize(value)
             except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(
-                        SinkTransportError(stage="serialize", error=err, value=value)
-                    )
+                handler(SinkTransportError(stage="serialize", error=err, value=value))
                 return True
             try:
                 send_kwargs: dict[str, Any] = {}
@@ -2251,8 +2292,7 @@ def to_pulsar(
                     send_kwargs["properties"] = props
                 producer_inst.send(data, **send_kwargs)
             except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(SinkTransportError(stage="send", error=err, value=value))
+                handler(SinkTransportError(stage="send", error=err, value=value))
             return True
         return False
 
@@ -2263,7 +2303,13 @@ def to_pulsar(
         on_message=_on_message,
     )
     unsub = effect.subscribe(lambda _msgs: None)
-    return unsub
+
+    def dispose() -> None:
+        unsub()
+        with suppress(Exception):
+            errors_node.down([(MessageType.TEARDOWN,)])
+
+    return SinkHandle(dispose=dispose, errors=errors_node)
 
 
 # ---------------------------------------------------------------------------
@@ -2275,7 +2321,7 @@ def _nats_msg_to_dict(msg: Any, deserialize: Callable[[bytes], Any]) -> dict[str
     """Extract structured fields from a NATS message (sync or async client)."""
     headers: dict[str, str] = {}
     if hasattr(msg, "headers") and msg.headers is not None:
-        for k in msg.headers.keys():
+        for k in msg.headers:
             headers[k] = msg.headers[k]
     return {
         "subject": msg.subject,
@@ -2328,7 +2374,11 @@ def from_nats(
     if deserialize is None:
 
         def _default_deserialize(data: bytes) -> Any:
-            raw = data.decode("utf-8", errors="replace") if isinstance(data, (bytes, bytearray)) else str(data)
+            raw = (
+                data.decode("utf-8", errors="replace")
+                if isinstance(data, (bytes, bytearray))
+                else str(data)
+            )
             try:
                 return json.loads(raw)
             except (json.JSONDecodeError, ValueError):
@@ -2410,10 +2460,10 @@ def to_nats(
     *,
     serialize: Callable[[Any], bytes] | None = None,
     on_transport_error: Callable[[SinkTransportError], None] | None = None,
-) -> Callable[[], None]:
+) -> SinkHandle:
     """NATS publisher sink -- forwards upstream ``DATA`` to a NATS subject.
 
-    Auto-subscribes and returns an unsubscribe function.
+    Auto-subscribes and returns a :class:`SinkHandle`.
 
     Args:
         source: Upstream node to forward.
@@ -2423,7 +2473,7 @@ def to_nats(
         on_transport_error: Optional callback for transport errors.
 
     Returns:
-        An unsubscribe ``Callable[[], None]`` to tear down the sink.
+        A :class:`SinkHandle` with ``dispose()`` and ``errors``.
     """
     if serialize is None:
 
@@ -2432,22 +2482,20 @@ def to_nats(
 
         serialize = _default_serialize
 
+    errors_node, handler = _create_sink_error_handler(on_transport_error)
+
     def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
         if msg[0] is MessageType.DATA:
             value = msg[1] if len(msg) > 1 else None
             try:
                 data = serialize(value)
             except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(
-                        SinkTransportError(stage="serialize", error=err, value=value)
-                    )
+                handler(SinkTransportError(stage="serialize", error=err, value=value))
                 return True
             try:
                 client.publish(subject, data)
             except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(SinkTransportError(stage="send", error=err, value=value))
+                handler(SinkTransportError(stage="send", error=err, value=value))
             return True
         return False
 
@@ -2458,7 +2506,13 @@ def to_nats(
         on_message=_on_message,
     )
     unsub = effect.subscribe(lambda _msgs: None)
-    return unsub
+
+    def dispose() -> None:
+        unsub()
+        with suppress(Exception):
+            errors_node.down([(MessageType.TEARDOWN,)])
+
+    return SinkHandle(dispose=dispose, errors=errors_node)
 
 
 # ---------------------------------------------------------------------------
@@ -2510,7 +2564,11 @@ def from_rabbitmq(
     if deserialize is None:
 
         def _default_deserialize(body: bytes) -> Any:
-            raw = body.decode("utf-8", errors="replace") if isinstance(body, (bytes, bytearray)) else str(body)
+            raw = (
+                body.decode("utf-8", errors="replace")
+                if isinstance(body, (bytes, bytearray))
+                else str(body)
+            )
             try:
                 return json.loads(raw)
             except (json.JSONDecodeError, ValueError):
@@ -2528,7 +2586,8 @@ def from_rabbitmq(
             if method is None:
                 # Broker cancelled the consumer (queue deleted, etc.).
                 if active[0]:
-                    actions.down([(MessageType.ERROR, RuntimeError("Consumer cancelled by broker"))])
+                    err = RuntimeError("Consumer cancelled by broker")
+                    actions.down([(MessageType.ERROR, err)])
                 return
             actions.emit(
                 {
@@ -2582,10 +2641,10 @@ def to_rabbitmq(
     serialize: Callable[[Any], bytes] | None = None,
     routing_key_extractor: Callable[[Any], str] | None = None,
     on_transport_error: Callable[[SinkTransportError], None] | None = None,
-) -> Callable[[], None]:
+) -> SinkHandle:
     """RabbitMQ producer sink -- forwards upstream ``DATA`` to a RabbitMQ exchange.
 
-    Auto-subscribes and returns an unsubscribe function.
+    Auto-subscribes and returns a :class:`SinkHandle`.
 
     Args:
         source: Upstream node to forward.
@@ -2597,7 +2656,7 @@ def to_rabbitmq(
         on_transport_error: Optional callback for transport errors.
 
     Returns:
-        An unsubscribe ``Callable[[], None]`` to tear down the sink.
+        A :class:`SinkHandle` with ``dispose()`` and ``errors``.
     """
     if serialize is None:
 
@@ -2608,30 +2667,25 @@ def to_rabbitmq(
     if routing_key_extractor is None:
         routing_key_extractor = lambda _v: ""  # noqa: E731
 
+    errors_node, handler = _create_sink_error_handler(on_transport_error)
+
     def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
         if msg[0] is MessageType.DATA:
             value = msg[1] if len(msg) > 1 else None
             try:
                 rk = routing_key_extractor(value)  # type: ignore[misc]
             except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(
-                        SinkTransportError(stage="routing_key", error=err, value=value)
-                    )
+                handler(SinkTransportError(stage="routing_key", error=err, value=value))
                 return True
             try:
                 body = serialize(value)  # type: ignore[misc]
             except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(
-                        SinkTransportError(stage="serialize", error=err, value=value)
-                    )
+                handler(SinkTransportError(stage="serialize", error=err, value=value))
                 return True
             try:
                 channel.basic_publish(exchange=exchange, routing_key=rk, body=body)
             except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(SinkTransportError(stage="send", error=err, value=value))
+                handler(SinkTransportError(stage="send", error=err, value=value))
             return True
         return False
 
@@ -2642,7 +2696,12 @@ def to_rabbitmq(
         on_message=_on_message,
     )
     unsub = effect.subscribe(lambda _msgs: None)
-    return unsub
+    def dispose() -> None:
+        unsub()
+        with suppress(Exception):
+            errors_node.down([(MessageType.TEARDOWN,)])
+
+    return SinkHandle(dispose=dispose, errors=errors_node)
 
 
 # ---------------------------------------------------------------------------
@@ -2652,9 +2711,15 @@ def to_rabbitmq(
 
 @dataclass
 class BufferedSinkHandle:
-    """Handle returned by buffered sinks. ``flush()`` drains remaining buffer."""
+    """Handle returned by buffered sinks. ``flush()`` drains remaining buffer.
+
+    Extends :class:`SinkHandle` semantics: ``dispose()`` stops the sink,
+    ``errors`` is a reactive node with the latest transport error, and
+    ``flush()`` manually drains the internal buffer.
+    """
 
     dispose: Callable[[], None]
+    errors: Node[SinkTransportError | None]
     flush: Callable[[], None]
 
 
@@ -2701,6 +2766,8 @@ def to_file(
 
         serialize = _default_serialize
 
+    errors_node, handler = _create_sink_error_handler(on_transport_error)
+
     buffer: list[str] = []
     timer_handle: list[Any] = [None]
     lock = threading.Lock()
@@ -2715,18 +2782,26 @@ def to_file(
         try:
             writer.write(chunk)
         except Exception as err:
-            if on_transport_error is not None:
-                on_transport_error(SinkTransportError(stage="send", error=err, value=chunk))
+            handler(SinkTransportError(stage="send", error=err, value=chunk))
 
     def schedule_flush() -> None:
-        if flush_interval_ms > 0 and timer_handle[0] is None:
-            t = threading.Timer(flush_interval_ms / 1000.0, _timer_fire)
-            t.daemon = True
-            t.start()
-            timer_handle[0] = t
+        with lock:
+            if flush_interval_ms > 0 and timer_handle[0] is None:
+                t = threading.Timer(flush_interval_ms / 1000.0, _timer_fire)
+                t.daemon = True
+                t.start()
+                timer_handle[0] = t
+
+    def _cancel_timer() -> None:
+        with lock:
+            t = timer_handle[0]
+            if t is not None:
+                t.cancel()
+                timer_handle[0] = None
 
     def _timer_fire() -> None:
-        timer_handle[0] = None
+        with lock:
+            timer_handle[0] = None
         do_flush()
 
     def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
@@ -2735,10 +2810,7 @@ def to_file(
             try:
                 line = serialize(value)  # type: ignore[misc]
             except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(
-                        SinkTransportError(stage="serialize", error=err, value=value)
-                    )
+                handler(SinkTransportError(stage="serialize", error=err, value=value))
                 return True
             if buffered:
                 with lock:
@@ -2752,12 +2824,9 @@ def to_file(
                 try:
                     writer.write(line)
                 except Exception as err:
-                    if on_transport_error is not None:
-                        on_transport_error(
-                            SinkTransportError(stage="send", error=err, value=value)
-                        )
+                    handler(SinkTransportError(stage="send", error=err, value=value))
             return True
-        if msg[0] is MessageType.COMPLETE or msg[0] is MessageType.TEARDOWN:
+        if message_tier(msg[0]) >= 3:
             do_flush()
         return False
 
@@ -2770,15 +2839,14 @@ def to_file(
     unsub = effect.subscribe(lambda _msgs: None)
 
     def dispose() -> None:
-        t = timer_handle[0]
-        if t is not None:
-            t.cancel()
-            timer_handle[0] = None
+        _cancel_timer()
         do_flush()
         writer.close()
         unsub()
+        with suppress(Exception):
+            errors_node.down([(MessageType.TEARDOWN,)])
 
-    return BufferedSinkHandle(dispose=dispose, flush=do_flush)
+    return BufferedSinkHandle(dispose=dispose, errors=errors_node, flush=do_flush)
 
 
 # ——— to_csv ———
@@ -2898,6 +2966,8 @@ def to_clickhouse(
     if transform is None:
         transform = lambda v: v  # noqa: E731
 
+    errors_node, handler = _create_sink_error_handler(on_transport_error)
+
     buffer: list[Any] = []
     timer_handle: list[Any] = [None]
     lock = threading.Lock()
@@ -2911,20 +2981,26 @@ def to_clickhouse(
         try:
             client.insert(table, batch_data, fmt=fmt)
         except Exception as err:
-            if on_transport_error is not None:
-                on_transport_error(
-                    SinkTransportError(stage="send", error=err, value=batch_data)
-                )
+            handler(SinkTransportError(stage="send", error=err, value=batch_data))
 
     def schedule_flush() -> None:
-        if timer_handle[0] is None:
-            t = threading.Timer(flush_interval_ms / 1000.0, _timer_fire)
-            t.daemon = True
-            t.start()
-            timer_handle[0] = t
+        with lock:
+            if timer_handle[0] is None:
+                t = threading.Timer(flush_interval_ms / 1000.0, _timer_fire)
+                t.daemon = True
+                t.start()
+                timer_handle[0] = t
+
+    def _cancel_timer() -> None:
+        with lock:
+            t = timer_handle[0]
+            if t is not None:
+                t.cancel()
+                timer_handle[0] = None
 
     def _timer_fire() -> None:
-        timer_handle[0] = None
+        with lock:
+            timer_handle[0] = None
         do_flush()
 
     def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
@@ -2933,10 +3009,7 @@ def to_clickhouse(
             try:
                 transformed = transform(value)  # type: ignore[misc]
             except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(
-                        SinkTransportError(stage="serialize", error=err, value=value)
-                    )
+                handler(SinkTransportError(stage="serialize", error=err, value=value))
                 return True
             with lock:
                 buffer.append(transformed)
@@ -2946,7 +3019,7 @@ def to_clickhouse(
             else:
                 schedule_flush()
             return True
-        if msg[0] is MessageType.COMPLETE or msg[0] is MessageType.TEARDOWN:
+        if message_tier(msg[0]) >= 3:
             do_flush()
         return False
 
@@ -2959,14 +3032,13 @@ def to_clickhouse(
     unsub = effect.subscribe(lambda _msgs: None)
 
     def dispose() -> None:
-        t = timer_handle[0]
-        if t is not None:
-            t.cancel()
-            timer_handle[0] = None
+        _cancel_timer()
         do_flush()
         unsub()
+        with suppress(Exception):
+            errors_node.down([(MessageType.TEARDOWN,)])
 
-    return BufferedSinkHandle(dispose=dispose, flush=do_flush)
+    return BufferedSinkHandle(dispose=dispose, errors=errors_node, flush=do_flush)
 
 
 # ——— to_s3 ———
@@ -2976,7 +3048,9 @@ def to_clickhouse(
 class S3ClientLike(Protocol):
     """Duck-typed S3 client (compatible with boto3 ``S3.Client``)."""
 
-    def put_object(self, *, Bucket: str, Key: str, Body: str | bytes, ContentType: str = "") -> Any: ...  # noqa: N803
+    def put_object(  # noqa: N803
+        self, *, Bucket: str, Key: str, Body: str | bytes, ContentType: str = "",
+    ) -> Any: ...
 
 
 def to_s3(
@@ -3013,11 +3087,14 @@ def to_s3(
 
         def _default_key_gen(seq: int, ts_ns: int) -> str:
             ms = ts_ns // 1_000_000
-            ts = datetime.fromtimestamp(ms / 1000.0, tz=UTC).isoformat().replace(":", "-").replace(".", "-")
+            iso = datetime.fromtimestamp(ms / 1000.0, tz=UTC).isoformat()
+            ts = iso.replace(":", "-").replace(".", "-")
             ext = "ndjson" if fmt == "ndjson" else "json"
             return f"data/{ts}-{seq}.{ext}"
 
         key_generator = _default_key_gen
+
+    errors_node, handler = _create_sink_error_handler(on_transport_error)
 
     buffer: list[Any] = []
     timer_handle: list[Any] = [None]
@@ -3030,31 +3107,38 @@ def to_s3(
                 return
             batch_data = list(buffer)
             buffer.clear()
-        seq_counter[0] += 1
+            seq_counter[0] += 1
+            seq = seq_counter[0]
         if fmt == "ndjson":
             body = "\n".join(json.dumps(v) for v in batch_data) + "\n"
             content_type = "application/x-ndjson"
         else:
             body = json.dumps(batch_data)
             content_type = "application/json"
-        key = key_generator(seq_counter[0], wall_clock_ns())  # type: ignore[misc]
+        key = key_generator(seq, wall_clock_ns())  # type: ignore[misc]
         try:
             client.put_object(Bucket=bucket, Key=key, Body=body, ContentType=content_type)
         except Exception as err:
-            if on_transport_error is not None:
-                on_transport_error(
-                    SinkTransportError(stage="send", error=err, value=batch_data)
-                )
+            handler(SinkTransportError(stage="send", error=err, value=batch_data))
 
     def schedule_flush() -> None:
-        if timer_handle[0] is None:
-            t = threading.Timer(flush_interval_ms / 1000.0, _timer_fire)
-            t.daemon = True
-            t.start()
-            timer_handle[0] = t
+        with lock:
+            if timer_handle[0] is None:
+                t = threading.Timer(flush_interval_ms / 1000.0, _timer_fire)
+                t.daemon = True
+                t.start()
+                timer_handle[0] = t
+
+    def _cancel_timer() -> None:
+        with lock:
+            t = timer_handle[0]
+            if t is not None:
+                t.cancel()
+                timer_handle[0] = None
 
     def _timer_fire() -> None:
-        timer_handle[0] = None
+        with lock:
+            timer_handle[0] = None
         do_flush()
 
     def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
@@ -3063,10 +3147,7 @@ def to_s3(
             try:
                 transformed = transform(value)  # type: ignore[misc]
             except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(
-                        SinkTransportError(stage="serialize", error=err, value=value)
-                    )
+                handler(SinkTransportError(stage="serialize", error=err, value=value))
                 return True
             with lock:
                 buffer.append(transformed)
@@ -3076,7 +3157,7 @@ def to_s3(
             else:
                 schedule_flush()
             return True
-        if msg[0] is MessageType.COMPLETE or msg[0] is MessageType.TEARDOWN:
+        if message_tier(msg[0]) >= 3:
             do_flush()
         return False
 
@@ -3089,14 +3170,13 @@ def to_s3(
     unsub = effect.subscribe(lambda _msgs: None)
 
     def dispose() -> None:
-        t = timer_handle[0]
-        if t is not None:
-            t.cancel()
-            timer_handle[0] = None
+        _cancel_timer()
         do_flush()
         unsub()
+        with suppress(Exception):
+            errors_node.down([(MessageType.TEARDOWN,)])
 
-    return BufferedSinkHandle(dispose=dispose, flush=do_flush)
+    return BufferedSinkHandle(dispose=dispose, errors=errors_node, flush=do_flush)
 
 
 # ——— to_postgres ———
@@ -3109,7 +3189,7 @@ def to_postgres(
     *,
     to_sql: Callable[[Any, str], tuple[str, list[Any]]] | None = None,
     on_transport_error: Callable[[SinkTransportError], None] | None = None,
-) -> Callable[[], None]:
+) -> SinkHandle:
     """PostgreSQL sink -- inserts each upstream ``DATA`` value as a row.
 
     Args:
@@ -3120,7 +3200,7 @@ def to_postgres(
         on_transport_error: Optional callback for transport errors.
 
     Returns:
-        An unsubscribe ``Callable[[], None]``.
+        A :class:`SinkHandle` with ``dispose()`` and ``errors``.
     """
     if to_sql is None:
 
@@ -3130,7 +3210,9 @@ def to_postgres(
 
         to_sql = _default_to_sql
 
-    _query = getattr(client, "query", None) or getattr(client, "execute")
+    _query = getattr(client, "query", None) or client.execute
+
+    errors_node, handler = _create_sink_error_handler(on_transport_error)
 
     def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
         if msg[0] is MessageType.DATA:
@@ -3138,16 +3220,12 @@ def to_postgres(
             try:
                 sql, params = to_sql(value, table)  # type: ignore[misc]
             except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(
-                        SinkTransportError(stage="serialize", error=err, value=value)
-                    )
+                handler(SinkTransportError(stage="serialize", error=err, value=value))
                 return True
             try:
                 _query(sql, params)
             except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(SinkTransportError(stage="send", error=err, value=value))
+                handler(SinkTransportError(stage="send", error=err, value=value))
             return True
         return False
 
@@ -3158,7 +3236,13 @@ def to_postgres(
         on_message=_on_message,
     )
     unsub = effect.subscribe(lambda _msgs: None)
-    return unsub
+
+    def dispose() -> None:
+        unsub()
+        with suppress(Exception):
+            errors_node.down([(MessageType.TEARDOWN,)])
+
+    return SinkHandle(dispose=dispose, errors=errors_node)
 
 
 # ——— to_mongo ———
@@ -3170,7 +3254,7 @@ def to_mongo(
     *,
     to_document: Callable[[Any], Any] | None = None,
     on_transport_error: Callable[[SinkTransportError], None] | None = None,
-) -> Callable[[], None]:
+) -> SinkHandle:
     """MongoDB sink -- inserts each upstream ``DATA`` value as a document.
 
     Args:
@@ -3180,10 +3264,12 @@ def to_mongo(
         on_transport_error: Optional callback for transport errors.
 
     Returns:
-        An unsubscribe ``Callable[[], None]``.
+        A :class:`SinkHandle` with ``dispose()`` and ``errors``.
     """
     if to_document is None:
         to_document = lambda v: v  # noqa: E731
+
+    errors_node, handler = _create_sink_error_handler(on_transport_error)
 
     def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
         if msg[0] is MessageType.DATA:
@@ -3191,16 +3277,12 @@ def to_mongo(
             try:
                 doc = to_document(value)  # type: ignore[misc]
             except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(
-                        SinkTransportError(stage="serialize", error=err, value=value)
-                    )
+                handler(SinkTransportError(stage="serialize", error=err, value=value))
                 return True
             try:
                 collection.insert_one(doc)
             except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(SinkTransportError(stage="send", error=err, value=value))
+                handler(SinkTransportError(stage="send", error=err, value=value))
             return True
         return False
 
@@ -3211,7 +3293,13 @@ def to_mongo(
         on_message=_on_message,
     )
     unsub = effect.subscribe(lambda _msgs: None)
-    return unsub
+
+    def dispose() -> None:
+        unsub()
+        with suppress(Exception):
+            errors_node.down([(MessageType.TEARDOWN,)])
+
+    return SinkHandle(dispose=dispose, errors=errors_node)
 
 
 # ——— to_loki ———
@@ -3225,7 +3313,7 @@ def to_loki(
     to_line: Callable[[Any], str] | None = None,
     to_labels: Callable[[Any], dict[str, str]] | None = None,
     on_transport_error: Callable[[SinkTransportError], None] | None = None,
-) -> Callable[[], None]:
+) -> SinkHandle:
     """Grafana Loki sink -- pushes upstream ``DATA`` values as log entries.
 
     Args:
@@ -3237,12 +3325,14 @@ def to_loki(
         on_transport_error: Optional callback for transport errors.
 
     Returns:
-        An unsubscribe ``Callable[[], None]``.
+        A :class:`SinkHandle` with ``dispose()`` and ``errors``.
     """
     if labels is None:
         labels = {}
     if to_line is None:
         to_line = json.dumps
+
+    errors_node, handler = _create_sink_error_handler(on_transport_error)
 
     def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
         if msg[0] is MessageType.DATA:
@@ -3250,25 +3340,18 @@ def to_loki(
             try:
                 line = to_line(value)  # type: ignore[misc]
             except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(
-                        SinkTransportError(stage="serialize", error=err, value=value)
-                    )
+                handler(SinkTransportError(stage="serialize", error=err, value=value))
                 return True
             try:
                 stream_labels = {**labels, **to_labels(value)} if to_labels else labels
             except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(
-                        SinkTransportError(stage="serialize", error=err, value=value)
-                    )
+                handler(SinkTransportError(stage="serialize", error=err, value=value))
                 return True
             ts = str(wall_clock_ns())
             try:
                 client.push({"streams": [{"stream": stream_labels, "values": [[ts, line]]}]})
             except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(SinkTransportError(stage="send", error=err, value=value))
+                handler(SinkTransportError(stage="send", error=err, value=value))
             return True
         return False
 
@@ -3279,7 +3362,13 @@ def to_loki(
         on_message=_on_message,
     )
     unsub = effect.subscribe(lambda _msgs: None)
-    return unsub
+
+    def dispose() -> None:
+        unsub()
+        with suppress(Exception):
+            errors_node.down([(MessageType.TEARDOWN,)])
+
+    return SinkHandle(dispose=dispose, errors=errors_node)
 
 
 # ——— to_tempo ———
@@ -3291,7 +3380,7 @@ def to_tempo(
     *,
     to_resource_spans: Callable[[Any], list[Any]] | None = None,
     on_transport_error: Callable[[SinkTransportError], None] | None = None,
-) -> Callable[[], None]:
+) -> SinkHandle:
     """Grafana Tempo sink -- pushes upstream ``DATA`` values as trace spans.
 
     Args:
@@ -3302,10 +3391,12 @@ def to_tempo(
         on_transport_error: Optional callback for transport errors.
 
     Returns:
-        An unsubscribe ``Callable[[], None]``.
+        A :class:`SinkHandle` with ``dispose()`` and ``errors``.
     """
     if to_resource_spans is None:
         to_resource_spans = lambda v: [v]  # noqa: E731
+
+    errors_node, handler = _create_sink_error_handler(on_transport_error)
 
     def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
         if msg[0] is MessageType.DATA:
@@ -3313,16 +3404,12 @@ def to_tempo(
             try:
                 spans = to_resource_spans(value)  # type: ignore[misc]
             except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(
-                        SinkTransportError(stage="serialize", error=err, value=value)
-                    )
+                handler(SinkTransportError(stage="serialize", error=err, value=value))
                 return True
             try:
                 client.push({"resourceSpans": spans})
             except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(SinkTransportError(stage="send", error=err, value=value))
+                handler(SinkTransportError(stage="send", error=err, value=value))
             return True
         return False
 
@@ -3333,7 +3420,13 @@ def to_tempo(
         on_message=_on_message,
     )
     unsub = effect.subscribe(lambda _msgs: None)
-    return unsub
+
+    def dispose() -> None:
+        unsub()
+        with suppress(Exception):
+            errors_node.down([(MessageType.TEARDOWN,)])
+
+    return SinkHandle(dispose=dispose, errors=errors_node)
 
 
 # ——— checkpoint_to_s3 ———
@@ -3496,12 +3589,20 @@ def to_sqlite(
     *,
     to_sql: Callable[[Any, str], tuple[str, list[Any]]] | None = None,
     on_transport_error: Callable[[SinkTransportError], None] | None = None,
+    batch_insert: bool = False,
+    max_batch_size: int = 1000,
     **kwargs: Any,
-) -> Callable[[], None]:
+) -> SinkHandle | BufferedSinkHandle:
     """SQLite sink -- inserts each upstream ``DATA`` value as a row.
 
     Follows the same pattern as :func:`to_postgres` / :func:`to_mongo`.
     Since SQLite is synchronous, errors propagate immediately.
+
+    When ``batch_insert=True``, inserts are buffered and wrapped in a
+    ``BEGIN``/``COMMIT`` transaction when a terminal message (COMPLETE, ERROR,
+    TEARDOWN) arrives.  This avoids per-row fsync overhead.  Errors during the
+    transaction trigger ``ROLLBACK``; the first error is reported via
+    ``on_transport_error`` / the ``errors`` node.
 
     Args:
         source: Upstream node.
@@ -3510,9 +3611,13 @@ def to_sqlite(
         to_sql: Build the SQL + params for an insert.  Default: JSON insert into
             ``(data)`` column.
         on_transport_error: Optional callback for transport errors.
+        batch_insert: Wrap inserts in a transaction. Default: ``False``.
+        max_batch_size: Auto-flush when buffer reaches this size. Default: ``1000``.
+            Only used when ``batch_insert=True``.
 
     Returns:
-        An unsubscribe ``Callable[[], None]``.
+        A :class:`SinkHandle` (non-batch) or :class:`BufferedSinkHandle` (batch)
+        with ``dispose()``, ``errors``, and optionally ``flush()``.
     """
     if not table or "\x00" in table:
         raise ValueError(f"to_sqlite: invalid table name: {table!r}")
@@ -3521,9 +3626,43 @@ def to_sqlite(
 
         def _default_to_sql(v: Any, t: str) -> tuple[str, list[Any]]:
             quoted = '"' + t.replace('"', '""') + '"'
-            return (f"INSERT INTO {quoted} (data) VALUES (?)", [json.dumps(v, separators=(",", ":"))])
+            data = json.dumps(v, separators=(",", ":"))
+            return (f"INSERT INTO {quoted} (data) VALUES (?)", [data])
 
         to_sql = _default_to_sql
+
+    errors_node, handler = _create_sink_error_handler(on_transport_error)
+
+    pending_inserts: list[tuple[str, list[Any]]] = []
+
+    def _flush_transaction() -> None:
+        if not pending_inserts:
+            return
+        inserts = list(pending_inserts)
+        pending_inserts.clear()
+        try:
+            db.query("BEGIN", [])
+        except Exception as err:
+            # Restore pending so manual flush() can retry
+            pending_inserts.extend(inserts)
+            handler(SinkTransportError(stage="send", error=err, value=None))
+            return
+        first_error: Exception | None = None
+        for sql, params in inserts:
+            try:
+                db.query(sql, params)
+            except Exception as err:
+                if first_error is None:
+                    first_error = err
+                break
+        try:
+            if first_error is not None:
+                db.query("ROLLBACK", [])
+                handler(SinkTransportError(stage="send", error=first_error, value=None))
+            else:
+                db.query("COMMIT", [])
+        except Exception as err:
+            handler(SinkTransportError(stage="send", error=err, value=None))
 
     def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
         if msg[0] is MessageType.DATA:
@@ -3531,17 +3670,20 @@ def to_sqlite(
             try:
                 sql, params = to_sql(value, table)  # type: ignore[misc]
             except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(
-                        SinkTransportError(stage="serialize", error=err, value=value)
-                    )
+                handler(SinkTransportError(stage="serialize", error=err, value=value))
                 return True
-            try:
-                db.query(sql, params)
-            except Exception as err:
-                if on_transport_error is not None:
-                    on_transport_error(SinkTransportError(stage="send", error=err, value=value))
+            if batch_insert:
+                pending_inserts.append((sql, params))
+                if len(pending_inserts) >= max_batch_size:
+                    _flush_transaction()
+            else:
+                try:
+                    db.query(sql, params)
+                except Exception as err:
+                    handler(SinkTransportError(stage="send", error=err, value=value))
             return True
+        if batch_insert and message_tier(msg[0]) >= 3:
+            _flush_transaction()
         return False
 
     effect = node(
@@ -3552,7 +3694,29 @@ def to_sqlite(
         **kwargs,
     )
     unsub = effect.subscribe(lambda _msgs: None)
-    return unsub
+
+    if batch_insert:
+        disposed = [False]
+
+        def _batch_dispose() -> None:
+            if disposed[0]:
+                return
+            disposed[0] = True
+            _flush_transaction()
+            unsub()
+            with suppress(Exception):
+                errors_node.down([(MessageType.TEARDOWN,)])
+
+        return BufferedSinkHandle(
+            dispose=_batch_dispose, errors=errors_node, flush=_flush_transaction,
+        )
+
+    def _simple_dispose() -> None:
+        unsub()
+        with suppress(Exception):
+            errors_node.down([(MessageType.TEARDOWN,)])
+
+    return SinkHandle(dispose=_simple_dispose, errors=errors_node)
 
 
 # ---------------------------------------------------------------------------
@@ -3573,6 +3737,7 @@ __all__ = [
     "from_mcp",
     "from_git_hook",
     # 5.3b -- Ingest adapters
+    "SinkHandle",
     "SinkTransportError",
     "OTelBundle",
     "from_otel",

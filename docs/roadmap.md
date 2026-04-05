@@ -330,14 +330,14 @@ Connectors for the universal reduction layer (Phase 8). Each wraps an external p
 
 ### 5.3c — Storage & sink adapters
 
-- [ ] `to_clickhouse(table, opts)` — buffered batch insert sink
-- [ ] `to_s3(bucket, opts)` — object storage sink (Parquet/NDJSON, partitioned; via `boto3`)
-- [ ] `to_postgres(table, opts)` / `to_mongo(collection, opts)` — document/relational sink
-- [ ] `to_loki(opts)` / `to_tempo(opts)` — Grafana stack sinks
-- [ ] `checkpoint_to_s3(bucket, opts)` — graph snapshot persistence to object storage
-- [ ] `checkpoint_to_redis(prefix, opts)` — fast checkpoint for ephemeral infra
-- [ ] `to_file(path, opts)` — file sink
-- [ ] `to_csv(path, opts)` — CSV file sink
+- [x] `to_clickhouse(table, opts)` — buffered batch insert sink
+- [x] `to_s3(bucket, opts)` — object storage sink (Parquet/NDJSON, partitioned; via `boto3`)
+- [x] `to_postgres(table, opts)` / `to_mongo(collection, opts)` — document/relational sink
+- [x] `to_loki(opts)` / `to_tempo(opts)` — Grafana stack sinks
+- [x] `checkpoint_to_s3(bucket, opts)` — graph snapshot persistence to object storage
+- [x] `checkpoint_to_redis(prefix, opts)` — fast checkpoint for ephemeral infra
+- [x] `to_file(path, opts)` — file sink
+- [x] `to_csv(path, opts)` — CSV file sink
 
 ### 5.4 — LLM tool integration
 

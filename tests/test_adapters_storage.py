@@ -9,8 +9,11 @@ from typing import Any
 import pytest
 
 from graphrefly.core.clock import monotonic_ns
+from graphrefly.core.protocol import MessageType
+from graphrefly.core.sugar import state
 from graphrefly.extra.adapters import (
     BufferedSinkHandle,
+    SinkHandle,
     SinkTransportError,
     checkpoint_to_redis,
     checkpoint_to_s3,
@@ -98,7 +101,7 @@ class TestToFile:
 
         class BadWriter:
             def write(self, _data: Any) -> None:
-                raise IOError("disk full")
+                raise OSError("disk full")
 
             def close(self) -> None:
                 pass
@@ -107,6 +110,22 @@ class TestToFile:
         handle = to_file(source, BadWriter(), on_transport_error=errors.append)
         assert len(errors) == 1
         assert errors[0].stage == "send"
+        handle.dispose()
+
+    def test_errors_node(self) -> None:
+        """Errors companion node receives transport errors reactively."""
+
+        class BadWriter:
+            def write(self, _data: Any) -> None:
+                raise OSError("write fail")
+
+            def close(self) -> None:
+                pass
+
+        source = from_iter([1])
+        handle = to_file(source, BadWriter())
+        assert handle.errors.get() is not None
+        assert handle.errors.get().stage == "send"  # type: ignore[union-attr]
         handle.dispose()
 
 
@@ -202,7 +221,9 @@ class TestToS3:
         uploads: list[dict[str, Any]] = []
 
         class MockS3:
-            def put_object(self, *, Bucket: str, Key: str, Body: str, ContentType: str = "") -> None:
+            def put_object(  # noqa: N803
+                self, *, Bucket: str, Key: str, Body: str, ContentType: str = "",
+            ) -> None:
                 uploads.append({"Bucket": Bucket, "Key": Key, "Body": Body})
 
         source = from_iter([{"a": 1}, {"b": 2}])
@@ -219,7 +240,9 @@ class TestToS3:
         uploads: list[dict[str, Any]] = []
 
         class MockS3:
-            def put_object(self, *, Bucket: str, Key: str, Body: str, ContentType: str = "") -> None:
+            def put_object(  # noqa: N803
+                self, *, Bucket: str, Key: str, Body: str, ContentType: str = "",
+            ) -> None:
                 uploads.append({"Body": Body})
 
         source = from_iter([1, 2])
@@ -245,10 +268,11 @@ class TestToPostgres:
                 queries.append({"sql": sql, "params": params})
 
         source = from_iter([{"x": 1}, {"x": 2}])
-        unsub = to_postgres(source, MockPG(), "events")
+        handle = to_postgres(source, MockPG(), "events")
+        assert isinstance(handle, SinkHandle)
         assert len(queries) == 2
         assert 'INSERT INTO "events"' in queries[0]["sql"]
-        unsub()
+        handle.dispose()
 
     def test_to_sql_error(self) -> None:
         errors: list[SinkTransportError] = []
@@ -261,12 +285,25 @@ class TestToPostgres:
             raise ValueError("bad sql")
 
         source = from_iter([1])
-        unsub = to_postgres(
+        handle = to_postgres(
             source, MockPG(), "t", to_sql=bad_sql, on_transport_error=errors.append
         )
         assert len(errors) == 1
         assert errors[0].stage == "serialize"
-        unsub()
+        handle.dispose()
+
+    def test_errors_node_without_callback(self) -> None:
+        """Errors node receives errors even without on_transport_error callback."""
+
+        class MockPG:
+            def execute(self, sql: str, params: list[Any]) -> None:
+                raise RuntimeError("connection lost")
+
+        source = from_iter([1])
+        handle = to_postgres(source, MockPG(), "t")
+        assert handle.errors.get() is not None
+        assert handle.errors.get().stage == "send"  # type: ignore[union-attr]
+        handle.dispose()
 
 
 # ——————————————————————————————————————————————————————————————
@@ -283,9 +320,9 @@ class TestToMongo:
                 docs.append(doc)
 
         source = from_iter([{"a": 1}, {"b": 2}])
-        unsub = to_mongo(source, MockCollection())
+        handle = to_mongo(source, MockCollection())
         assert docs == [{"a": 1}, {"b": 2}]
-        unsub()
+        handle.dispose()
 
     def test_custom_to_document(self) -> None:
         docs: list[Any] = []
@@ -295,11 +332,11 @@ class TestToMongo:
                 docs.append(doc)
 
         source = from_iter([1, 2])
-        unsub = to_mongo(
+        handle = to_mongo(
             source, MockCollection(), to_document=lambda v: {"value": v, "ts": "now"}
         )
         assert docs == [{"value": 1, "ts": "now"}, {"value": 2, "ts": "now"}]
-        unsub()
+        handle.dispose()
 
 
 # ——————————————————————————————————————————————————————————————
@@ -316,11 +353,11 @@ class TestToLoki:
                 pushes.append(payload)
 
         source = from_iter(["log line 1"])
-        unsub = to_loki(source, MockLoki(), labels={"job": "test"}, to_line=lambda v: v)
+        handle = to_loki(source, MockLoki(), labels={"job": "test"}, to_line=lambda v: v)
         assert len(pushes) == 1
         assert pushes[0]["streams"][0]["stream"] == {"job": "test"}
         assert pushes[0]["streams"][0]["values"][0][1] == "log line 1"
-        unsub()
+        handle.dispose()
 
     def test_dynamic_labels(self) -> None:
         pushes: list[Any] = []
@@ -330,14 +367,14 @@ class TestToLoki:
                 pushes.append(payload)
 
         source = from_iter([{"level": "error", "msg": "fail"}])
-        unsub = to_loki(
+        handle = to_loki(
             source, MockLoki(),
             labels={"job": "app"},
             to_line=lambda v: v["msg"],
             to_labels=lambda v: {"level": v["level"]},
         )
         assert pushes[0]["streams"][0]["stream"] == {"job": "app", "level": "error"}
-        unsub()
+        handle.dispose()
 
 
 # ——————————————————————————————————————————————————————————————
@@ -355,10 +392,10 @@ class TestToTempo:
 
         span = {"traceId": "abc", "spans": [{"name": "op1"}]}
         source = from_iter([span])
-        unsub = to_tempo(source, MockTempo())
+        handle = to_tempo(source, MockTempo())
         assert len(pushes) == 1
         assert pushes[0]["resourceSpans"] == [span]
-        unsub()
+        handle.dispose()
 
 
 # ——————————————————————————————————————————————————————————————
@@ -371,7 +408,9 @@ class TestCheckpointToS3:
         saved: list[dict[str, Any]] = []
 
         class MockS3:
-            def put_object(self, *, Bucket: str, Key: str, Body: str, ContentType: str = "") -> None:
+            def put_object(  # noqa: N803
+                self, *, Bucket: str, Key: str, Body: str, ContentType: str = "",
+            ) -> None:
                 saved.append({"Bucket": Bucket, "Key": Key, "Body": Body})
 
         saved_adapter: list[Any] = []
@@ -446,9 +485,12 @@ class MockSqliteDb:
         self.rows = rows or []
         self.error = error
         self.calls: list[dict[str, Any]] = []
+        self._fail_on_call: int | None = None
 
-    def query(self, sql: str, params: tuple = ()) -> list[Any]:
+    def query(self, sql: str, params: Any = ()) -> list[Any]:
         self.calls.append({"sql": sql, "params": params})
+        if self._fail_on_call is not None and len(self.calls) == self._fail_on_call:
+            raise RuntimeError("db error")
         if self.error is not None:
             raise self.error
         return list(self.rows)
@@ -540,12 +582,13 @@ class TestToSqlite:
     def test_inserts_each_value(self) -> None:
         db = MockSqliteDb()
         source = from_iter([{"x": 1}, {"x": 2}])
-        unsub = to_sqlite(source, db, "events")
+        handle = to_sqlite(source, db, "events")
+        assert isinstance(handle, SinkHandle)
         assert len(db.calls) == 2
         assert 'INSERT INTO "events"' in db.calls[0]["sql"]
         assert db.calls[0]["params"] == ['{"x":1}']
         assert db.calls[1]["params"] == ['{"x":2}']
-        unsub()
+        handle.dispose()
 
     def test_custom_to_sql(self) -> None:
         db = MockSqliteDb()
@@ -554,10 +597,10 @@ class TestToSqlite:
         def custom_sql(v: Any, t: str) -> tuple[str, list[Any]]:
             return (f'INSERT INTO "{t}" (value) VALUES (?)', [v])
 
-        unsub = to_sqlite(source, db, "numbers", to_sql=custom_sql)
+        handle = to_sqlite(source, db, "numbers", to_sql=custom_sql)
         assert db.calls[0]["sql"] == 'INSERT INTO "numbers" (value) VALUES (?)'
         assert db.calls[0]["params"] == [42]
-        unsub()
+        handle.dispose()
 
     def test_serialize_error(self) -> None:
         errors: list[SinkTransportError] = []
@@ -567,22 +610,22 @@ class TestToSqlite:
             raise ValueError("bad sql")
 
         source = from_iter([1])
-        unsub = to_sqlite(
+        handle = to_sqlite(
             source, db, "t", to_sql=bad_sql, on_transport_error=errors.append
         )
         assert len(errors) == 1
         assert errors[0].stage == "serialize"
-        unsub()
+        handle.dispose()
 
     def test_send_error(self) -> None:
         errors: list[SinkTransportError] = []
         db = MockSqliteDb(error=RuntimeError("disk full"))
         source = from_iter([{"a": 1}])
-        unsub = to_sqlite(source, db, "t", on_transport_error=errors.append)
+        handle = to_sqlite(source, db, "t", on_transport_error=errors.append)
         assert len(errors) == 1
         assert errors[0].stage == "send"
         assert str(errors[0].error) == "disk full"
-        unsub()
+        handle.dispose()
 
     def test_rejects_empty_table_name(self) -> None:
         db = MockSqliteDb()
@@ -595,3 +638,176 @@ class TestToSqlite:
         source = from_iter([1])
         with pytest.raises(ValueError, match="invalid table name"):
             to_sqlite(source, db, "foo\x00bar")
+
+    def test_batch_insert_wraps_in_transaction(self) -> None:
+        db = MockSqliteDb()
+        source = from_iter([1, 2, 3])
+        handle = to_sqlite(source, db, "t", batch_insert=True)
+        # BEGIN, INSERT x3, COMMIT
+        sqls = [c["sql"] for c in db.calls]
+        assert sqls[0] == "BEGIN"
+        assert all('INSERT INTO "t"' in s for s in sqls[1:4])
+        assert sqls[4] == "COMMIT"
+        handle.dispose()
+
+    def test_batch_insert_rollback_on_error(self) -> None:
+        errors: list[SinkTransportError] = []
+        db = MockSqliteDb()
+        # Fail on the 3rd call (second INSERT)
+        db._fail_on_call = 3
+        source = from_iter([1, 2, 3])
+        handle = to_sqlite(
+            source, db, "t", batch_insert=True, on_transport_error=errors.append
+        )
+        sqls = [c["sql"] for c in db.calls]
+        assert sqls[0] == "BEGIN"
+        assert sqls[-1] == "ROLLBACK"
+        assert len(errors) == 1
+        assert errors[0].stage == "send"
+        handle.dispose()
+
+    def test_errors_node_without_callback(self) -> None:
+        """Errors node captures errors even without explicit callback."""
+        db = MockSqliteDb(error=RuntimeError("fail"))
+        source = from_iter([1])
+        handle = to_sqlite(source, db, "t")
+        assert handle.errors.get() is not None
+        assert handle.errors.get().stage == "send"  # type: ignore[union-attr]
+        handle.dispose()
+
+    def test_batch_insert_returns_buffered_sink_handle(self) -> None:
+        db = MockSqliteDb()
+        source = from_iter([1])
+        handle = to_sqlite(source, db, "t", batch_insert=True)
+        assert isinstance(handle, BufferedSinkHandle)
+        assert callable(handle.flush)
+        handle.dispose()
+
+    def test_batch_insert_auto_flushes_at_max_batch_size(self) -> None:
+        db = MockSqliteDb()
+        source = from_iter([1, 2, 3, 4, 5])
+        handle = to_sqlite(source, db, "t", batch_insert=True, max_batch_size=2)
+        sqls = [c["sql"] for c in db.calls]
+        begins = [s for s in sqls if s == "BEGIN"]
+        commits = [s for s in sqls if s == "COMMIT"]
+        inserts = [s for s in sqls if "INSERT" in s]
+        assert len(begins) == 3
+        assert len(commits) == 3
+        assert len(inserts) == 5
+        handle.dispose()
+
+    def test_batch_insert_flushes_on_dispose(self) -> None:
+        db = MockSqliteDb()
+        s = state(0)
+        handle = to_sqlite(s, db, "t", batch_insert=True)
+        s.down([(MessageType.DATA, 1)])
+        s.down([(MessageType.DATA, 2)])
+        # No terminal → no flush yet
+        assert not any(c["sql"] == "BEGIN" for c in db.calls)
+        handle.dispose()
+        sqls = [c["sql"] for c in db.calls]
+        assert "BEGIN" in sqls
+        assert "COMMIT" in sqls
+        assert len([s for s in sqls if "INSERT" in s]) == 2
+
+    def test_batch_insert_dispose_is_idempotent(self) -> None:
+        db = MockSqliteDb()
+        source = from_iter([1])
+        handle = to_sqlite(source, db, "t", batch_insert=True)
+        count_before = len(db.calls)
+        handle.dispose()
+        handle.dispose()  # second call is no-op
+        assert len(db.calls) == count_before
+
+    def test_batch_insert_begin_failure_preserves_data(self) -> None:
+        errors: list[SinkTransportError] = []
+        begin_fails = [True]
+        db_calls: list[dict[str, Any]] = []
+
+        class RetryableDb:
+            def query(self, sql: str, params: Any = ()) -> list[Any]:
+                db_calls.append({"sql": sql, "params": params})
+                if sql == "BEGIN" and begin_fails[0]:
+                    raise RuntimeError("locked")
+                return []
+
+        source = from_iter([1])
+        handle = to_sqlite(
+            source, RetryableDb(), "t", batch_insert=True, on_transport_error=errors.append
+        )
+        assert len(errors) == 1
+        assert errors[0].error.args[0] == "locked"
+        # No INSERTs since BEGIN failed
+        assert not any("INSERT" in c["sql"] for c in db_calls)
+        # Manual flush after fixing succeeds — data preserved
+        begin_fails[0] = False
+        handle.flush()
+        assert any("INSERT" in c["sql"] for c in db_calls)
+        assert db_calls[-1]["sql"] == "COMMIT"
+        handle.dispose()
+
+    def test_batch_insert_no_data_no_transaction(self) -> None:
+        db = MockSqliteDb()
+        source = from_iter([])
+        handle = to_sqlite(source, db, "t", batch_insert=True)
+        assert not any(c["sql"] == "BEGIN" for c in db.calls)
+        handle.dispose()
+
+
+# ——————————————————————————————————————————————————————————————
+#  CancellationToken
+# ——————————————————————————————————————————————————————————————
+
+
+class TestCancellationToken:
+    def test_basic_cancel(self) -> None:
+        from graphrefly.core.cancellation import cancellation_token
+
+        token = cancellation_token()
+        assert not token.is_cancelled
+        token.cancel()
+        assert token.is_cancelled
+
+    def test_on_cancel_fires(self) -> None:
+        from graphrefly.core.cancellation import cancellation_token
+
+        token = cancellation_token()
+        fired: list[bool] = []
+        token.on_cancel(lambda: fired.append(True))
+        token.cancel()
+        assert fired == [True]
+
+    def test_on_cancel_after_already_cancelled(self) -> None:
+        from graphrefly.core.cancellation import cancellation_token
+
+        token = cancellation_token()
+        token.cancel()
+        fired: list[bool] = []
+        token.on_cancel(lambda: fired.append(True))
+        assert fired == [True]
+
+    def test_unsubscribe_on_cancel(self) -> None:
+        from graphrefly.core.cancellation import cancellation_token
+
+        token = cancellation_token()
+        fired: list[bool] = []
+        unsub = token.on_cancel(lambda: fired.append(True))
+        unsub()
+        token.cancel()
+        assert fired == []
+
+    def test_cancel_is_idempotent(self) -> None:
+        from graphrefly.core.cancellation import cancellation_token
+
+        token = cancellation_token()
+        count: list[int] = [0]
+        token.on_cancel(lambda: count.__setitem__(0, count[0] + 1))
+        token.cancel()
+        token.cancel()
+        assert count[0] == 1
+
+    def test_protocol_check(self) -> None:
+        from graphrefly.core.cancellation import CancellationToken, cancellation_token
+
+        token = cancellation_token()
+        assert isinstance(token, CancellationToken)
