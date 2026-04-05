@@ -3655,7 +3655,7 @@ def from_sqlite(
     def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
         try:
             rows = db.query(query, params)
-            mapped = [map_row(row) for row in rows]  # type: ignore[misc]
+            mapped = [map_row(row) for row in rows]
         except Exception as err:
             actions.down([(MessageType.ERROR, err)])
             return lambda: None
@@ -3808,6 +3808,413 @@ def to_sqlite(
 
 
 # ---------------------------------------------------------------------------
+#  5.2 — ORM Adapters (SQLAlchemy, Django, Tortoise)
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class SqlAlchemySessionLike(Protocol):
+    """Duck-typed SQLAlchemy session handle.
+
+    Compatible with ``sqlalchemy.orm.Session`` or any object exposing
+    ``execute(stmt, params?)`` returning an iterable of rows and
+    ``add(instance)`` / ``flush()`` for persistence.
+    """
+
+    def execute(self, stmt: Any, params: Any = None) -> Any: ...
+    def add(self, instance: Any) -> None: ...
+    def flush(self) -> None: ...
+
+
+def from_sqlalchemy(
+    session: SqlAlchemySessionLike,
+    stmt: Any,
+    *,
+    params: Any = None,
+    map_row: Callable[[Any], Any] | None = None,
+) -> Node[Any]:
+    """One-shot SQLAlchemy query as a reactive source.
+
+    Executes *stmt* synchronously via ``session.execute()``, emits one ``DATA``
+    per result row, then ``COMPLETE``.
+
+    Args:
+        session: SQLAlchemy session (caller owns transaction).
+        stmt: SQLAlchemy statement or text SQL to execute.
+        params: Optional bind parameters.
+        map_row: Map a raw row to the desired type.  Default: identity.
+
+    Returns:
+        A :class:`~graphrefly.core.node.Node` — one ``DATA`` per row, then ``COMPLETE``.
+    """
+    if map_row is None:
+        map_row = lambda r: r  # noqa: E731
+
+    def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
+        try:
+            result = session.execute(stmt, params)
+            rows = list(result)
+            mapped = [map_row(row) for row in rows]
+        except Exception as err:
+            actions.down([(MessageType.ERROR, err)])
+            return lambda: None
+        with batch():
+            for item in mapped:
+                actions.emit(item)
+            actions.down([(MessageType.COMPLETE,)])
+        return lambda: None
+
+    return node(start, describe_kind="producer", complete_when_deps_complete=False)
+
+
+def to_sqlalchemy(
+    source: Node[Any],
+    session: SqlAlchemySessionLike,
+    *,
+    to_model: Callable[[Any], Any] | None = None,
+    auto_flush: bool = True,
+    batch_insert: bool = False,
+    max_batch_size: int = 1000,
+    on_transport_error: Callable[[SinkTransportError], None] | None = None,
+) -> SinkHandle | BufferedSinkHandle:
+    """SQLAlchemy ORM sink — persists each upstream ``DATA`` value via ``session.add()``.
+
+    When ``batch_insert=True``, rows are buffered and flushed together when a
+    terminal message arrives or the buffer reaches *max_batch_size*.  The
+    caller still owns ``session.commit()``.
+
+    Args:
+        source: Upstream node.
+        session: SQLAlchemy session (caller owns transaction/commit).
+        to_model: Transform an upstream value to a SQLAlchemy model instance.
+            Default: identity (assumes upstream already emits model instances).
+        auto_flush: Call ``session.flush()`` after each ``add()``.  Default:
+            ``True``.  Ignored when ``batch_insert=True``.
+        batch_insert: Buffer adds and flush at batch boundaries.  Default:
+            ``False``.
+        max_batch_size: Auto-flush when buffer reaches this size.  Default:
+            ``1000``.  Only used when ``batch_insert=True``.
+        on_transport_error: Optional callback for transport errors.
+
+    Returns:
+        A :class:`SinkHandle` (non-batch) or :class:`BufferedSinkHandle`
+        (batch) with ``dispose()``, ``errors``, and optionally ``flush()``.
+    """
+    if to_model is None:
+        to_model = lambda v: v  # noqa: E731
+
+    errors_node, handler = _create_sink_error_handler(on_transport_error)
+
+    pending: list[Any] = []
+
+    def _flush_batch() -> None:
+        if not pending:
+            return
+        items = list(pending)
+        pending.clear()
+        try:
+            for inst in items:
+                session.add(inst)
+            session.flush()
+        except Exception as err:
+            handler(SinkTransportError(stage="send", error=err, value=None))
+
+    def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
+        if msg[0] is MessageType.DATA:
+            value = msg[1] if len(msg) > 1 else None
+            try:
+                instance = to_model(value)
+            except Exception as err:
+                handler(SinkTransportError(stage="serialize", error=err, value=value))
+                return True
+            if batch_insert:
+                pending.append(instance)
+                if len(pending) >= max_batch_size:
+                    _flush_batch()
+            else:
+                try:
+                    session.add(instance)
+                    if auto_flush:
+                        session.flush()
+                except Exception as err:
+                    handler(SinkTransportError(stage="send", error=err, value=value))
+            return True
+        if batch_insert and message_tier(msg[0]) >= 3:
+            _flush_batch()
+        return False
+
+    effect = node(
+        [source],
+        lambda _deps, _actions: lambda: None,
+        describe_kind="effect",
+        on_message=_on_message,
+    )
+    unsub = effect.subscribe(lambda _msgs: None)
+
+    if batch_insert:
+        disposed = [False]
+
+        def _batch_dispose() -> None:
+            if disposed[0]:
+                return
+            disposed[0] = True
+            _flush_batch()
+            unsub()
+            with suppress(Exception):
+                errors_node.down([(MessageType.TEARDOWN,)])
+
+        return BufferedSinkHandle(
+            dispose=_batch_dispose,
+            errors=errors_node,
+            flush=_flush_batch,
+        )
+
+    def dispose() -> None:
+        unsub()
+        with suppress(Exception):
+            errors_node.down([(MessageType.TEARDOWN,)])
+
+    return SinkHandle(dispose=dispose, errors=errors_node)
+
+
+# -- Django ORM ---------------------------------------------------------------
+
+
+def from_django_orm(
+    queryset: Any,
+    *,
+    map_row: Callable[[Any], Any] | None = None,
+) -> Node[Any]:
+    """One-shot Django ORM queryset as a reactive source.
+
+    Iterates *queryset* synchronously, emitting one ``DATA`` per model instance,
+    then ``COMPLETE``.
+
+    Args:
+        queryset: A Django ``QuerySet`` (or any iterable).
+        map_row: Map a model instance to the desired type.  Default: identity.
+
+    Returns:
+        A :class:`~graphrefly.core.node.Node` — one ``DATA`` per row, then ``COMPLETE``.
+    """
+    if map_row is None:
+        map_row = lambda r: r  # noqa: E731
+
+    def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
+        try:
+            rows = list(queryset)
+            mapped = [map_row(row) for row in rows]
+        except Exception as err:
+            actions.down([(MessageType.ERROR, err)])
+            return lambda: None
+        with batch():
+            for item in mapped:
+                actions.emit(item)
+            actions.down([(MessageType.COMPLETE,)])
+        return lambda: None
+
+    return node(start, describe_kind="producer", complete_when_deps_complete=False)
+
+
+def to_django_orm(
+    source: Node[Any],
+    model_class: Any,
+    *,
+    to_kwargs: Callable[[Any], dict[str, Any]] | None = None,
+    on_transport_error: Callable[[SinkTransportError], None] | None = None,
+) -> SinkHandle:
+    """Django ORM sink — creates a model instance per upstream ``DATA`` value.
+
+    Calls ``model_class.objects.create(**kwargs)`` for each value.
+
+    Args:
+        source: Upstream node.
+        model_class: Django model class with ``objects.create()`` manager method.
+        to_kwargs: Transform an upstream value to keyword arguments for
+            ``create()``.  Default: if the value is a ``dict``, pass as kwargs;
+            otherwise wrap as ``{"data": value}``.
+        on_transport_error: Optional callback for transport errors.
+
+    Returns:
+        A :class:`SinkHandle` with ``dispose()`` and ``errors``.
+    """
+    if to_kwargs is None:
+
+        def _default_to_kwargs(v: Any) -> dict[str, Any]:
+            if isinstance(v, dict):
+                return v
+            return {"data": v}
+
+        to_kwargs = _default_to_kwargs
+
+    errors_node, handler = _create_sink_error_handler(on_transport_error)
+
+    def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
+        if msg[0] is MessageType.DATA:
+            value = msg[1] if len(msg) > 1 else None
+            try:
+                kwargs = to_kwargs(value)
+            except Exception as err:
+                handler(SinkTransportError(stage="serialize", error=err, value=value))
+                return True
+            try:
+                model_class.objects.create(**kwargs)
+            except Exception as err:
+                handler(SinkTransportError(stage="send", error=err, value=value))
+            return True
+        return False
+
+    effect = node(
+        [source],
+        lambda _deps, _actions: lambda: None,
+        describe_kind="effect",
+        on_message=_on_message,
+    )
+    unsub = effect.subscribe(lambda _msgs: None)
+
+    def dispose() -> None:
+        unsub()
+        with suppress(Exception):
+            errors_node.down([(MessageType.TEARDOWN,)])
+
+    return SinkHandle(dispose=dispose, errors=errors_node)
+
+
+# -- Tortoise ORM -------------------------------------------------------------
+
+
+def from_tortoise(
+    queryset: Any,
+    *,
+    map_row: Callable[[Any], Any] | None = None,
+) -> Node[Any]:
+    """One-shot Tortoise ORM queryset as a reactive source.
+
+    Tortoise querysets are **lazy and async**, but support synchronous
+    iteration when fetched eagerly (e.g. ``await Model.all()`` produces a
+    plain list).  This adapter accepts the **already-awaited** result list
+    or any iterable.
+
+    For async-native usage, pass an ``async for``-compatible queryset to
+    :func:`~graphrefly.extra.sources.from_async_iter` instead.
+
+    Args:
+        queryset: An already-fetched list of Tortoise model instances
+            (or any sync iterable).  Passing an unawaited coroutine or
+            async iterable raises ``TypeError``.
+        map_row: Map a model instance to the desired type.  Default: identity.
+
+    Returns:
+        A :class:`~graphrefly.core.node.Node` — one ``DATA`` per row, then ``COMPLETE``.
+
+    Raises:
+        TypeError: If *queryset* is a coroutine or async iterable.
+    """
+    import inspect
+
+    if inspect.iscoroutine(queryset) or inspect.isasyncgen(queryset):
+        raise TypeError(
+            "from_tortoise() received an unawaited coroutine or async "
+            "iterable. Pass the already-awaited result (e.g. "
+            "`await Model.all()`) or use `from_async_iter` instead."
+        )
+    if isinstance(queryset, ABCAsyncIterable):
+        raise TypeError(
+            "from_tortoise() received an async iterable. "
+            "Pass the already-awaited result or use `from_async_iter`."
+        )
+
+    if map_row is None:
+        map_row = lambda r: r  # noqa: E731
+
+    def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
+        try:
+            rows = list(queryset)
+            mapped = [map_row(row) for row in rows]
+        except Exception as err:
+            actions.down([(MessageType.ERROR, err)])
+            return lambda: None
+        with batch():
+            for item in mapped:
+                actions.emit(item)
+            actions.down([(MessageType.COMPLETE,)])
+        return lambda: None
+
+    return node(start, describe_kind="producer", complete_when_deps_complete=False)
+
+
+def to_tortoise(
+    source: Node[Any],
+    model_class: Any,
+    *,
+    to_kwargs: Callable[[Any], dict[str, Any]] | None = None,
+    on_transport_error: Callable[[SinkTransportError], None] | None = None,
+) -> SinkHandle:
+    """Tortoise ORM sink — creates a model instance per upstream ``DATA`` value.
+
+    Tortoise's ``.save()`` is async; this adapter bridges to sync via
+    ``asyncio.run(instance.save())`` per row.  It must be called from a
+    **non-async** context (no running event loop).
+
+    For fully async usage, use :func:`~graphrefly.extra.sources.from_async_iter`
+    with the ``compat/asyncio_runner`` layer instead.
+
+    Args:
+        source: Upstream node.
+        model_class: Tortoise model class.
+        to_kwargs: Transform an upstream value to keyword arguments for the
+            model constructor.  Default: if the value is a ``dict``, pass as
+            kwargs; otherwise wrap as ``{"data": value}``.
+        on_transport_error: Optional callback for transport errors.
+
+    Returns:
+        A :class:`SinkHandle` with ``dispose()`` and ``errors``.
+    """
+    if to_kwargs is None:
+
+        def _default_to_kwargs(v: Any) -> dict[str, Any]:
+            if isinstance(v, dict):
+                return v
+            return {"data": v}
+
+        to_kwargs = _default_to_kwargs
+
+    errors_node, handler = _create_sink_error_handler(on_transport_error)
+
+    def _on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
+        if msg[0] is MessageType.DATA:
+            value = msg[1] if len(msg) > 1 else None
+            try:
+                kwargs = to_kwargs(value)
+            except Exception as err:
+                handler(SinkTransportError(stage="serialize", error=err, value=value))
+                return True
+            try:
+                instance = model_class(**kwargs)
+                # Tortoise .save() is a coroutine — bridge to sync
+                asyncio.run(instance.save())
+            except Exception as err:
+                handler(SinkTransportError(stage="send", error=err, value=value))
+            return True
+        return False
+
+    effect = node(
+        [source],
+        lambda _deps, _actions: lambda: None,
+        describe_kind="effect",
+        on_message=_on_message,
+    )
+    unsub = effect.subscribe(lambda _msgs: None)
+
+    def dispose() -> None:
+        unsub()
+        with suppress(Exception):
+            errors_node.down([(MessageType.TEARDOWN,)])
+
+    return SinkHandle(dispose=dispose, errors=errors_node)
+
+
+# ---------------------------------------------------------------------------
 #  __all__
 # ---------------------------------------------------------------------------
 
@@ -3875,4 +4282,12 @@ __all__ = [
     "SqliteDbLike",
     "from_sqlite",
     "to_sqlite",
+    # 5.2 -- ORM Adapters
+    "SqlAlchemySessionLike",
+    "from_sqlalchemy",
+    "to_sqlalchemy",
+    "from_django_orm",
+    "to_django_orm",
+    "from_tortoise",
+    "to_tortoise",
 ]

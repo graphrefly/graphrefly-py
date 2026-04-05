@@ -131,9 +131,7 @@ def test_cascading_cache_delete() -> None:
     cc.delete("k")
     assert not cc.has("k")
     assert "k" not in t.store
-    assert any(
-        m[0] is MessageType.TEARDOWN for batch in msgs for m in batch
-    )
+    assert any(m[0] is MessageType.TEARDOWN for batch in msgs for m in batch)
 
 
 def test_cascading_cache_max_size_with_lru() -> None:

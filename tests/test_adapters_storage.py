@@ -17,16 +17,22 @@ from graphrefly.extra.adapters import (
     SinkTransportError,
     checkpoint_to_redis,
     checkpoint_to_s3,
+    from_django_orm,
+    from_sqlalchemy,
     from_sqlite,
+    from_tortoise,
     to_clickhouse,
     to_csv,
+    to_django_orm,
     to_file,
     to_loki,
     to_mongo,
     to_postgres,
     to_s3,
+    to_sqlalchemy,
     to_sqlite,
     to_tempo,
+    to_tortoise,
 )
 from graphrefly.extra.sources import from_iter
 
@@ -770,6 +776,458 @@ class TestToSqlite:
         source = from_iter([])
         handle = to_sqlite(source, db, "t", batch_insert=True)
         assert not any(c["sql"] == "BEGIN" for c in db.calls)
+        handle.dispose()
+
+
+# ——————————————————————————————————————————————————————————————
+#  from_sqlalchemy / to_sqlalchemy
+# ——————————————————————————————————————————————————————————————
+
+
+class MockSqlAlchemySession:
+    """Mock SQLAlchemy session with ``execute()``, ``add()``, ``flush()``."""
+
+    def __init__(
+        self,
+        rows: list[Any] | None = None,
+        error: Exception | None = None,
+        flush_error: Exception | None = None,
+    ) -> None:
+        self.rows = rows or []
+        self.error = error
+        self.flush_error = flush_error
+        self.execute_calls: list[dict[str, Any]] = []
+        self.added: list[Any] = []
+        self.flush_count = 0
+
+    def execute(self, stmt: Any, params: Any = None) -> list[Any]:
+        self.execute_calls.append({"stmt": stmt, "params": params})
+        if self.error is not None:
+            raise self.error
+        return list(self.rows)
+
+    def add(self, instance: Any) -> None:
+        self.added.append(instance)
+
+    def flush(self) -> None:
+        self.flush_count += 1
+        if self.flush_error is not None:
+            raise self.flush_error
+
+
+class TestFromSqlAlchemy:
+    def test_emits_data_per_row_then_complete(self) -> None:
+        session = MockSqlAlchemySession(rows=[{"id": 1}, {"id": 2}])
+        source = from_sqlalchemy(session, "SELECT * FROM t")
+        from graphrefly.extra.sources import to_list
+
+        result = to_list(source)
+        assert result == [{"id": 1}, {"id": 2}]
+
+    def test_passes_params(self) -> None:
+        session = MockSqlAlchemySession(rows=[{"id": 1}])
+        source = from_sqlalchemy(session, "SELECT * FROM t WHERE id = :id", params={"id": 1})
+        from graphrefly.extra.sources import to_list
+
+        to_list(source)
+        assert session.execute_calls[0]["params"] == {"id": 1}
+
+    def test_applies_map_row(self) -> None:
+        session = MockSqlAlchemySession(rows=[{"id": 1, "name": "A"}, {"id": 2, "name": "B"}])
+        source = from_sqlalchemy(session, "SELECT *", map_row=lambda r: r["name"])
+        from graphrefly.extra.sources import to_list
+
+        assert to_list(source) == ["A", "B"]
+
+    def test_error_on_throw(self) -> None:
+        session = MockSqlAlchemySession(error=RuntimeError("connection lost"))
+        source = from_sqlalchemy(session, "SELECT 1")
+        errors: list[Any] = []
+
+        def sink(msgs: Any) -> None:
+            for m in msgs:
+                if m[0] is MessageType.ERROR:
+                    errors.append(m[1])
+
+        source.subscribe(sink)
+        assert len(errors) == 1
+        assert str(errors[0]) == "connection lost"
+
+    def test_complete_with_zero_rows(self) -> None:
+        session = MockSqlAlchemySession(rows=[])
+        source = from_sqlalchemy(session, "SELECT * FROM empty")
+        from graphrefly.extra.sources import to_list
+
+        assert to_list(source) == []
+
+
+class TestToSqlAlchemy:
+    def test_adds_each_value(self) -> None:
+        session = MockSqlAlchemySession()
+        source = from_iter(["model_a", "model_b"])
+        handle = to_sqlalchemy(source, session)
+        assert isinstance(handle, SinkHandle)
+        assert session.added == ["model_a", "model_b"]
+        assert session.flush_count == 2
+        handle.dispose()
+
+    def test_custom_to_model(self) -> None:
+        session = MockSqlAlchemySession()
+        source = from_iter([{"name": "Alice"}])
+        handle = to_sqlalchemy(source, session, to_model=lambda v: f"User({v['name']})")
+        assert session.added == ["User(Alice)"]
+        handle.dispose()
+
+    def test_auto_flush_false(self) -> None:
+        session = MockSqlAlchemySession()
+        source = from_iter([1, 2])
+        handle = to_sqlalchemy(source, session, auto_flush=False)
+        assert session.added == [1, 2]
+        assert session.flush_count == 0
+        handle.dispose()
+
+    def test_serialize_error(self) -> None:
+        errors: list[SinkTransportError] = []
+        session = MockSqlAlchemySession()
+
+        def bad_model(_v: Any) -> Any:
+            raise ValueError("bad model")
+
+        source = from_iter([1])
+        handle = to_sqlalchemy(
+            source, session, to_model=bad_model, on_transport_error=errors.append
+        )
+        assert len(errors) == 1
+        assert errors[0].stage == "serialize"
+        handle.dispose()
+
+    def test_flush_error(self) -> None:
+        errors: list[SinkTransportError] = []
+        session = MockSqlAlchemySession(flush_error=RuntimeError("flush failed"))
+        source = from_iter([1])
+        handle = to_sqlalchemy(source, session, on_transport_error=errors.append)
+        assert len(errors) == 1
+        assert errors[0].stage == "send"
+        assert str(errors[0].error) == "flush failed"
+        handle.dispose()
+
+    def test_errors_node_without_callback(self) -> None:
+        session = MockSqlAlchemySession(flush_error=RuntimeError("fail"))
+        source = from_iter([1])
+        handle = to_sqlalchemy(source, session)
+        assert handle.errors.get() is not None
+        assert handle.errors.get().stage == "send"  # type: ignore[union-attr]
+        handle.dispose()
+
+    def test_batch_insert_flushes_on_terminal(self) -> None:
+        session = MockSqlAlchemySession()
+        source = from_iter([1, 2, 3])
+        handle = to_sqlalchemy(source, session, batch_insert=True)
+        assert isinstance(handle, BufferedSinkHandle)
+        assert session.added == [1, 2, 3]
+        assert session.flush_count == 1  # single flush at terminal
+        handle.dispose()
+
+    def test_batch_insert_auto_flushes_at_max_size(self) -> None:
+        session = MockSqlAlchemySession()
+        source = from_iter([1, 2, 3, 4, 5])
+        handle = to_sqlalchemy(source, session, batch_insert=True, max_batch_size=2)
+        # 2 auto-flushes (at 2, at 4) + 1 terminal flush (at 5)
+        assert session.flush_count == 3
+        assert session.added == [1, 2, 3, 4, 5]
+        handle.dispose()
+
+    def test_batch_insert_dispose_flushes(self) -> None:
+        session = MockSqlAlchemySession()
+        s = state(0)
+        handle = to_sqlalchemy(s, session, batch_insert=True)
+        s.down([(MessageType.DATA, "a")])
+        s.down([(MessageType.DATA, "b")])
+        assert session.flush_count == 0  # no terminal yet
+        handle.dispose()
+        assert session.flush_count == 1
+        assert session.added == ["a", "b"]
+
+    def test_batch_insert_dispose_is_idempotent(self) -> None:
+        session = MockSqlAlchemySession()
+        source = from_iter([1])
+        handle = to_sqlalchemy(source, session, batch_insert=True)
+        flush_before = session.flush_count
+        handle.dispose()
+        handle.dispose()  # second call is no-op
+        assert session.flush_count == flush_before
+
+    def test_batch_insert_flush_error(self) -> None:
+        errors: list[SinkTransportError] = []
+        session = MockSqlAlchemySession(flush_error=RuntimeError("fail"))
+        source = from_iter([1])
+        handle = to_sqlalchemy(source, session, batch_insert=True, on_transport_error=errors.append)
+        assert len(errors) == 1
+        assert errors[0].stage == "send"
+        handle.dispose()
+
+
+# ——————————————————————————————————————————————————————————————
+#  from_django_orm / to_django_orm
+# ——————————————————————————————————————————————————————————————
+
+
+class MockDjangoManager:
+    """Mock Django objects manager with ``create()``."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.created: list[dict[str, Any]] = []
+        self.error = error
+
+    def create(self, **kwargs: Any) -> dict[str, Any]:
+        if self.error is not None:
+            raise self.error
+        self.created.append(kwargs)
+        return kwargs
+
+
+class MockDjangoModel:
+    """Mock Django model class with ``objects`` manager."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.objects = MockDjangoManager(error=error)
+
+
+class TestFromDjangoOrm:
+    def test_emits_data_per_row_then_complete(self) -> None:
+        queryset = [{"id": 1}, {"id": 2}, {"id": 3}]
+        source = from_django_orm(queryset)
+        from graphrefly.extra.sources import to_list
+
+        assert to_list(source) == [{"id": 1}, {"id": 2}, {"id": 3}]
+
+    def test_applies_map_row(self) -> None:
+        queryset = [{"id": 1, "name": "A"}, {"id": 2, "name": "B"}]
+        source = from_django_orm(queryset, map_row=lambda r: r["name"])
+        from graphrefly.extra.sources import to_list
+
+        assert to_list(source) == ["A", "B"]
+
+    def test_error_on_throw(self) -> None:
+        def bad_qs() -> Any:
+            raise RuntimeError("db error")
+            yield  # noqa: F401 — make it a generator
+
+        # Use a class that raises on iteration
+        class FailingQs:
+            def __iter__(self) -> Any:
+                raise RuntimeError("db error")
+
+        source = from_django_orm(FailingQs())
+        errors: list[Any] = []
+
+        def sink(msgs: Any) -> None:
+            for m in msgs:
+                if m[0] is MessageType.ERROR:
+                    errors.append(m[1])
+
+        source.subscribe(sink)
+        assert len(errors) == 1
+        assert str(errors[0]) == "db error"
+
+    def test_complete_with_empty_queryset(self) -> None:
+        source = from_django_orm([])
+        from graphrefly.extra.sources import to_list
+
+        assert to_list(source) == []
+
+
+class TestToDjangoOrm:
+    def test_creates_each_value_as_dict(self) -> None:
+        model = MockDjangoModel()
+        source = from_iter([{"name": "Alice"}, {"name": "Bob"}])
+        handle = to_django_orm(source, model)
+        assert isinstance(handle, SinkHandle)
+        assert model.objects.created == [{"name": "Alice"}, {"name": "Bob"}]
+        handle.dispose()
+
+    def test_non_dict_wraps_as_data(self) -> None:
+        model = MockDjangoModel()
+        source = from_iter([42, "hello"])
+        handle = to_django_orm(source, model)
+        assert model.objects.created == [{"data": 42}, {"data": "hello"}]
+        handle.dispose()
+
+    def test_custom_to_kwargs(self) -> None:
+        model = MockDjangoModel()
+        source = from_iter(["Alice", "Bob"])
+        handle = to_django_orm(source, model, to_kwargs=lambda v: {"name": v})
+        assert model.objects.created == [{"name": "Alice"}, {"name": "Bob"}]
+        handle.dispose()
+
+    def test_serialize_error(self) -> None:
+        errors: list[SinkTransportError] = []
+        model = MockDjangoModel()
+        source = from_iter([1])
+
+        def bad_kwargs(_v: Any) -> dict[str, Any]:
+            raise ValueError("bad")
+
+        handle = to_django_orm(
+            source, model, to_kwargs=bad_kwargs, on_transport_error=errors.append
+        )
+        assert len(errors) == 1
+        assert errors[0].stage == "serialize"
+        handle.dispose()
+
+    def test_send_error(self) -> None:
+        errors: list[SinkTransportError] = []
+        model = MockDjangoModel(error=RuntimeError("integrity error"))
+        source = from_iter([{"name": "Alice"}])
+        handle = to_django_orm(source, model, on_transport_error=errors.append)
+        assert len(errors) == 1
+        assert errors[0].stage == "send"
+        assert str(errors[0].error) == "integrity error"
+        handle.dispose()
+
+    def test_errors_node_without_callback(self) -> None:
+        model = MockDjangoModel(error=RuntimeError("fail"))
+        source = from_iter([{"x": 1}])
+        handle = to_django_orm(source, model)
+        assert handle.errors.get() is not None
+        assert handle.errors.get().stage == "send"  # type: ignore[union-attr]
+        handle.dispose()
+
+
+# ——————————————————————————————————————————————————————————————
+#  from_tortoise / to_tortoise
+# ——————————————————————————————————————————————————————————————
+
+
+class MockTortoiseModel:
+    """Mock Tortoise ORM model class."""
+
+    def __init__(self, save_error: Exception | None = None) -> None:
+        self._save_error = save_error
+        self.instances: list[MockTortoiseModel] = []
+        self._kwargs: dict[str, Any] = {}
+        self._parent: MockTortoiseModel | None = None
+
+    def __call__(self, **kwargs: Any) -> MockTortoiseModel:
+        inst = MockTortoiseModel(save_error=self._save_error)
+        inst._kwargs = kwargs
+        inst._parent = self
+        return inst
+
+    async def save(self) -> None:
+        if self._save_error is not None:
+            raise self._save_error
+        if self._parent is not None:
+            self._parent.instances.append(self)
+
+
+class TestFromTortoise:
+    def test_emits_data_per_row_then_complete(self) -> None:
+        # from_tortoise accepts already-awaited lists
+        rows = [{"id": 1}, {"id": 2}]
+        source = from_tortoise(rows)
+        from graphrefly.extra.sources import to_list
+
+        assert to_list(source) == [{"id": 1}, {"id": 2}]
+
+    def test_applies_map_row(self) -> None:
+        rows = [{"id": 1, "name": "A"}, {"id": 2, "name": "B"}]
+        source = from_tortoise(rows, map_row=lambda r: r["name"])
+        from graphrefly.extra.sources import to_list
+
+        assert to_list(source) == ["A", "B"]
+
+    def test_error_on_throw(self) -> None:
+        class FailingIterable:
+            def __iter__(self) -> Any:
+                raise RuntimeError("tortoise error")
+
+        source = from_tortoise(FailingIterable())
+        errors: list[Any] = []
+
+        def sink(msgs: Any) -> None:
+            for m in msgs:
+                if m[0] is MessageType.ERROR:
+                    errors.append(m[1])
+
+        source.subscribe(sink)
+        assert len(errors) == 1
+        assert str(errors[0]) == "tortoise error"
+
+    def test_complete_with_empty(self) -> None:
+        source = from_tortoise([])
+        from graphrefly.extra.sources import to_list
+
+        assert to_list(source) == []
+
+    def test_rejects_coroutine(self) -> None:
+        async def coro() -> list[Any]:
+            return []
+
+        c = coro()
+        try:
+            with pytest.raises(TypeError, match="unawaited coroutine"):
+                from_tortoise(c)
+        finally:
+            c.close()
+
+    def test_rejects_async_iterable(self) -> None:
+        class AsyncQs:
+            def __aiter__(self) -> Any:
+                return self
+
+            async def __anext__(self) -> Any:
+                raise StopAsyncIteration
+
+        with pytest.raises(TypeError, match="async iterable"):
+            from_tortoise(AsyncQs())
+
+
+class TestToTortoise:
+    def test_creates_instances_via_save(self) -> None:
+        model = MockTortoiseModel()
+        source = from_iter([{"name": "Alice"}, {"name": "Bob"}])
+        # to_tortoise bridges async save() via run_until_complete internally
+        handle = to_tortoise(source, model)
+        assert isinstance(handle, SinkHandle)
+        assert len(model.instances) == 2
+        assert model.instances[0]._kwargs == {"name": "Alice"}
+        assert model.instances[1]._kwargs == {"name": "Bob"}
+        handle.dispose()
+
+    def test_non_dict_wraps_as_data(self) -> None:
+        model = MockTortoiseModel()
+        handle = to_tortoise(from_iter([42]), model)
+        assert len(model.instances) == 1
+        assert model.instances[0]._kwargs == {"data": 42}
+        handle.dispose()
+
+    def test_custom_to_kwargs(self) -> None:
+        model = MockTortoiseModel()
+        handle = to_tortoise(from_iter(["Alice"]), model, to_kwargs=lambda v: {"name": v})
+        assert model.instances[0]._kwargs == {"name": "Alice"}
+        handle.dispose()
+
+    def test_save_error(self) -> None:
+        errors: list[SinkTransportError] = []
+        model = MockTortoiseModel(save_error=RuntimeError("db error"))
+        handle = to_tortoise(from_iter([{"x": 1}]), model, on_transport_error=errors.append)
+        assert len(errors) == 1
+        assert errors[0].stage == "send"
+        handle.dispose()
+
+    def test_serialize_error(self) -> None:
+        errors: list[SinkTransportError] = []
+        model = MockTortoiseModel()
+
+        def bad_kwargs(_v: Any) -> dict[str, Any]:
+            raise ValueError("bad")
+
+        handle = to_tortoise(
+            from_iter([1]), model, to_kwargs=bad_kwargs, on_transport_error=errors.append
+        )
+        assert len(errors) == 1
+        assert errors[0].stage == "serialize"
         handle.dispose()
 
 

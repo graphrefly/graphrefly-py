@@ -246,10 +246,10 @@ class CascadingCache(Generic[V]):  # noqa: UP046
                 self._eviction.touch(key)
         else:
             if (
-            self._eviction is not None
-            and self._max_size > 0
-            and self._eviction.size() >= self._max_size
-        ):
+                self._eviction is not None
+                and self._max_size > 0
+                and self._eviction.size() >= self._max_size
+            ):
                 self._evict_if_needed()
             nd: Node[Any] = state(value)
             self._entries[key] = nd

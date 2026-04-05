@@ -299,9 +299,9 @@ Composition layer over 3.2 (`reactive_log`), 4.1 (sagas), 4.2 (event bus), 4.3 (
 
 ### 5.2 — ORM Adapters
 
-- [ ] SQLAlchemy ORM integration
-- [ ] Django ORM integration
-- [ ] Tortoise ORM integration
+- [x] SQLAlchemy ORM integration
+- [x] Django ORM integration
+- [x] Tortoise ORM integration
 - [x] `from_sqlite(db, query)` / `to_sqlite(db, table)` — SQLite via duck-typed `SqliteDbLike` (`query()` method); one-shot source + per-record sink; sync
 
 ### 5.3 — Adapters
