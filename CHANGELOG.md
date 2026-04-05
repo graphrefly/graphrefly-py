@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.6.0 (2026-04-05)
+
+### Chores
+
+- Inspector + data_class
+  ([`5bfb409`](https://github.com/graphrefly/graphrefly-py/commit/5bfb409eb62a82cc72d7b4d404981789ded3a3ca))
+
+### Features
+
+- 3.1c
+  ([`914e424`](https://github.com/graphrefly/graphrefly-py/commit/914e424e7f934b71e407da187536c16cb63ee43a))
+
+
 ## v0.5.0 (2026-04-05)
 
 ### Chores
