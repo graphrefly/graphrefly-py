@@ -27,6 +27,7 @@ import json
 import queue
 import threading
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends
@@ -145,11 +146,11 @@ def get_graph(name: str = "default") -> Any:
 
         @app.get("/describe")
         async def describe(graph = Depends(get_graph())):
-            return graph.describe()
+            return graph.describe(detail="standard")
 
         @app.get("/other")
         async def other(graph = Depends(get_graph("analytics"))):
-            return graph.describe()
+            return graph.describe(detail="standard")
     """
     return _GetGraphDep(name)
 
@@ -296,6 +297,14 @@ async def ws_handler(
 # ---------------------------------------------------------------------------
 
 
+@dataclass(slots=True)
+class _SubscriptionEntry:
+    """Per-path subscription state within :class:`ObserveGateway`."""
+
+    unsub: Any
+    wm: Any | None = None
+
+
 class ObserveGateway:
     """Manages per-client WebSocket subscriptions to graph nodes via ``observe()``.
 
@@ -335,8 +344,8 @@ class ObserveGateway:
         self._extract_actor = extract_actor or (lambda _client: None)
         self._high_water_mark = high_water_mark
         self._low_water_mark = low_water_mark
-        # client → { path → { unsub, wm? } }
-        self._clients: dict[Any, dict[str, dict[str, Any]]] = {}
+        # client → { path → _SubscriptionEntry }
+        self._clients: dict[Any, dict[str, _SubscriptionEntry]] = {}
 
     def handle_connection(self, client: Any) -> None:
         """Register a new client. Call from ``on_connect``."""
@@ -349,10 +358,9 @@ class ObserveGateway:
         if subs is None:
             return
         for entry in subs.values():
-            wm = entry.get("wm")
-            if wm is not None:
-                wm.dispose()
-            entry["unsub"]()
+            if entry.wm is not None:
+                entry.wm.dispose()
+            entry.unsub()
 
     def handle_message(
         self,
@@ -460,17 +468,16 @@ class ObserveGateway:
                     return
 
         unsub_ref[0] = handle.subscribe(sink)
-        subs[path] = {"unsub": unsub_ref[0], "wm": wm}
+        subs[path] = _SubscriptionEntry(unsub=unsub_ref[0], wm=wm)
         send({"type": "subscribed", "path": path})
 
     def _unsubscribe(self, client: Any, path: str, send: Callable[..., None]) -> None:
         subs = self._clients.get(client)
         entry = subs.pop(path, None) if subs else None
         if entry is not None:
-            wm = entry.get("wm")
-            if wm is not None:
-                wm.dispose()
-            entry["unsub"]()
+            if entry.wm is not None:
+                entry.wm.dispose()
+            entry.unsub()
         send({"type": "unsubscribed", "path": path})
 
     def _ack(self, client: Any, path: str, count: int) -> None:
@@ -480,7 +487,7 @@ class ObserveGateway:
         entry = subs.get(path)
         if entry is None:
             return
-        wm = entry.get("wm")
+        wm = entry.wm
         if wm is None:
             return
         n = min(max(0, int(count)), 1024)
@@ -545,8 +552,10 @@ def graphrefly_router(
     @router.get("/describe")
     async def describe(actor: Any = Depends(_resolve_actor)) -> Any:  # noqa: B008
         if actor is not None:
-            return graph.describe(actor=actor)
-        return graph.describe()
+            result = graph.describe(actor=actor, detail="standard")
+        else:
+            result = graph.describe(detail="standard")
+        return result
 
     @router.get("/nodes/{name:path}")
     async def get_node(name: str) -> Any:

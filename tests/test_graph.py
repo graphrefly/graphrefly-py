@@ -446,7 +446,7 @@ def test_describe_includes_nodes_edges_subgraphs_and_meta_paths() -> None:
     parent.connect("a", "b")
     child.add("x", node(initial=0))
     parent.mount("sub", child)
-    d = parent.describe()
+    d = parent.describe(detail="standard")
     assert d["name"] == "parent"
     assert "a" in d["nodes"] and "b" in d["nodes"]
     meta_k = f"a{PATH_SEP}{GRAPH_META_SEGMENT}{PATH_SEP}desc"
@@ -465,14 +465,27 @@ def test_describe_filter_supports_deps_includes_meta_has_and_path_predicate() ->
     g.add("b", b)
     g.connect("a", "b")
 
-    by_deps = g.describe(filter={"deps_includes": "a"})
+    by_deps = g.describe(detail="standard", filter={"deps_includes": "a"})
     assert list(by_deps["nodes"].keys()) == ["b"]
 
-    by_meta = g.describe(filter={"meta_has": "label"})
+    by_meta = g.describe(detail="standard", filter={"meta_has": "label"})
     assert "a" in by_meta["nodes"]
 
-    by_path = g.describe(filter=lambda p, d: p.startswith("a") and d["type"] == "state")
+    by_path = g.describe(
+        detail="standard",
+        filter=lambda p, d: p.startswith("a") and d["type"] == "state",
+    )
     assert "a" in by_path["nodes"]
+
+
+def test_meta_has_filter_at_minimal_detail_excludes_all_nodes() -> None:
+    """metaHas filter at minimal detail excludes all nodes (no meta at minimal)."""
+    g = Graph("g")
+    g.add("a", state(1, meta={"label": "input"}))
+    # Default (minimal) detail omits meta, so meta_has filter matches nothing
+    d = g.describe(filter={"meta_has": "label"})
+    assert list(d["nodes"].keys()) == []
+    g.destroy()
 
 
 def test_reachable_upstream_uses_deps_and_incoming_edges() -> None:
@@ -1022,9 +1035,9 @@ def test_graph_set_records_last_mutation() -> None:
     g.set("n", 5, actor=actor)
     lm = n.last_mutation
     assert lm is not None
-    assert lm["actor"]["type"] == "human"
-    assert lm["actor"]["id"] == "u1"
-    assert "timestamp_ns" in lm
+    assert lm.actor["type"] == "human"
+    assert lm.actor["id"] == "u1"
+    assert lm.timestamp_ns > 0
 
 
 def test_graph_set_qualified_mount_path_records_last_mutation_on_inner_node() -> None:
@@ -1036,8 +1049,8 @@ def test_graph_set_qualified_mount_path_records_last_mutation_on_inner_node() ->
     root.set("sub::x", 9, actor={"type": "wallet", "id": "0x1"})
     lm = inner.last_mutation
     assert lm is not None
-    assert lm["actor"]["type"] == "wallet"
-    assert lm["actor"]["id"] == "0x1"
+    assert lm.actor["type"] == "wallet"
+    assert lm.actor["id"] == "0x1"
 
 
 def test_internal_down_preserves_last_mutation_after_graph_set() -> None:
@@ -1061,7 +1074,7 @@ def test_describe_output_has_expected_top_level_and_node_shape() -> None:
     g.add("a", a)
     g.add("b", b)
     g.connect("a", "b")
-    d = g.describe()
+    d = g.describe(detail="standard")
     for key in ("name", "nodes", "edges", "subgraphs"):
         assert key in d
     assert d["name"] == "g"
@@ -1185,3 +1198,230 @@ def test_signal_reaches_sibling_mounts() -> None:
     n2.subscribe(lambda msgs: pauses.extend("n2" for m in msgs if m[0] is MessageType.PAUSE))
     root.signal([(MessageType.PAUSE, "k")])
     assert sorted(pauses) == ["n1", "n2"]
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.3b — Progressive disclosure for describe() and observe()
+# ---------------------------------------------------------------------------
+
+
+class TestDescribeDetailLevels:
+    """describe() detail level support (3.3b)."""
+
+    def test_default_minimal_returns_type_and_deps_only(self) -> None:
+        g = Graph("detail")
+        a = state(10, meta={"label": "A"})
+        b = derived([a], lambda deps, _: deps[0] * 2)
+        g.add("a", a)
+        g.add("b", b)
+        d = g.describe()
+        na = d["nodes"]["a"]
+        assert na["type"] == "state"
+        assert na["deps"] == []
+        assert "status" not in na
+        assert "value" not in na
+        assert "meta" not in na
+        nb = d["nodes"]["b"]
+        assert nb["type"] == "derived"
+        assert nb["deps"] == ["a"]
+        assert "status" not in nb
+        g.destroy()
+
+    def test_standard_includes_status_value_meta(self) -> None:
+        g = Graph("std")
+        a = state(10, meta={"label": "A"})
+        b = derived([a], lambda deps, _: deps[0] * 2)
+        g.add("a", a)
+        g.add("b", b)
+        b.subscribe(lambda _: None)  # connect b
+        d = g.describe(detail="standard")
+        na = d["nodes"]["a"]
+        assert na["status"] == "settled"
+        assert na["value"] == 10
+        assert na["meta"]["label"] == "A"
+        assert "v" not in na  # no versioning
+        nb = d["nodes"]["b"]
+        assert nb["status"] == "settled"
+        assert nb["value"] == 20
+        g.destroy()
+
+    def test_full_includes_versioning(self) -> None:
+        from graphrefly import policy
+
+        g = Graph("full")
+        tester = {"type": "human", "id": "t1", "name": "tester"}
+        a = state(
+            5,
+            versioning=0,
+            meta={"desc": "x"},
+            guard=policy(lambda allow, deny: [allow("write"), allow("observe")]),
+        )
+        g.add("a", a)
+        # Trigger a mutation with actor to populate last_mutation
+        a.down([(MessageType.DATA, 6)], actor=tester)
+        d = g.describe(detail="full")
+        na = d["nodes"]["a"]
+        assert na["status"] == "settled"
+        assert na["value"] == 6
+        assert "v" in na
+        assert na["v"]["version"] >= 1
+        assert "guard" in na
+        assert "last_mutation" in na
+        assert na["last_mutation"]["actor"]["name"] == "tester"
+        g.destroy()
+
+
+class TestDescribeFieldSelection:
+    """describe() GraphQL-style field selection (3.3b)."""
+
+    def test_fields_override_detail(self) -> None:
+        g = Graph("fields")
+        g.add("x", state(42, meta={"label": "X"}))
+        d = g.describe(fields=["type", "status"])
+        nx = d["nodes"]["x"]
+        assert nx["type"] == "state"
+        assert nx["status"] == "settled"
+        assert "value" not in nx
+        assert "meta" not in nx
+        g.destroy()
+
+    def test_dotted_meta_path(self) -> None:
+        g = Graph("dot")
+        g.add("x", state(1, meta={"label": "L", "secret": "S"}))
+        d = g.describe(fields=["type", "meta.label"])
+        nx = d["nodes"]["x"]
+        assert nx["type"] == "state"
+        assert nx["meta"] == {"label": "L"}
+        assert "value" not in nx
+        g.destroy()
+
+    def test_fields_takes_precedence_over_detail(self) -> None:
+        g = Graph("prec")
+        g.add("x", state(1))
+        d = g.describe(detail="full", fields=["type"])
+        assert "status" not in d["nodes"]["x"]
+        g.destroy()
+
+
+class TestDescribeFormatSpec:
+    """describe(format='spec') returns minimal GraphSpec output (3.3b)."""
+
+    def test_spec_format_is_minimal(self) -> None:
+        g = Graph("spec")
+        a = state(1, meta={"desc": "source"})
+        b = derived([a], lambda deps, _: deps[0] + 1)
+        g.add("a", a)
+        g.add("b", b)
+        d = g.describe(format="spec")
+        assert d["nodes"]["a"]["type"] == "state"
+        assert "status" not in d["nodes"]["a"]
+        assert "value" not in d["nodes"]["a"]
+        assert "meta" not in d["nodes"]["a"]
+        assert d["nodes"]["b"]["deps"] == ["a"]
+        g.destroy()
+
+
+class TestDescribeExpand:
+    """describe().expand() re-reads the live graph with higher detail (3.3b)."""
+
+    def test_expand_from_minimal_to_standard(self) -> None:
+        g = Graph("expand")
+        a = state(1, meta={"label": "A"})
+        g.add("a", a)
+        minimal = g.describe()
+        assert "value" not in minimal["nodes"]["a"]
+        g.set("a", 99)
+        expanded = minimal.expand("standard")
+        assert expanded["nodes"]["a"]["value"] == 99
+        assert expanded["nodes"]["a"]["status"] == "settled"
+        g.destroy()
+
+    def test_expand_with_field_list(self) -> None:
+        g = Graph("expf")
+        g.add("x", state(5))
+        d = g.describe()
+        expanded = d.expand(["type", "value"])
+        assert expanded["nodes"]["x"]["value"] == 5
+        assert "status" not in expanded["nodes"]["x"]
+        g.destroy()
+
+
+class TestObserveDetailLevels:
+    """observe() detail levels (3.3b)."""
+
+    def test_minimal_only_data_events(self) -> None:
+        Graph.inspector_enabled = True
+        g = Graph("obs-min")
+        a = state(1)
+        b = derived([a], lambda deps, _: deps[0] * 2)
+        g.add("a", a)
+        g.add("b", b)
+        obs = g.observe("b", detail="minimal")
+        g.set("a", 2)
+        assert all(e["type"] == "data" for e in obs.events)
+        assert obs.dirty_count >= 1  # tracked internally
+        assert obs.values["b"] == 4
+        obs.dispose()
+        g.destroy()
+        Graph.inspector_enabled = False
+
+    def test_full_enables_timeline_causal_derived(self) -> None:
+        Graph.inspector_enabled = True
+        g = Graph("obs-full")
+        a = state(10)
+        b = derived([a], lambda deps, _: deps[0] * 2)
+        g.add("a", a)
+        g.add("b", b)
+        obs = g.observe("b", detail="full")
+        g.set("a", 20)
+        data_events = [e for e in obs.events if e["type"] == "data"]
+        assert len(data_events) >= 2  # initial + update
+        last = data_events[-1]
+        assert last["data"] == 40
+        assert "timestamp_ns" in last  # timeline
+        assert last.get("trigger_dep_name") == "a"  # causal
+        derived_events = [e for e in obs.events if e["type"] == "derived"]
+        assert len(derived_events) >= 1
+        assert derived_events[-1]["dep_values"] == [20]
+        obs.dispose()
+        g.destroy()
+        Graph.inspector_enabled = False
+
+    def test_graph_wide_minimal(self) -> None:
+        Graph.inspector_enabled = True
+        g = Graph("obs-all-min")
+        a = state(1)
+        b = derived([a], lambda deps, _: deps[0])
+        g.add("a", a)
+        g.add("b", b)
+        obs = g.observe(detail="minimal")
+        g.set("a", 2)
+        assert all(e["type"] == "data" for e in obs.events)
+        assert obs.dirty_count >= 1
+        obs.dispose()
+        g.destroy()
+        Graph.inspector_enabled = False
+
+
+class TestObserveExpand:
+    """observe().expand() resubscribes with higher detail (3.3b)."""
+
+    def test_expand_minimal_to_full(self) -> None:
+        Graph.inspector_enabled = True
+        g = Graph("obs-exp")
+        a = state(1)
+        b = derived([a], lambda deps, _: deps[0] + 10)
+        g.add("a", a)
+        g.add("b", b)
+        minimal = g.observe("b", detail="minimal")
+        g.set("a", 2)
+        assert all(e["type"] == "data" for e in minimal.events)
+        full = minimal.expand("full")
+        g.set("a", 3)
+        data_events = [e for e in full.events if e["type"] == "data"]
+        assert len(data_events) >= 1
+        assert data_events[-1].get("timestamp_ns") is not None
+        assert data_events[-1].get("trigger_dep_name") == "a"
+        full.dispose()
+        g.destroy()
+        Graph.inspector_enabled = False

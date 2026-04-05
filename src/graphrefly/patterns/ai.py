@@ -19,7 +19,7 @@ from graphrefly.core.clock import monotonic_ns
 from graphrefly.core.node import Node
 from graphrefly.core.protocol import MessageType, batch
 from graphrefly.core.sugar import derived, effect, producer, state
-from graphrefly.extra.composite import distill
+from graphrefly.extra.composite import Extraction, distill
 from graphrefly.extra.data_structures import reactive_log
 from graphrefly.extra.sources import first_value_from, from_any, from_timer
 from graphrefly.extra.tier2 import switch_map
@@ -114,6 +114,16 @@ class LLMAdapter(Protocol):
 
 
 AgentLoopStatus = str  # "idle" | "thinking" | "acting" | "done" | "error"
+
+
+@dataclass(slots=True)
+class MemoryTiers:
+    """3-tier memory storage handles for :class:`AgenticMemory`."""
+
+    permanent: Any
+    tier_of: Callable[[str], str]
+    mark_permanent: Callable[[str, Any], None]
+    archive_handle: Any | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -415,32 +425,27 @@ def tool_registry(
 # ---------------------------------------------------------------------------
 
 
+@dataclass(slots=True)
 class SystemPromptHandle:
     """A system prompt node with a ``dispose()`` method for cleanup."""
 
-    __slots__ = ("_node", "_unsub")
-
-    def __init__(self, node: Any, unsub: Any) -> None:
-        self._node = node
-        self._unsub = unsub
+    node: Node[str]
+    dispose: Callable[[], None]
 
     def get(self) -> str:
-        return self._node.get()
+        return self.node.get()
 
     def subscribe(self, listener: Any) -> Any:
-        return self._node.subscribe(listener)
+        return self.node.subscribe(listener)
 
     def down(self, msgs: Any) -> None:
-        self._node.down(msgs)
-
-    def dispose(self) -> None:
-        self._unsub()
+        self.node.down(msgs)
 
     def describe(self) -> Any:
-        return self._node.describe() if hasattr(self._node, "describe") else {}
+        return self.node.describe() if hasattr(self.node, "describe") else {}
 
     def __getattr__(self, name: str) -> Any:
-        return getattr(self._node, name)
+        return getattr(self.node, name)
 
 
 def system_prompt_builder(
@@ -467,7 +472,7 @@ def system_prompt_builder(
         initial="",
     )
     unsub = _keepalive(result)
-    return SystemPromptHandle(result, unsub)
+    return SystemPromptHandle(node=result, dispose=unsub)
 
 
 # ---------------------------------------------------------------------------
@@ -523,7 +528,11 @@ def llm_extractor(
                         response = msg[1]
                         try:
                             parsed = json.loads(response.content)
-                            actions.emit(parsed)
+                            extraction = Extraction(
+                                upsert=parsed.get("upsert", []),
+                                remove=parsed.get("remove", []),
+                            )
+                            actions.emit(extraction)
                             actions.down([(MessageType.COMPLETE,)])
                         except Exception:
                             actions.down(
@@ -604,7 +613,11 @@ def llm_consolidator(
                         response = msg[1]
                         try:
                             parsed = json.loads(response.content)
-                            actions.emit(parsed)
+                            extraction = Extraction(
+                                upsert=parsed.get("upsert", []),
+                                remove=parsed.get("remove", []),
+                            )
+                            actions.emit(extraction)
                             actions.down([(MessageType.COMPLETE,)])
                         except Exception:
                             actions.down(
@@ -787,7 +800,7 @@ class AgentMemoryGraph(Graph):
 
         def resolved_extract(raw: Any, existing: Mapping[str, Any]) -> Any:
             if raw is None:
-                return {"upsert": []}
+                return Extraction(upsert=[])
             return raw_extract(raw, existing)
 
         # --- Admission filter ---
@@ -854,7 +867,7 @@ class AgentMemoryGraph(Graph):
             self.mount("kg", self.kg)
 
         # --- 3-tier storage (optional) ---
-        self.memory_tiers: dict[str, Any] | None = None
+        self.memory_tiers: MemoryTiers | None = None
         if tiers is not None:
             decay_rate = tiers.get("decay_rate", _DEFAULT_DECAY_RATE)
             max_active = tiers.get("max_active", 1000)
@@ -946,12 +959,12 @@ class AgentMemoryGraph(Graph):
                     **(tiers.get("archive_checkpoint_options") or {}),
                 )
 
-            self.memory_tiers = {
-                "permanent": permanent,
-                "tier_of": _tier_of,
-                "mark_permanent": _mark_permanent,
-                "archive_handle": archive_handle,
-            }
+            self.memory_tiers = MemoryTiers(
+                permanent=permanent,
+                tier_of=_tier_of,
+                mark_permanent=_mark_permanent,
+                archive_handle=archive_handle,
+            )
 
         # --- Post-extraction hooks: vector + KG indexing ---
         if self.vectors or self.kg:
@@ -1553,6 +1566,7 @@ def knobs_as_tools(
     kwargs: dict[str, Any] = {}
     if actor is not None:
         kwargs["actor"] = actor
+    kwargs["detail"] = "full"
     described = graph.describe(**kwargs)
 
     openai_list: list[OpenAIToolSchema] = []
@@ -1670,6 +1684,7 @@ def gauges_as_context(
     kwargs: dict[str, Any] = {}
     if actor is not None:
         kwargs["actor"] = actor
+    kwargs["detail"] = "full"
     described = graph.describe(**kwargs)
 
     entries: list[tuple[str, str, str]] = []  # (path, description, formatted)
@@ -2067,6 +2082,7 @@ def suggest_strategy(
     kwargs: dict[str, Any] = {}
     if actor is not None:
         kwargs["actor"] = actor
+    kwargs["detail"] = "standard"
     described = graph.describe(**kwargs)
 
     messages = [

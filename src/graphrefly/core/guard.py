@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any, Literal, TypedDict
 
 type GuardAction = str
@@ -255,11 +256,19 @@ def access_hint_for_guard(guard: GuardFn) -> str:
     return "+".join(allowed)
 
 
-def record_mutation(actor: Mapping[str, Any]) -> dict[str, Any]:
+@dataclass(frozen=True, slots=True)
+class MutationRecord:
+    """Snapshot for :attr:`~graphrefly.core.node.NodeImpl.last_mutation`."""
+
+    actor: dict[str, Any]
+    timestamp_ns: int
+
+
+def record_mutation(actor: Mapping[str, Any]) -> MutationRecord:
     """Snapshot for :attr:`~graphrefly.core.node.NodeImpl.last_mutation`."""
     from graphrefly.core.clock import wall_clock_ns
 
-    return {"actor": dict(normalize_actor(actor)), "timestamp_ns": wall_clock_ns()}
+    return MutationRecord(actor=dict(normalize_actor(actor)), timestamp_ns=wall_clock_ns())
 
 
 __all__ = [
@@ -267,6 +276,7 @@ __all__ = [
     "GuardAction",
     "GuardDenied",
     "GuardFn",
+    "MutationRecord",
     "access_hint_for_guard",
     "compose_guards",
     "normalize_actor",

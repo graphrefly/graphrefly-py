@@ -6,6 +6,7 @@ from typing import Any
 
 from graphrefly.core.protocol import MessageType
 from graphrefly.core.sugar import state
+from graphrefly.extra.composite import Extraction
 from graphrefly.graph.graph import Graph
 from graphrefly.patterns.ai import (
     AdmissionScores,
@@ -388,7 +389,7 @@ def test_agent_memory_creates_graph() -> None:
     mem = agent_memory(
         "test-mem",
         source,
-        extract_fn=lambda raw, _existing: {"upsert": [{"key": "k1", "value": str(raw)}]},
+        extract_fn=lambda raw, _existing: Extraction(upsert=[{"key": "k1", "value": str(raw)}]),
         score=lambda _mem, _ctx: 1.0,
         cost=lambda _mem: 10.0,
         budget=100,
@@ -418,7 +419,7 @@ def test_agent_memory_optional_features_null() -> None:
     mem = agent_memory(
         "test-mem",
         state("x"),
-        extract_fn=lambda _r, _e: {"upsert": []},
+        extract_fn=lambda _r, _e: Extraction(upsert=[]),
         score=lambda _m, _c: 1.0,
         cost=lambda _m: 1.0,
     )
@@ -436,7 +437,7 @@ def test_agent_memory_vector_index() -> None:
     mem = agent_memory(
         "vec-mem",
         source,
-        extract_fn=lambda raw, _e: {"upsert": [{"key": "k1", "value": str(raw)}]},
+        extract_fn=lambda raw, _e: Extraction(upsert=[{"key": "k1", "value": str(raw)}]),
         score=lambda _m, _c: 1.0,
         cost=lambda _m: 10.0,
         budget=100,
@@ -454,7 +455,7 @@ def test_agent_memory_knowledge_graph() -> None:
     mem = agent_memory(
         "kg-mem",
         source,
-        extract_fn=lambda raw, _e: {"upsert": [{"key": "k1", "value": str(raw)}]},
+        extract_fn=lambda raw, _e: Extraction(upsert=[{"key": "k1", "value": str(raw)}]),
         score=lambda _m, _c: 1.0,
         cost=lambda _m: 10.0,
         enable_knowledge_graph=True,
@@ -469,7 +470,7 @@ def test_agent_memory_3_tier_storage() -> None:
     mem = agent_memory(
         "tier-mem",
         source,
-        extract_fn=lambda raw, _e: {"upsert": [{"key": "core-profile", "value": str(raw)}]},
+        extract_fn=lambda raw, _e: Extraction(upsert=[{"key": "core-profile", "value": str(raw)}]),
         score=lambda _m, _c: 1.0,
         cost=lambda _m: 10.0,
         tiers={
@@ -478,9 +479,9 @@ def test_agent_memory_3_tier_storage() -> None:
         },
     )
     assert mem.memory_tiers is not None
-    assert mem.memory_tiers["permanent"] is not None
-    assert callable(mem.memory_tiers["tier_of"])
-    assert callable(mem.memory_tiers["mark_permanent"])
+    assert mem.memory_tiers.permanent is not None
+    assert callable(mem.memory_tiers.tier_of)
+    assert callable(mem.memory_tiers.mark_permanent)
     mem.destroy()
 
 
@@ -489,7 +490,7 @@ def test_agent_memory_retrieval_pipeline() -> None:
     mem = agent_memory(
         "retr-mem",
         source,
-        extract_fn=lambda raw, _e: {"upsert": [{"key": "m1", "value": f"mem-{raw}"}]},
+        extract_fn=lambda raw, _e: Extraction(upsert=[{"key": "m1", "value": f"mem-{raw}"}]),
         score=lambda _m, _c: 0.8,
         cost=lambda _m: 10.0,
         budget=100,
@@ -509,7 +510,7 @@ def test_agent_memory_retrieval_trace() -> None:
     mem = agent_memory(
         "trace-mem",
         source,
-        extract_fn=lambda raw, _e: {"upsert": [{"key": "k1", "value": str(raw)}]},
+        extract_fn=lambda raw, _e: Extraction(upsert=[{"key": "k1", "value": str(raw)}]),
         score=lambda _m, _c: 1.0,
         cost=lambda _m: 5.0,
         budget=100,
@@ -579,7 +580,7 @@ def test_admission_filter_3d_integrates_with_agent_memory() -> None:
     mem = agent_memory(
         "3d-mem",
         source,
-        extract_fn=lambda raw, _e: {"upsert": [{"key": "k", "value": str(raw)}]},
+        extract_fn=lambda raw, _e: Extraction(upsert=[{"key": "k", "value": str(raw)}]),
         score=lambda _m, _c: 1.0,
         cost=lambda _m: 1.0,
         admission_filter=filt,

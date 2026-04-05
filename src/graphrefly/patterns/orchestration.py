@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 import threading
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any
 
 from graphrefly.core.node import Node, NodeActions, node
 from graphrefly.core.protocol import MessageType
@@ -22,7 +22,10 @@ if TYPE_CHECKING:
 type StepRef = str | Node[Any]
 
 
-class BranchResult(TypedDict):
+@dataclass(frozen=True, slots=True)
+class BranchResult:
+    """Result of :func:`branch` — tags each value as ``then`` or ``else``."""
+
     branch: str
     value: Any
 
@@ -152,10 +155,10 @@ def branch(
 
     def compute(deps: list[Any], _actions: NodeActions) -> BranchResult:
         value = deps[0]
-        return {
-            "branch": "then" if bool(predicate(value)) else "else",
-            "value": value,
-        }
+        return BranchResult(
+            branch="then" if bool(predicate(value)) else "else",
+            value=value,
+        )
 
     step = node(
         [source_node],

@@ -1301,13 +1301,25 @@ def from_otel(
 # ---------------------------------------------------------------------------
 
 
-def parse_syslog(raw: str) -> dict[str, Any]:
-    """Parse a raw RFC 5424 syslog line into a structured dict.
+@dataclass(frozen=True, slots=True)
+class SyslogMessage:
+    """Parsed RFC 5424 syslog message."""
+
+    facility: int
+    severity: int
+    timestamp: str
+    hostname: str
+    app_name: str
+    proc_id: str
+    msg_id: str
+    message: str
+    timestamp_ns: int
+
+
+def parse_syslog(raw: str) -> SyslogMessage:
+    """Parse a raw RFC 5424 syslog line into a :class:`SyslogMessage`.
 
     Format: ``<PRI>VERSION TIMESTAMP HOSTNAME APP-NAME PROCID MSGID MSG``
-
-    Returns a dict with keys: ``facility``, ``severity``, ``timestamp``, ``hostname``,
-    ``app_name``, ``proc_id``, ``msg_id``, ``message``, ``timestamp_ns``.
 
     Falls back gracefully for unparseable input.
     """
@@ -1315,29 +1327,29 @@ def parse_syslog(raw: str) -> dict[str, Any]:
     if not match:
         now_ns = wall_clock_ns()
         timestamp = datetime.fromtimestamp(now_ns / 1e9, tz=UTC).isoformat()
-        return {
-            "facility": 1,
-            "severity": 6,
-            "timestamp": timestamp,
-            "hostname": "-",
-            "app_name": "-",
-            "proc_id": "-",
-            "msg_id": "-",
-            "message": raw.strip(),
-            "timestamp_ns": now_ns,
-        }
+        return SyslogMessage(
+            facility=1,
+            severity=6,
+            timestamp=timestamp,
+            hostname="-",
+            app_name="-",
+            proc_id="-",
+            msg_id="-",
+            message=raw.strip(),
+            timestamp_ns=now_ns,
+        )
     pri = int(match.group(1))
-    return {
-        "facility": pri >> 3,
-        "severity": pri & 7,
-        "timestamp": match.group(2),
-        "hostname": match.group(3),
-        "app_name": match.group(4),
-        "proc_id": match.group(5),
-        "msg_id": match.group(6),
-        "message": (match.group(7) or "").strip(),
-        "timestamp_ns": wall_clock_ns(),
-    }
+    return SyslogMessage(
+        facility=pri >> 3,
+        severity=pri & 7,
+        timestamp=match.group(2),
+        hostname=match.group(3),
+        app_name=match.group(4),
+        proc_id=match.group(5),
+        msg_id=match.group(6),
+        message=(match.group(7) or "").strip(),
+        timestamp_ns=wall_clock_ns(),
+    )
 
 
 def from_syslog(
@@ -1379,13 +1391,22 @@ _STATSD_TYPES: dict[str, str] = {
 }
 
 
-def parse_statsd(line: str) -> dict[str, Any]:
-    """Parse a raw StatsD/DogStatsD line into a structured dict.
+@dataclass(frozen=True, slots=True)
+class StatsdMetric:
+    """Parsed StatsD/DogStatsD metric."""
+
+    name: str
+    value: float
+    type: str
+    tags: dict[str, str]
+    timestamp_ns: int
+    sample_rate: float | None = None
+
+
+def parse_statsd(line: str) -> StatsdMetric:
+    """Parse a raw StatsD/DogStatsD line into a :class:`StatsdMetric`.
 
     Format: ``metric.name:value|type|@sampleRate|#tag1:val1,tag2:val2``
-
-    Returns a dict with keys: ``name``, ``value``, ``type``, ``sample_rate`` (optional),
-    ``tags``, ``timestamp_ns``.
 
     Raises :class:`ValueError` on invalid input.
     """
@@ -1418,16 +1439,14 @@ def parse_statsd(line: str) -> dict[str, Any]:
                 if kv[0]:
                     tags[kv[0]] = kv[1] if len(kv) > 1 else ""
 
-    result: dict[str, Any] = {
-        "name": name,
-        "value": value,
-        "type": metric_type,
-        "tags": tags,
-        "timestamp_ns": wall_clock_ns(),
-    }
-    if sample_rate is not None:
-        result["sample_rate"] = sample_rate
-    return result
+    return StatsdMetric(
+        name=name,
+        value=value,
+        type=metric_type,
+        tags=tags,
+        timestamp_ns=wall_clock_ns(),
+        sample_rate=sample_rate,
+    )
 
 
 def from_statsd(
@@ -1459,13 +1478,26 @@ def from_statsd(
 # ---------------------------------------------------------------------------
 
 
-def parse_prometheus_text(text: str) -> list[dict[str, Any]]:
-    """Parse Prometheus exposition format text into a list of metric dicts.
+@dataclass(frozen=True, slots=True)
+class PrometheusMetric:
+    """Parsed Prometheus exposition format metric."""
 
-    Each dict has keys: ``name``, ``labels``, ``value``, ``timestamp_ms`` (optional),
-    ``type`` (optional), ``help`` (optional), ``timestamp_ns``.
+    name: str
+    labels: dict[str, str]
+    value: float
+    timestamp_ns: int
+    timestamp_ms: float | None = None
+    type: str | None = None
+    help: str | None = None
+
+
+def parse_prometheus_text(text: str) -> list[PrometheusMetric]:
+    """Parse Prometheus exposition format text into a list of :class:`PrometheusMetric`.
+
+    Each entry has ``name``, ``labels``, ``value``, ``timestamp_ns``, and optional
+    ``timestamp_ms``, ``type``, ``help``.
     """
-    results: list[dict[str, Any]] = []
+    results: list[PrometheusMetric] = []
     types: dict[str, str] = {}
     helps: dict[str, str] = {}
 
@@ -1512,21 +1544,17 @@ def parse_prometheus_text(text: str) -> list[dict[str, Any]]:
             continue
 
         base_name = re.sub(r"(_total|_count|_sum|_bucket|_created|_info)$", "", name)
-        entry: dict[str, Any] = {
-            "name": name,
-            "labels": labels,
-            "value": float(value_str),
-            "timestamp_ns": wall_clock_ns(),
-        }
-        if ts_str:
-            entry["timestamp_ms"] = float(ts_str)
         t = types.get(base_name) or types.get(name)
-        if t:
-            entry["type"] = t
         h = helps.get(base_name) or helps.get(name)
-        if h:
-            entry["help"] = h
-        results.append(entry)
+        results.append(PrometheusMetric(
+            name=name,
+            labels=labels,
+            value=float(value_str),
+            timestamp_ns=wall_clock_ns(),
+            timestamp_ms=float(ts_str) if ts_str else None,
+            type=t,
+            help=h,
+        ))
 
     return results
 
@@ -2160,6 +2188,20 @@ def from_clickhouse_watch(
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class PulsarMessage:
+    """Parsed Apache Pulsar message."""
+
+    topic: str
+    message_id: str
+    key: str | None
+    value: Any
+    properties: dict[str, str]
+    publish_time: int
+    event_time: int
+    timestamp_ns: int
+
+
 def from_pulsar(
     consumer: Any,
     *,
@@ -2212,16 +2254,16 @@ def from_pulsar(
                     if not active[0]:
                         return
                     actions.emit(
-                        {
-                            "topic": msg.topic_name(),
-                            "message_id": str(msg.message_id()),
-                            "key": msg.partition_key(),
-                            "value": deserialize(msg.data()),
-                            "properties": msg.properties(),
-                            "publish_time": msg.publish_timestamp(),
-                            "event_time": msg.event_timestamp(),
-                            "timestamp_ns": wall_clock_ns(),
-                        }
+                        PulsarMessage(
+                            topic=msg.topic_name(),
+                            message_id=str(msg.message_id()),
+                            key=msg.partition_key(),
+                            value=deserialize(msg.data()),
+                            properties=msg.properties(),
+                            publish_time=msg.publish_timestamp(),
+                            event_time=msg.event_timestamp(),
+                            timestamp_ns=wall_clock_ns(),
+                        )
                     )
                     if auto_ack:
                         consumer.acknowledge(msg)
@@ -2317,20 +2359,32 @@ def to_pulsar(
 # ---------------------------------------------------------------------------
 
 
-def _nats_msg_to_dict(msg: Any, deserialize: Callable[[bytes], Any]) -> dict[str, Any]:
+@dataclass(frozen=True, slots=True)
+class NatsMessage:
+    """Parsed NATS message."""
+
+    subject: str
+    data: Any
+    headers: dict[str, str]
+    reply: str | None
+    sid: int
+    timestamp_ns: int
+
+
+def _nats_msg_to_nats_message(msg: Any, deserialize: Callable[[bytes], Any]) -> NatsMessage:
     """Extract structured fields from a NATS message (sync or async client)."""
     headers: dict[str, str] = {}
     if hasattr(msg, "headers") and msg.headers is not None:
         for k in msg.headers:
             headers[k] = msg.headers[k]
-    return {
-        "subject": msg.subject,
-        "data": deserialize(msg.data),
-        "headers": headers,
-        "reply": getattr(msg, "reply", None),
-        "sid": getattr(msg, "sid", 0),
-        "timestamp_ns": wall_clock_ns(),
-    }
+    return NatsMessage(
+        subject=msg.subject,
+        data=deserialize(msg.data),
+        headers=headers,
+        reply=getattr(msg, "reply", None),
+        sid=getattr(msg, "sid", 0),
+        timestamp_ns=wall_clock_ns(),
+    )
 
 
 def from_nats(
@@ -2408,7 +2462,7 @@ def from_nats(
                 async for msg in sub:
                     if not active[0]:
                         return
-                    actions.emit(_nats_msg_to_dict(msg, deserialize))  # type: ignore[arg-type]
+                    actions.emit(_nats_msg_to_nats_message(msg, deserialize))  # type: ignore[arg-type]
                 # Iterator exhausted — subscription closed (inline, matching TS pattern).
                 if active[0]:
                     actions.down([(MessageType.COMPLETE,)])
@@ -2434,7 +2488,7 @@ def from_nats(
                 for msg in sub_or_coro:
                     if not active[0]:
                         return
-                    actions.emit(_nats_msg_to_dict(msg, deserialize))  # type: ignore[arg-type]
+                    actions.emit(_nats_msg_to_nats_message(msg, deserialize))  # type: ignore[arg-type]
                 # Iterator exhausted — subscription closed.
                 if active[0]:
                     actions.down([(MessageType.COMPLETE,)])
@@ -2519,6 +2573,21 @@ def to_nats(
 #  RabbitMQ
 # ---------------------------------------------------------------------------
 
+
+@dataclass(frozen=True, slots=True)
+class RabbitMQMessage:
+    """Parsed RabbitMQ / AMQP message."""
+
+    queue: str
+    routing_key: str
+    exchange: str
+    content: Any
+    properties: dict[str, Any]
+    delivery_tag: int
+    redelivered: bool
+    timestamp_ns: int
+
+
 # Known AMQP 0-9-1 BasicProperties fields (pika / spec-stable).
 _AMQP_PROPERTY_FIELDS = (
     "content_type", "content_encoding", "headers", "delivery_mode", "priority",
@@ -2590,16 +2659,16 @@ def from_rabbitmq(
                     actions.down([(MessageType.ERROR, err)])
                 return
             actions.emit(
-                {
-                    "queue": queue,
-                    "routing_key": method.routing_key,
-                    "exchange": method.exchange,
-                    "content": deserialize(body),
-                    "properties": _extract_amqp_properties(properties),
-                    "delivery_tag": method.delivery_tag,
-                    "redelivered": method.redelivered,
-                    "timestamp_ns": wall_clock_ns(),
-                }
+                RabbitMQMessage(
+                    queue=queue,
+                    routing_key=method.routing_key,
+                    exchange=method.exchange,
+                    content=deserialize(body),
+                    properties=_extract_amqp_properties(properties),
+                    delivery_tag=method.delivery_tag,
+                    redelivered=method.redelivered,
+                    timestamp_ns=wall_clock_ns(),
+                )
             )
             if auto_ack:
                 ch.basic_ack(delivery_tag=method.delivery_tag)
@@ -3739,12 +3808,18 @@ __all__ = [
     # 5.3b -- Ingest adapters
     "SinkHandle",
     "SinkTransportError",
+    "SyslogMessage",
+    "StatsdMetric",
+    "NatsMessage",
+    "PulsarMessage",
+    "RabbitMQMessage",
     "OTelBundle",
     "from_otel",
     "parse_syslog",
     "from_syslog",
     "parse_statsd",
     "from_statsd",
+    "PrometheusMetric",
     "parse_prometheus_text",
     "from_prometheus",
     "from_kafka",

@@ -134,9 +134,9 @@ def test_last_mutation_recorded_on_external_write() -> None:
     n.down([(MessageType.DATA, 5)], actor={"type": "wallet", "id": "0xabc"})
     lm = n.last_mutation
     assert lm is not None
-    assert lm["actor"]["type"] == "wallet"
-    assert lm["actor"]["id"] == "0xabc"
-    assert "timestamp_ns" in lm
+    assert lm.actor["type"] == "wallet"
+    assert lm.actor["id"] == "0xabc"
+    assert lm.timestamp_ns > 0
 
 
 def test_graph_remove_teardown_is_internal_after_registry_pop() -> None:

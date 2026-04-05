@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 from graphrefly.core.protocol import MessageType
 from graphrefly.core.sugar import state
-from graphrefly.extra.composite import distill, verifiable
+from graphrefly.extra.composite import Extraction, distill, verifiable
 
 
 def test_verifiable_runs_on_explicit_trigger() -> None:
@@ -77,9 +77,9 @@ def test_distill_extracts_and_compacts() -> None:
     src = state("alpha")
     bundle = distill(
         src,
-        lambda raw, _existing: {
-            "upsert": [{"key": raw, "value": {"text": raw, "points": len(raw)}}],
-        },
+        lambda raw, _existing: Extraction(
+            upsert=[{"key": raw, "value": {"text": raw, "points": len(raw)}}],
+        ),
         score=lambda mem, _ctx: float(mem["points"]),
         cost=lambda _mem: 1.0,
         budget=10,
@@ -87,7 +87,7 @@ def test_distill_extracts_and_compacts() -> None:
     src.down([(MessageType.DATA, "beta")])
     assert bundle.store.data.get().value["beta"]["text"] == "beta"
     assert bundle.size.get() >= 1
-    assert any(entry["key"] == "beta" for entry in bundle.compact.get())
+    assert any(entry.key == "beta" for entry in bundle.compact.get())
 
 
 def test_distill_reactive_eviction() -> None:
@@ -95,7 +95,7 @@ def test_distill_reactive_eviction() -> None:
     evict_toggle = state(False)
     bundle = distill(
         src,
-        lambda raw, _existing: {"upsert": [{"key": raw, "value": {"text": raw}}]},
+        lambda raw, _existing: Extraction(upsert=[{"key": raw, "value": {"text": raw}}]),
         score=lambda _mem, _ctx: 1.0,
         cost=lambda _mem: 1.0,
         budget=10,
@@ -112,16 +112,16 @@ def test_distill_consolidates_from_trigger_and_is_atomic() -> None:
     consolidate_trigger = state(False)
     bundle = distill(
         src,
-        lambda raw, _existing: {
-            "upsert": [{"key": raw, "value": {"text": raw, "points": len(raw)}}],
-        },
+        lambda raw, _existing: Extraction(
+            upsert=[{"key": raw, "value": {"text": raw, "points": len(raw)}}],
+        ),
         score=lambda mem, _ctx: float(mem["points"]),
         cost=lambda _mem: 1.0,
         budget=10,
-        consolidate=lambda _entries: {
-            "upsert": [{"key": "merged", "value": {"text": "merged", "points": 99}}],
-            "remove": ["seed"],
-        },
+        consolidate=lambda _entries: Extraction(
+            upsert=[{"key": "merged", "value": {"text": "merged", "points": 99}}],
+            remove=["seed"],
+        ),
         consolidate_trigger=consolidate_trigger,
     )
     sizes: list[int] = []
@@ -140,7 +140,7 @@ def test_distill_handles_invalid_evict_type_without_side_effects() -> None:
     src = state("x")
     bundle = distill(
         src,
-        lambda raw, _existing: {"upsert": [{"key": raw, "value": {"text": raw}}]},
+        lambda raw, _existing: Extraction(upsert=[{"key": raw, "value": {"text": raw}}]),
         score=lambda _mem, _ctx: 1.0,
         cost=lambda _mem: 1.0,
         budget=10,
@@ -150,28 +150,28 @@ def test_distill_handles_invalid_evict_type_without_side_effects() -> None:
     assert "x" in bundle.store.data.get().value
 
 
-def test_distill_handles_missing_upsert_without_side_effects() -> None:
+def test_distill_remove_only_extraction_works() -> None:
     src = state("seed")
     bundle = distill(
         src,
         lambda raw, _existing: (
-            {"upsert": [{"key": raw, "value": {"text": raw}}]}
+            Extraction(upsert=[{"key": raw, "value": {"text": raw}}])
             if raw == "seed"
-            else {"remove": ["seed"]}
+            else Extraction(upsert=[], remove=["seed"])
         ),
         score=lambda _mem, _ctx: 1.0,
         cost=lambda _mem: 1.0,
         budget=10,
     )
     src.down([(MessageType.DATA, "run")])
-    assert "seed" in bundle.store.data.get().value
+    assert "seed" not in bundle.store.data.get().value
 
 
 def test_distill_accepts_map_options_dict() -> None:
     src = state("alpha")
     bundle = distill(
         src,
-        lambda raw, _existing: {"upsert": [{"key": raw, "value": {"text": raw}}]},
+        lambda raw, _existing: Extraction(upsert=[{"key": raw, "value": {"text": raw}}]),
         score=lambda _mem, _ctx: 1.0,
         cost=lambda _mem: 1.0,
         budget=10,

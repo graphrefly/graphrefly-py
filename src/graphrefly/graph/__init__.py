@@ -5,6 +5,7 @@ from graphrefly.graph.graph import (
     GRAPH_SNAPSHOT_VERSION,
     META_PATH_SEG,
     PATH_SEP,
+    DescribeResult,
     Graph,
     GraphAutoCheckpointHandle,
     GraphDiffResult,
@@ -16,6 +17,7 @@ from graphrefly.graph.graph import (
 )
 
 __all__ = [
+    "DescribeResult",
     "GRAPH_META_SEGMENT",
     "GRAPH_SNAPSHOT_VERSION",
     "GraphAutoCheckpointHandle",

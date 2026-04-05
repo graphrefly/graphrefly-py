@@ -1,14 +1,26 @@
 # GraphReFly
 
-**Reactive graph protocol for human + LLM co-operation.**
+**Describe what matters. It watches, filters, and explains — persistently.**
 
-One primitive. Zero dependencies. Composable nodes with glitch-free diamond resolution, two-phase push propagation, durable streaming, and async runners for asyncio and trio.
+You're buried under emails, alerts, feeds, and messages. You can't process it all. GraphReFly lets you describe automations in plain language, review them visually, run them persistently, and trace every decision back to its source.
 
 [![PyPI](https://img.shields.io/pypi/v/graphrefly?color=blue)](https://pypi.org/project/graphrefly/)
 [![license](https://img.shields.io/github/license/graphrefly/graphrefly-py)](./LICENSE)
 [![Python](https://img.shields.io/pypi/pyversions/graphrefly)](https://pypi.org/project/graphrefly/)
 
 [Docs](https://py.graphrefly.dev) | [Spec](https://py.graphrefly.dev/spec/) | [TypeScript](https://graphrefly.dev) | [API Reference](https://py.graphrefly.dev/api/)
+
+---
+
+<!-- TODO: Demo 0 GIF/video — NL → flow view → running → "why was this flagged?" -->
+
+## What can you do with it?
+
+**Email triage** — "Watch my inbox. Urgent emails from my team go to a priority list. Newsletters get summarized weekly. Everything else, count by sender." It watches, classifies, and alerts — and when you ask "why was this flagged?", it walks you through the reasoning.
+
+**Spending alerts** — Connect bank transactions to budget categories. Get a push notification when monthly dining exceeds your target. No polling, no manual checks — changes propagate the moment data arrives.
+
+**Knowledge management** — Notes, bookmarks, highlights flow in. Contradictions surface automatically. Related ideas link themselves. Your second brain stays current without you maintaining it.
 
 ---
 
@@ -31,20 +43,24 @@ count.push(3)
 # → doubled: 6
 ```
 
+## How it works
+
+You describe what you need — an LLM composes a reactive graph (like SQL for data flows). The graph runs persistently, checkpoints its state, and traces every decision through a causal chain. Ask "why?" at any point and get a human-readable explanation from source to conclusion.
+
 ## Why GraphReFly?
 
-Most state libraries solve **one** problem well. GraphReFly solves the space between them:
-
-|  | Redux / Zustand | RxPY | Pydantic AI | TC39 Signals | **GraphReFly** |
-|--|-----------------|------|-------------|-------------|---------------|
-| Simple store API | yes | no | no | yes | **yes** |
-| Streaming operators | no | yes | no | no | **yes** |
-| Diamond resolution | no | n/a | n/a | partial | **glitch-free** |
-| Graph introspection | no | no | no | no | **describe / observe / diagram** |
-| Durable checkpoints | no | no | no | no | **file / SQLite / IndexedDB** |
-| LLM orchestration | no | no | partial | no | **agent_loop / chat_stream / tool_registry** |
-| Async runners | n/a | asyncio | asyncio | n/a | **asyncio / trio** |
-| Dependencies | varies | 0 | many | n/a | **0** |
+|  | Redux / Zustand | RxPY | Pydantic AI | LangGraph | TC39 Signals | **GraphReFly** |
+|--|-----------------|------|-------------|-----------|-------------|---------------|
+| Simple store API | yes | no | no | no | yes | **yes** |
+| Streaming operators | no | yes | no | no | no | **yes** |
+| Diamond resolution | no | n/a | n/a | n/a | partial | **glitch-free** |
+| Graph introspection | no | no | no | checkpoints | no | **describe / observe / diagram** |
+| Causal tracing | no | no | no | no | no | **explain every decision** |
+| Durable checkpoints | no | no | no | yes | no | **file / SQLite / IndexedDB** |
+| LLM orchestration | no | no | partial | yes | no | **agent_loop / chat_stream / tool_registry** |
+| NL → graph composition | no | no | no | no | no | **graph_from_spec / llm_compose** |
+| Async runners | n/a | asyncio | asyncio | asyncio | n/a | **asyncio / trio** |
+| Dependencies | varies | 0 | many | many | n/a | **0** |
 
 ## One primitive
 

@@ -6,8 +6,8 @@ These helpers compose existing primitives without introducing new protocol seman
 from __future__ import annotations
 
 from collections.abc import AsyncIterable, Awaitable, Iterable, Mapping
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, cast
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, cast
 
 from graphrefly.core.dynamic_node import dynamic_node
 from graphrefly.core.node import Node
@@ -86,11 +86,21 @@ def verifiable(
     return VerifiableBundle(node=source_node, verified=verified_node, trigger=trigger_node)
 
 
-class Extraction(TypedDict):
+@dataclass(frozen=True, slots=True)
+class Extraction:
     """Shape consumed by :func:`distill` extraction stages."""
 
     upsert: list[dict[str, Any]]
-    remove: NotRequired[list[str]]
+    remove: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class CompactEntry:
+    """Single entry in a :attr:`DistillBundle.compact` snapshot."""
+
+    key: str
+    value: Any
+    score: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,7 +108,7 @@ class DistillBundle:
     """Result of :func:`distill`."""
 
     store: ReactiveMapBundle
-    compact: Node[Any]
+    compact: Node[list[CompactEntry]]
     size: Node[int]
 
 
@@ -112,14 +122,13 @@ def _snapshot_map(store: ReactiveMapBundle) -> Mapping[str, Any]:
 
 
 def _apply_extraction(store: ReactiveMapBundle, extraction: Extraction) -> None:
-    upsert = extraction.get("upsert")
-    if not isinstance(upsert, list):
+    if not isinstance(extraction.upsert, list):
         msg = "distill extraction requires upsert: list[{key,value}]"
         raise TypeError(msg)
     with batch():
-        for row in upsert:
+        for row in extraction.upsert:
             store.set(row["key"], row["value"])
-        for key in extraction.get("remove", []):
+        for key in extraction.remove:
             store.delete(key)
 
 
@@ -274,7 +283,7 @@ def _pack_compact(
     score: Callable[[Any, Any], float],
     cost: Callable[[Any], float],
     budget: float,
-) -> list[dict[str, Any]]:
+) -> list[CompactEntry]:
     ranked = [
         {
             "key": key,
@@ -285,16 +294,17 @@ def _pack_compact(
         for key, value in snapshot.items()
     ]
     ranked.sort(key=lambda row: row["score"], reverse=True)
-    packed: list[dict[str, Any]] = []
+    packed: list[CompactEntry] = []
     remaining = float(budget)
     for row in ranked:
         if row["cost"] <= remaining:
-            packed.append({"key": row["key"], "value": row["value"], "score": row["score"]})
+            packed.append(CompactEntry(key=row["key"], value=row["value"], score=row["score"]))
             remaining -= row["cost"]
     return packed
 
 
 __all__ = [
+    "CompactEntry",
     "DistillBundle",
     "Extraction",
     "VerifiableBundle",

@@ -395,7 +395,7 @@ class TestReactiveLayout:
     def test_segments_meta_observability(self) -> None:
         layout = reactive_layout(mock_adapter(), text="hello world", max_width=200)
         try:
-            desc = layout.graph.describe()
+            desc = layout.graph.describe(detail="standard")
             seg_desc = desc["nodes"].get("segments")
             assert seg_desc is not None
             assert "meta" in seg_desc

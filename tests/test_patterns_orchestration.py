@@ -49,7 +49,7 @@ def test_branch_emits_then_else_labels() -> None:
     def sink(msgs: object) -> None:
         for msg in msgs:
             if msg[0].value == "DATA":
-                seen.append(msg[1]["branch"])
+                seen.append(msg[1].branch)
 
     routed.subscribe(sink)
     g.set("input", 2)
@@ -63,7 +63,7 @@ def test_task_and_branch_describe_as_derived_with_canonical_meta() -> None:
     g.add("input", source)
     orchestration.task(g, "t", lambda deps, _a: deps[0], deps=["input"])
     orchestration.branch(g, "b", "input", lambda value: value > 0)
-    desc = g.describe()
+    desc = g.describe(detail="standard")
     t_key = next((k for k in desc["nodes"] if k == "t" or k.endswith("::t")), None)
     b_key = next((k for k in desc["nodes"] if k == "b" or k.endswith("::b")), None)
     assert t_key is not None

@@ -125,22 +125,22 @@ class TestParseSyslog:
     def test_rfc5424_valid(self) -> None:
         raw = "<34>1 2023-01-01T00:00:00Z host app 1234 ID001 This is a test"
         result = parse_syslog(raw)
-        assert result["facility"] == 4  # 34 >> 3
-        assert result["severity"] == 2  # 34 & 7
-        assert result["hostname"] == "host"
-        assert result["app_name"] == "app"
-        assert result["proc_id"] == "1234"
-        assert result["msg_id"] == "ID001"
-        assert result["message"] == "This is a test"
-        assert "timestamp_ns" in result
+        assert result.facility == 4  # 34 >> 3
+        assert result.severity == 2  # 34 & 7
+        assert result.hostname == "host"
+        assert result.app_name == "app"
+        assert result.proc_id == "1234"
+        assert result.msg_id == "ID001"
+        assert result.message == "This is a test"
+        assert result.timestamp_ns > 0
 
     def test_unparseable_fallback(self) -> None:
         raw = "some random log line"
         result = parse_syslog(raw)
-        assert result["facility"] == 1
-        assert result["severity"] == 6
-        assert result["message"] == "some random log line"
-        assert result["hostname"] == "-"
+        assert result.facility == 1
+        assert result.severity == 6
+        assert result.message == "some random log line"
+        assert result.hostname == "-"
 
 
 # ——————————————————————————————————————————————————————————————
@@ -151,32 +151,32 @@ class TestParseSyslog:
 class TestParseStatsD:
     def test_counter(self) -> None:
         result = parse_statsd("page.views:1|c")
-        assert result["name"] == "page.views"
-        assert result["value"] == 1.0
-        assert result["type"] == "counter"
+        assert result.name == "page.views"
+        assert result.value == 1.0
+        assert result.type == "counter"
 
     def test_gauge(self) -> None:
         result = parse_statsd("cpu.usage:72.5|g")
-        assert result["name"] == "cpu.usage"
-        assert result["value"] == 72.5
-        assert result["type"] == "gauge"
+        assert result.name == "cpu.usage"
+        assert result.value == 72.5
+        assert result.type == "gauge"
 
     def test_timer(self) -> None:
         result = parse_statsd("request.latency:320|ms")
-        assert result["type"] == "timer"
-        assert result["value"] == 320.0
+        assert result.type == "timer"
+        assert result.value == 320.0
 
     def test_histogram(self) -> None:
         result = parse_statsd("request.size:1024|h")
-        assert result["type"] == "histogram"
+        assert result.type == "histogram"
 
     def test_sample_rate(self) -> None:
         result = parse_statsd("page.views:1|c|@0.1")
-        assert result["sample_rate"] == 0.1
+        assert result.sample_rate == 0.1
 
     def test_tags(self) -> None:
         result = parse_statsd("page.views:1|c|#env:prod,region:us")
-        assert result["tags"] == {"env": "prod", "region": "us"}
+        assert result.tags == {"env": "prod", "region": "us"}
 
     def test_invalid_line(self) -> None:
         with pytest.raises(ValueError, match="Invalid StatsD"):
@@ -204,24 +204,24 @@ process_cpu_seconds 0.44
         assert len(metrics) == 3
 
         m0 = metrics[0]
-        assert m0["name"] == "http_requests_total"
-        assert m0["labels"] == {"method": "GET", "code": "200"}
-        assert m0["value"] == 1027.0
-        assert m0["timestamp_ms"] == 1395066363000.0
-        assert m0["type"] == "counter"
-        assert m0["help"] == "Total HTTP requests"
+        assert m0.name == "http_requests_total"
+        assert m0.labels == {"method": "GET", "code": "200"}
+        assert m0.value == 1027.0
+        assert m0.timestamp_ms == 1395066363000.0
+        assert m0.type == "counter"
+        assert m0.help == "Total HTTP requests"
 
         m1 = metrics[1]
-        assert m1["name"] == "http_requests_total"
-        assert m1["labels"] == {"method": "POST", "code": "200"}
-        assert m1["value"] == 42.0
-        assert "timestamp_ms" not in m1
+        assert m1.name == "http_requests_total"
+        assert m1.labels == {"method": "POST", "code": "200"}
+        assert m1.value == 42.0
+        assert m1.timestamp_ms is None
 
         m2 = metrics[2]
-        assert m2["name"] == "process_cpu_seconds"
-        assert m2["labels"] == {}
-        assert m2["value"] == 0.44
-        assert m2["type"] == "gauge"
+        assert m2.name == "process_cpu_seconds"
+        assert m2.labels == {}
+        assert m2.value == 0.44
+        assert m2.type == "gauge"
 
     def test_blank_and_comment_lines(self) -> None:
         text = """\
@@ -232,7 +232,7 @@ foo 1
 """
         metrics = parse_prometheus_text(text)
         assert len(metrics) == 1
-        assert metrics[0]["name"] == "foo"
+        assert metrics[0].name == "foo"
 
 
 # ——————————————————————————————————————————————————————————————
@@ -269,8 +269,8 @@ up 1
             unsub()
 
         assert len(received) >= 1
-        assert received[0]["name"] == "up"
-        assert received[0]["value"] == 1.0
+        assert received[0].name == "up"
+        assert received[0].value == 1.0
 
 
 # ——————————————————————————————————————————————————————————————
@@ -515,8 +515,8 @@ class TestFromSyslog:
         _wait_for(lambda: len(received) >= 1)
         unsub()
 
-        assert received[0]["facility"] == 4
-        assert received[0]["message"] == "test msg"
+        assert received[0].facility == 4
+        assert received[0].message == "test msg"
 
 
 # ——————————————————————————————————————————————————————————————
@@ -543,8 +543,8 @@ class TestFromStatsD:
         _wait_for(lambda: len(received) >= 1)
         unsub()
 
-        assert received[0]["name"] == "req.count"
-        assert received[0]["tags"] == {"env": "prod"}
+        assert received[0].name == "req.count"
+        assert received[0].tags == {"env": "prod"}
 
 
 # ——————————————————————————————————————————————————————————————
@@ -609,12 +609,12 @@ class TestFromPulsar:
         unsub()
 
         assert len(received) >= 1
-        assert received[0]["topic"] == "persistent://public/default/events"
-        assert received[0]["message_id"] == "msg-1"
-        assert received[0]["key"] == "key1"
-        assert received[0]["value"] == {"action": "click"}
-        assert received[0]["publish_time"] == 1704067200000
-        assert received[0]["event_time"] == 1704067200001
+        assert received[0].topic == "persistent://public/default/events"
+        assert received[0].message_id == "msg-1"
+        assert received[0].key == "key1"
+        assert received[0].value == {"action": "click"}
+        assert received[0].publish_time == 1704067200000
+        assert received[0].event_time == 1704067200001
 
     def test_error_on_receive_failure(self) -> None:
         errors: list[Any] = []
@@ -741,9 +741,9 @@ class TestFromNATS:
         unsub()
 
         assert len(received) >= 1
-        assert received[0]["subject"] == "events.click"
-        assert received[0]["data"] == {"action": "click"}
-        assert received[0]["reply"] == "reply.1"
+        assert received[0].subject == "events.click"
+        assert received[0].data == {"action": "click"}
+        assert received[0].reply == "reply.1"
 
     def test_complete_on_subscription_end(self) -> None:
         completed: list[bool] = []
@@ -829,8 +829,8 @@ class TestFromNATS:
         unsub()
 
         assert len(received) >= 1
-        assert received[0]["subject"] == "events.click"
-        assert received[0]["data"] == {"action": "click"}
+        assert received[0].subject == "events.click"
+        assert received[0].data == {"action": "click"}
 
     def test_async_coroutine_subscribe(self) -> None:
         """Async nats-py v2+ client: subscribe() returns a coroutine."""
@@ -873,7 +873,7 @@ class TestFromNATS:
         unsub()
 
         assert len(received) >= 1
-        assert received[0]["data"] == "hello"
+        assert received[0].data == "hello"
 
     def test_async_complete_on_subscription_end(self) -> None:
         """Async path: COMPLETE emitted when async iterator exhausts."""
@@ -974,11 +974,11 @@ class TestFromRabbitMQ:
         unsub()
 
         assert len(received) >= 1
-        assert received[0]["queue"] == "events"
-        assert received[0]["routing_key"] == "events"
-        assert received[0]["content"] == {"action": "click"}
-        assert received[0]["delivery_tag"] == 1
-        assert received[0]["redelivered"] is False
+        assert received[0].queue == "events"
+        assert received[0].routing_key == "events"
+        assert received[0].content == {"action": "click"}
+        assert received[0].delivery_tag == 1
+        assert received[0].redelivered is False
 
     def test_error_on_consume_failure(self) -> None:
         errors: list[Any] = []

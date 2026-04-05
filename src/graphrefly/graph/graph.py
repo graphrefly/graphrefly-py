@@ -14,13 +14,27 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from graphrefly.core.clock import monotonic_ns
 from graphrefly.core.guard import GuardDenied, normalize_actor
-from graphrefly.core.meta import describe_node
+from graphrefly.core.meta import describe_node, resolve_describe_fields
 from graphrefly.core.node import NodeImpl
 from graphrefly.core.protocol import Messages, MessageType, is_batching, message_tier
 from graphrefly.core.sugar import state
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
+
+
+class DescribeResult(dict):
+    """Dict subclass returned by :meth:`Graph.describe`.
+
+    Provides an ``expand()`` method for re-reading the live graph at a higher
+    detail level.  Unlike storing expand as a dict key, this is safe for
+    ``json.dumps(graph.describe())`` — the method is not serialised.
+    """
+
+    def expand(self, detail_or_fields: Any = None) -> DescribeResult:
+        """Re-read the live graph at a higher detail level or with explicit fields."""
+        fn = object.__getattribute__(self, "_expand_fn")
+        return fn(detail_or_fields)
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,12 +61,37 @@ class ObserveResult:
     completed_cleanly: bool = False
     errored: bool = False
     _dispose_fn: Callable[[], None] | None = field(default=None, repr=False)
+    _graph: Any = field(default=None, repr=False)
+    _path: str | None = field(default=None, repr=False)
+    _observe_opts: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def dispose(self) -> None:
         """Unsubscribe from the observation."""
         if self._dispose_fn is not None:
             self._dispose_fn()
             self._dispose_fn = None
+
+    def expand(self, extra: Any = None) -> ObserveResult:
+        """Resubscribe with higher detail. Disposes current, returns new ObserveResult.
+
+        Args:
+            extra: Either a detail string (``"full"``, ``"standard"``, ``"minimal"``)
+                or a dict of options like ``{"causal": True, "timeline": True}``.
+        """
+        self.dispose()
+        if self._graph is None:
+            raise RuntimeError("Cannot expand: no graph reference stored")
+        opts = dict(self._observe_opts)
+        if isinstance(extra, str):
+            opts["detail"] = extra
+        elif isinstance(extra, dict):
+            opts.update(extra)
+        else:
+            opts["detail"] = "full"
+        result = self._graph.observe(self._path, **opts)
+        if not isinstance(result, ObserveResult):
+            raise TypeError("expand requires structured observe mode")
+        return result
 
 
 @dataclass(slots=True)
@@ -69,14 +108,32 @@ class SpyHandle:
 
 
 @dataclass(frozen=True, slots=True)
+class GraphDiffNodeChange:
+    """A single field change detected by :meth:`Graph.diff`."""
+
+    path: str
+    field: str
+    from_value: Any
+    to_value: Any
+
+
+@dataclass(frozen=True, slots=True)
+class GraphDiffEdge:
+    """An edge entry in :class:`GraphDiffResult`."""
+
+    from_node: str
+    to_node: str
+
+
+@dataclass(frozen=True, slots=True)
 class GraphDiffResult:
     """Result of :meth:`Graph.diff` comparing two describe outputs."""
 
     nodesAdded: list[str] = field(default_factory=list)
     nodesRemoved: list[str] = field(default_factory=list)
-    nodesChanged: list[dict[str, Any]] = field(default_factory=list)
-    edgesAdded: list[dict[str, str]] = field(default_factory=list)
-    edgesRemoved: list[dict[str, str]] = field(default_factory=list)
+    nodesChanged: list[GraphDiffNodeChange] = field(default_factory=list)
+    edgesAdded: list[GraphDiffEdge] = field(default_factory=list)
+    edgesRemoved: list[GraphDiffEdge] = field(default_factory=list)
     subgraphsAdded: list[str] = field(default_factory=list)
     subgraphsRemoved: list[str] = field(default_factory=list)
 
@@ -680,14 +737,19 @@ class Graph:
             assert snap["version"] == 1
             ```
         """
-        body = self.describe()
-        nodes_sorted = dict(sorted(body["nodes"].items()))
-        subgraphs_sorted = sorted(body["subgraphs"])
+        raw = self.describe(detail="full")
+        # Strip non-restorable fields (runtime attribution) so snapshot → restore → snapshot
+        # is idempotent. Use describe(detail="full") for audit snapshots instead.
+        nodes_sorted = dict(sorted(
+            (p, {k: v for k, v in nd.items() if k not in ("last_mutation", "guard")})
+            for p, nd in raw["nodes"].items()
+        ))
+        subgraphs_sorted = sorted(raw["subgraphs"])
         return {
             "version": GRAPH_SNAPSHOT_VERSION,
-            "name": body["name"],
+            "name": raw["name"],
             "nodes": nodes_sorted,
-            "edges": body["edges"],
+            "edges": raw["edges"],
             "subgraphs": subgraphs_sorted,
         }
 
@@ -750,7 +812,13 @@ class Graph:
                     return
                 pending = False
             try:
-                described = self.describe()
+                raw = self.describe(detail="full")
+                # Strip non-restorable fields for persistence idempotency
+                clean_nodes = {
+                    p: {k: v for k, v in nd.items() if k not in ("last_mutation", "guard")}
+                    for p, nd in raw["nodes"].items()
+                }
+                described = {**raw, "nodes": clean_nodes}
                 snapshot = {**described, "version": GRAPH_SNAPSHOT_VERSION}
                 seq += 1
                 if last_describe is None or seq % compact_every == 0:
@@ -779,8 +847,11 @@ class Graph:
             if not any(message_tier(m[0]) >= 2 for m in msgs):
                 return
             if filter is not None:
-                node_desc = self.describe()["nodes"].get(path)
-                if not isinstance(node_desc, dict) or not filter(path, node_desc):
+                nd = self.resolve(path)
+                if nd is None:
+                    return
+                node_desc = describe_node(nd, resolve_describe_fields("standard"))
+                if not filter(path, node_desc):
                     return
             schedule()
 
@@ -952,6 +1023,9 @@ class Graph:
         *,
         actor: Any = _DESCRIBE_UNSCOPED,
         filter: dict[str, Any] | Callable[..., bool] | None = None,
+        detail: str | None = None,
+        fields: list[str] | None = None,
+        format: str | None = None,
     ) -> dict[str, Any]:
         """Static structure snapshot (GRAPHREFLY-SPEC §3.6, Appendix B).
 
@@ -971,13 +1045,43 @@ class Graph:
         - If ``filter`` is a callable, it receives ``(path, node_desc)`` and must return
           ``True`` to include the node.
 
+        .. note::
+           Filters operate on whatever fields the chosen ``detail`` provides.
+           For ``meta_has`` and ``status`` filters, use ``detail="standard"`` or
+           higher — at ``"minimal"`` those fields are absent and the filter
+           silently excludes all nodes.
+
+        Progressive disclosure via ``detail`` / ``fields`` / ``format``:
+
+        - ``detail="minimal"`` (default): only ``type`` and ``deps``
+        - ``detail="standard"``: ``type``, ``status``, ``value``, ``deps``, ``meta``, ``v``
+        - ``detail="full"``: standard + ``guard``, ``last_mutation``
+        - ``fields=[...]``: explicit field list (overrides ``detail``)
+        - ``format="spec"``: force minimal (type + deps only)
+
+        Returns a :class:`DescribeResult` (a ``dict`` subclass) with an
+        ``expand()`` method that re-reads the live graph with higher detail,
+        preserving actor/filter from the original call.  Because ``expand`` is a
+        method (not a dict key), ``json.dumps(graph.describe())`` works safely.
+
         Args:
             actor: Optional actor for guard-based filtering.
             filter: Optional dict or predicate to filter nodes in the output.
+            detail: Progressive disclosure level: ``"minimal"``, ``"standard"``, or ``"full"``.
+            fields: Explicit list of fields to include (overrides ``detail``).
+            format: ``"spec"`` forces minimal fields.
         """
+        # Resolve include_fields from detail/fields/format
+        if format == "spec":
+            include_fields: set[str] | None = {"type", "deps"}
+        else:
+            include_fields = resolve_describe_fields(detail, fields)
+
         targets = _collect_observe_targets(self, "")
         paths_by_id = {id(n): p for p, n in targets}
-        nodes_out = {p: _node_describe_for_graph(n, paths_by_id) for p, n in targets}
+        nodes_out = {
+            p: _node_describe_for_graph(n, paths_by_id, include_fields) for p, n in targets
+        }
         edges_out = _collect_edges_qualified(self, "")
         edges_out.sort(key=lambda e: (e["from"], e["to"]))
         subgraphs_out = _collect_subgraphs_qualified(self, "")
@@ -1013,7 +1117,7 @@ class Graph:
                                 return False
                             continue
                         if k in ("meta_has", "metaHas"):
-                            meta = desc.get("meta")
+                            meta = desc.get("meta", {})
                             if not isinstance(meta, dict) or str(v) not in meta:
                                 return False
                             continue
@@ -1035,7 +1139,28 @@ class Graph:
                 if any(p == s or p.startswith(f"{s}{sep}") for p in visible_after_filter)
             ]
             raw = {**raw, "nodes": nodes_map, "edges": edges_out, "subgraphs": subgraphs_out}
-        return raw
+
+        # expand helper — re-reads the live graph with higher detail
+        _captured_actor = actor
+        _captured_filter = filter
+
+        def _expand(detail_or_fields: Any = None) -> DescribeResult:
+            kw: dict[str, Any] = {}
+            if _captured_actor is not _DESCRIBE_UNSCOPED:
+                kw["actor"] = _captured_actor
+            if _captured_filter is not None:
+                kw["filter"] = _captured_filter
+            if isinstance(detail_or_fields, str):
+                kw["detail"] = detail_or_fields
+            elif isinstance(detail_or_fields, list):
+                kw["fields"] = detail_or_fields
+            else:
+                kw["detail"] = "full"
+            return self.describe(**kw)
+
+        result = DescribeResult(raw)
+        object.__setattr__(result, "_expand_fn", _expand)
+        return result
 
     def observe(
         self,
@@ -1046,6 +1171,7 @@ class Graph:
         timeline: bool = False,
         causal: bool = False,
         derived: bool = False,
+        detail: str | None = None,
     ) -> GraphObserveSource | ObserveResult:
         """Live message stream for one node (and its path) or the whole graph (§3.6).
 
@@ -1059,6 +1185,14 @@ class Graph:
         returns an :class:`ObserveResult` that accumulates
         events, tracks counts, and provides a ``dispose()`` method.
 
+        Progressive disclosure via ``detail``:
+
+        - ``detail="full"``: implies ``structured=True, timeline=True, causal=True, derived=True``
+        - ``detail="minimal"``: implies ``structured=True``; only DATA events are added to
+          ``events[]`` (DIRTY/RESOLVED/COMPLETE/ERROR still update counts/flags)
+        - ``detail="standard"``: current default behavior (all message types in events)
+        - Individual flags override the detail level.
+
         Args:
             path: Optional node path (``None`` for graph-wide).
             actor: Optional actor for guard checking.
@@ -1067,12 +1201,39 @@ class Graph:
             timeline: Include ``timestamp_ns`` and ``in_batch`` on events.
             causal: Include trigger dep info (single-path derived/compute nodes).
             derived: Include per-evaluation dep snapshots (single-path derived/compute nodes).
+            detail: Progressive disclosure level: ``"minimal"``, ``"standard"``, or ``"full"``.
         """
+        # Apply detail-level defaults (individual flags override)
+        _detail_minimal = False
+        if detail == "full":
+            if not timeline:
+                timeline = True
+            if not causal:
+                causal = True
+            if not derived:
+                derived = True
+        elif detail == "minimal":
+            _detail_minimal = True
+        # detail="standard" is default behavior, no changes needed
+
         source = GraphObserveSource(self, path, actor)
-        wants_structured = structured or timeline or causal or derived
+        wants_structured = (
+            structured or timeline or causal or derived or detail in ("minimal", "full")
+        )
         if not wants_structured or not self.inspector_enabled:
             return source
         result = ObserveResult()
+        # Store refs for expand()
+        result._graph = self
+        result._path = path
+        result._observe_opts = {
+            "actor": actor,
+            "structured": structured,
+            "timeline": timeline,
+            "causal": causal,
+            "derived": derived,
+            "detail": detail,
+        }
         last_trigger_dep_index: int | None = None
         last_run_dep_values: list[Any] | None = None
         detach_hook: Callable[[], None] | None = None
@@ -1144,36 +1305,40 @@ class Graph:
                         result.events.append(event)
                     elif t is MessageType.DIRTY:
                         result.dirty_count += 1
-                        result.events.append(_base_event("dirty"))
+                        if not _detail_minimal:
+                            result.events.append(_base_event("dirty"))
                     elif t is MessageType.RESOLVED:
                         result.resolved_count += 1
-                        event = _base_event("resolved")
-                        if causal and last_run_dep_values is not None:
-                            event["trigger_dep_index"] = last_trigger_dep_index
-                            trigger_dep = None
-                            if (
-                                isinstance(last_trigger_dep_index, int)
-                                and last_trigger_dep_index >= 0
-                                and isinstance(n, NodeImpl)
-                                and last_trigger_dep_index < len(n._deps)
-                            ):
-                                trigger_dep = n._deps[last_trigger_dep_index]
-                                event["trigger_dep_name"] = trigger_dep.name
-                            # V0 backfill: include triggering dep's version (§6.0b).
-                            tv = trigger_dep.v if trigger_dep is not None else None
-                            if tv is not None:
-                                event["trigger_version"] = {"id": tv.id, "version": tv.version}
-                            event["dep_values"] = list(last_run_dep_values)
-                        result.events.append(event)
+                        if not _detail_minimal:
+                            event = _base_event("resolved")
+                            if causal and last_run_dep_values is not None:
+                                event["trigger_dep_index"] = last_trigger_dep_index
+                                trigger_dep = None
+                                if (
+                                    isinstance(last_trigger_dep_index, int)
+                                    and last_trigger_dep_index >= 0
+                                    and isinstance(n, NodeImpl)
+                                    and last_trigger_dep_index < len(n._deps)
+                                ):
+                                    trigger_dep = n._deps[last_trigger_dep_index]
+                                    event["trigger_dep_name"] = trigger_dep.name
+                                # V0 backfill: include triggering dep's version (§6.0b).
+                                tv = trigger_dep.v if trigger_dep is not None else None
+                                if tv is not None:
+                                    event["trigger_version"] = {"id": tv.id, "version": tv.version}
+                                event["dep_values"] = list(last_run_dep_values)
+                            result.events.append(event)
                     elif t is MessageType.COMPLETE:
                         if not result.errored:
                             result.completed_cleanly = True
-                        result.events.append(_base_event("complete"))
+                        if not _detail_minimal:
+                            result.events.append(_base_event("complete"))
                     elif t is MessageType.ERROR:
                         result.errored = True
-                        result.events.append(
-                            _base_event("error", data=m[1] if len(m) > 1 else None)
-                        )
+                        if not _detail_minimal:
+                            result.events.append(
+                                _base_event("error", data=m[1] if len(m) > 1 else None)
+                            )
 
             unsub = source.subscribe(_sink)
         else:
@@ -1187,23 +1352,27 @@ class Graph:
                         result.events.append(_base_event("data", data=val, event_path=qpath))
                     elif t is MessageType.DIRTY:
                         result.dirty_count += 1
-                        result.events.append(_base_event("dirty", event_path=qpath))
+                        if not _detail_minimal:
+                            result.events.append(_base_event("dirty", event_path=qpath))
                     elif t is MessageType.RESOLVED:
                         result.resolved_count += 1
-                        result.events.append(_base_event("resolved", event_path=qpath))
+                        if not _detail_minimal:
+                            result.events.append(_base_event("resolved", event_path=qpath))
                     elif t is MessageType.COMPLETE:
                         if not result.errored:
                             result.completed_cleanly = True
-                        result.events.append(_base_event("complete", event_path=qpath))
+                        if not _detail_minimal:
+                            result.events.append(_base_event("complete", event_path=qpath))
                     elif t is MessageType.ERROR:
                         result.errored = True
-                        result.events.append(
-                            _base_event(
-                                "error",
-                                data=m[1] if len(m) > 1 else None,
-                                event_path=qpath,
+                        if not _detail_minimal:
+                            result.events.append(
+                                _base_event(
+                                    "error",
+                                    data=m[1] if len(m) > 1 else None,
+                                    event_path=qpath,
+                                )
                             )
-                        )
 
             unsub = source.subscribe(_graph_sink)
 
@@ -1453,7 +1622,7 @@ class Graph:
             print(g.dump_graph())
             ```
         """
-        described = self.describe(actor=actor, filter=filter)
+        described = self.describe(actor=actor, filter=filter, detail="standard")
         if format == "json":
             payload = {
                 "name": described["name"],
@@ -1833,13 +2002,15 @@ class Graph:
         b_nodes = set(b.get("nodes", {}).keys())
         added_nodes = sorted(b_nodes - a_nodes)
         removed_nodes = sorted(a_nodes - b_nodes)
-        changed_nodes: list[dict[str, Any]] = []
+        changed_nodes: list[GraphDiffNodeChange] = []
         for p in sorted(a_nodes & b_nodes):
             na = a["nodes"][p]
             nb = b["nodes"][p]
             if not isinstance(na, dict) or not isinstance(nb, dict):
                 if na != nb:
-                    changed_nodes.append({"path": p, "field": "node", "from": na, "to": nb})
+                    changed_nodes.append(
+                        GraphDiffNodeChange(path=p, field="node", from_value=na, to_value=nb)
+                    )
                 continue
             # V0 optimization: skip value comparison when both nodes have matching versions.
             av = na.get("v")
@@ -1854,7 +2025,9 @@ class Graph:
                     va = na.get(key)
                     vb = nb.get(key)
                     if va != vb:
-                        changed_nodes.append({"path": p, "field": key, "from": va, "to": vb})
+                        changed_nodes.append(
+                            GraphDiffNodeChange(path=p, field=key, from_value=va, to_value=vb)
+                        )
                 continue
             for key in ("type", "status", "value"):
                 va = na.get(key)
@@ -1864,8 +2037,12 @@ class Graph:
 
         a_edges = {(e["from"], e["to"]) for e in a.get("edges", [])}
         b_edges = {(e["from"], e["to"]) for e in b.get("edges", [])}
-        added_edges = [{"from": f, "to": t} for f, t in sorted(b_edges - a_edges)]
-        removed_edges = [{"from": f, "to": t} for f, t in sorted(a_edges - b_edges)]
+        added_edges = [
+            GraphDiffEdge(from_node=f, to_node=t) for f, t in sorted(b_edges - a_edges)
+        ]
+        removed_edges = [
+            GraphDiffEdge(from_node=f, to_node=t) for f, t in sorted(a_edges - b_edges)
+        ]
 
         a_subs = set(a.get("subgraphs", []))
         b_subs = set(b.get("subgraphs", []))
@@ -2100,8 +2277,10 @@ def _append_meta_observe_targets(
         _append_meta_observe_targets(m, mp, out)
 
 
-def _node_describe_for_graph(n: NodeImpl[Any], paths_by_id: dict[int, str]) -> dict[str, Any]:
-    d = describe_node(n)
+def _node_describe_for_graph(
+    n: NodeImpl[Any], paths_by_id: dict[int, str], include_fields: set[str] | None = None
+) -> dict[str, Any]:
+    d = describe_node(n, include_fields)
     d["deps"] = [paths_by_id.get(id(dep), dep.name or "") for dep in n._deps]
     d.pop("name", None)
     return d
@@ -2238,6 +2417,8 @@ __all__ = [
     "GRAPH_SNAPSHOT_VERSION",
     "GraphAutoCheckpointHandle",
     "Graph",
+    "GraphDiffEdge",
+    "GraphDiffNodeChange",
     "GraphDiffResult",
     "GraphObserveSource",
     "META_PATH_SEG",

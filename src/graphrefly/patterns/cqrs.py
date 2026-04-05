@@ -70,6 +70,14 @@ def _cqrs_meta(kind: str, extra: dict[str, Any] | None = None) -> dict[str, Any]
     return out
 
 
+@dataclass(slots=True)
+class _EventLogEntry:
+    """Internal: a registered event log and its guarded node."""
+
+    log: Any
+    node: Any
+
+
 def _keepalive(n: Any) -> Callable[[], None]:
     """Keep dep wiring alive; returns unsubscribe handle for cleanup."""
     return n.subscribe(lambda _msgs: None)
@@ -111,8 +119,12 @@ class CqrsEvent:
 # Event store adapter
 # ---------------------------------------------------------------------------
 
-type EventStoreCursor = dict[str, Any]
-"""Opaque cursor for resumable event loading."""
+@dataclass(frozen=True, slots=True)
+class EventStoreCursor:
+    """Opaque cursor for resumable event loading."""
+
+    timestamp_ns: int
+    seq: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,8 +168,8 @@ class MemoryEventStore(EventStoreAdapter):
         self, event_type: str, cursor: EventStoreCursor | None = None
     ) -> LoadEventsResult:
         events = list(self._store.get(event_type, []))
-        since_ts: int | None = cursor.get("timestamp_ns") if cursor is not None else None
-        since_seq: int | None = cursor.get("seq") if cursor is not None else None
+        since_ts: int | None = cursor.timestamp_ns if cursor is not None else None
+        since_seq: int | None = cursor.seq if cursor is not None else None
         if since_ts is not None:
             events = [
                 e
@@ -169,7 +181,9 @@ class MemoryEventStore(EventStoreAdapter):
                 )
             ]
         new_cursor: EventStoreCursor | None = (
-            {"timestamp_ns": events[-1].timestamp_ns, "seq": events[-1].seq} if events else cursor
+            EventStoreCursor(timestamp_ns=events[-1].timestamp_ns, seq=events[-1].seq)
+            if events
+            else cursor
         )
         return LoadEventsResult(events=events, cursor=new_cursor)
 
@@ -222,7 +236,7 @@ class CqrsGraph(Graph):
 
     def __init__(self, name: str, opts: dict[str, Any] | None = None) -> None:
         super().__init__(name, opts)
-        self._event_logs: dict[str, dict[str, Any]] = {}
+        self._event_logs: dict[str, _EventLogEntry] = {}
         self._command_handlers: dict[str, CommandHandler] = {}
         self._projections: set[str] = set()
         self._sagas: set[str] = set()
@@ -245,7 +259,7 @@ class CqrsGraph(Graph):
         """
         existing = self._event_logs.get(name)
         if existing is not None:
-            return existing["node"]
+            return existing.node
 
         log = reactive_log(name=name)
         entries = log.entries
@@ -264,7 +278,7 @@ class CqrsGraph(Graph):
         )
         self.add(name, guarded)
         self._keepalive_disposers.append(_keepalive(guarded))
-        self._event_logs[name] = {"log": log, "node": guarded}
+        self._event_logs[name] = _EventLogEntry(log=log, node=guarded)
         return guarded
 
     def _append_event(self, event_name: str, payload: Any) -> None:
@@ -274,12 +288,12 @@ class CqrsGraph(Graph):
             self.event(event_name)
             entry = self._event_logs[event_name]
         # Terminal guard: reject dispatch to completed/errored streams.
-        status = entry["node"].status
+        status = entry.node.status
         if status in ("completed", "errored"):
             msg = f'Cannot dispatch to terminated event stream "{event_name}" (status: {status}).'
             raise RuntimeError(msg)
         self._seq += 1
-        nv = entry["log"].entries.v
+        nv = entry.log.entries.v
         evt = CqrsEvent(
             type=event_name,
             payload=payload,
@@ -287,7 +301,7 @@ class CqrsGraph(Graph):
             seq=self._seq,
             v0={"id": nv.id, "version": nv.version} if nv is not None else None,
         )
-        entry["log"].append(evt)
+        entry.log.append(evt)
         if self._event_store is not None:
             self._event_store.persist(evt)
 
@@ -363,7 +377,7 @@ class CqrsGraph(Graph):
         for ename in event_names:
             if ename not in self._event_logs:
                 self.event(ename)
-            event_nodes.append(self._event_logs[ename]["node"])
+            event_nodes.append(self._event_logs[ename].node)
 
         captured_initial = initial
 
@@ -419,15 +433,15 @@ class CqrsGraph(Graph):
         for ename in event_names:
             if ename not in self._event_logs:
                 self.event(ename)
-            event_nodes.append(self._event_logs[ename]["node"])
+            event_nodes.append(self._event_logs[ename].node)
 
         # Track last-processed entry count per event to only process new entries
         last_counts: dict[str, int] = {}
 
-        saga_ref: dict[str, Any] = {"node": None}
+        saga_ref: list[Any] = [None]
 
         def run_saga(deps: list[Any], _actions: Any) -> None:
-            saga_n = saga_ref["node"]
+            saga_n = saga_ref[0]
             err_node = saga_n.meta["error"]
             for i, dep in enumerate(deps):
                 snap = dep
@@ -460,7 +474,7 @@ class CqrsGraph(Graph):
                 "error": None,
             },
         )
-        saga_ref["node"] = saga_node
+        saga_ref[0] = saga_node
         self.add(name, saga_node)
         for ename in event_names:
             self.connect(ename, name)

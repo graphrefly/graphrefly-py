@@ -322,7 +322,7 @@ def test_with_breaker_appears_in_graph_describe() -> None:
     g = Graph("test")
     g.add("src", s)
     g.add("guarded", bundle.node)
-    desc = g.describe()
+    desc = g.describe(detail="standard")
     meta_path = "guarded::__meta__::breaker_state"
     assert meta_path in desc["nodes"]
     assert desc["nodes"][meta_path]["value"] == "closed"
@@ -334,7 +334,7 @@ def test_with_status_appears_in_graph_describe() -> None:
     g = Graph("test")
     g.add("src", s)
     g.add("tracked", bundle.node)
-    desc = g.describe()
+    desc = g.describe(detail="standard")
     assert "tracked::__meta__::status" in desc["nodes"]
     assert desc["nodes"]["tracked::__meta__::status"]["value"] == "pending"
     assert "tracked::__meta__::error" in desc["nodes"]

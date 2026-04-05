@@ -13,6 +13,7 @@ from graphrefly.patterns.cqrs import (
     CqrsEvent,
     CqrsGraph,
     EventStoreAdapter,
+    EventStoreCursor,
     LoadEventsResult,
     MemoryEventStore,
     cqrs,
@@ -70,7 +71,7 @@ def test_event_guard_denies_external_write() -> None:
 def test_command_registers_write_only_node() -> None:
     app = cqrs("test")
     app.command("place_order", lambda _p, actions: actions.emit("order_placed", {"id": "1"}))
-    desc = app.describe()
+    desc = app.describe(detail="standard")
     assert "place_order" in desc["nodes"]
     assert desc["nodes"]["place_order"]["meta"]["cqrs_type"] == "command"
     app.destroy()
@@ -108,7 +109,7 @@ def test_dispatch_auto_registers_events() -> None:
     app = cqrs("test")
     app.command("place_order", lambda _p, actions: actions.emit("order_placed", {"id": "1"}))
     app.dispatch("place_order", {})
-    desc = app.describe()
+    desc = app.describe(detail="standard")
     assert "order_placed" in desc["nodes"]
     assert desc["nodes"]["order_placed"]["meta"]["cqrs_type"] == "event"
     app.destroy()
@@ -144,7 +145,7 @@ def test_events_carry_timestamp_ns_and_seq() -> None:
 def test_events_carry_v0_identity_when_event_log_is_versioned() -> None:
     app = cqrs("test")
     app.event("order_placed")
-    app._event_logs["order_placed"]["log"].entries._apply_versioning(0)
+    app._event_logs["order_placed"].log.entries._apply_versioning(0)
     app.command("place_order", lambda payload, actions: actions.emit("order_placed", payload))
     app.dispatch("place_order", {"id": "1"})
     entries = _snap_entries(app.event("order_placed").get())
@@ -325,7 +326,7 @@ def test_describe_distinguishes_cqrs_roles() -> None:
     app.projection("order_count", ["order_placed"], lambda _s, e: len(e), 0)
     app.saga("notify_shipping", ["order_placed"], lambda _e: None)
 
-    desc = app.describe()
+    desc = app.describe(detail="standard")
     assert desc["nodes"]["place_order"]["meta"]["cqrs_type"] == "command"
     assert desc["nodes"]["order_placed"]["meta"]["cqrs_type"] == "event"
     assert desc["nodes"]["order_count"]["meta"]["cqrs_type"] == "projection"
@@ -429,7 +430,8 @@ def test_memory_event_store_since_filter() -> None:
     all_result = asyncio.run(store.load_events("a"))
     assert len(all_result.events) == 2
 
-    recent_result = asyncio.run(store.load_events("a", cursor={"timestamp_ns": t1, "seq": 1}))
+    cursor = EventStoreCursor(timestamp_ns=t1, seq=1)
+    recent_result = asyncio.run(store.load_events("a", cursor=cursor))
     assert len(recent_result.events) == 1
     assert recent_result.events[0].payload == 2
 

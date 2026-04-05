@@ -159,7 +159,7 @@ def test_describe_matches_appendix_b_schema() -> None:
     g.connect("input", "validate")
     validate.subscribe(lambda _m: None)
 
-    description = g.describe()
+    description = g.describe(detail="standard")
     _validate_appendix_b(description)
 
     # Extra spot-checks for this specific graph
