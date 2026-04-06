@@ -2,6 +2,17 @@
 
 <!-- version list -->
 
+## v0.7.0 (2026-04-06)
+
+### Features
+
+- Central timer util
+  ([`d1285d5`](https://github.com/graphrefly/graphrefly-py/commit/d1285d5c4c95928b1c27e10ca77204ee0f8aaa5e))
+
+- Redesign initial + cached
+  ([`86d8506`](https://github.com/graphrefly/graphrefly-py/commit/86d850623e4e09fda1e8547ab67ca6e4cefb2a48))
+
+
 ## v0.6.0 (2026-04-05)
 
 ### Chores
