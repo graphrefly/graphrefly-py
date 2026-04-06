@@ -18,6 +18,7 @@ from graphrefly.core.guard import (
 )
 from graphrefly.core.meta import describe_node, meta_snapshot
 from graphrefly.core.node import (
+    NO_VALUE,
     Node,
     NodeActions,
     NodeFn,
@@ -88,6 +89,7 @@ __all__ = [
     "GuardDenied",
     "GuardFn",
     "Message",
+    "NO_VALUE",
     "MessageType",
     "Messages",
     "Node",

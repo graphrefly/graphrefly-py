@@ -825,8 +825,8 @@ def test_to_json_is_deterministic() -> None:
     g = Graph("g")
     g.add("b", state(2))
     g.add("a", state(1))
-    j1 = g.to_json()
-    j2 = g.to_json()
+    j1 = g.to_json_string()
+    j2 = g.to_json_string()
     assert j1 == j2
     parsed = json.loads(j1)
     assert list(parsed["nodes"]) == ["a", "b"]
@@ -1020,7 +1020,7 @@ def test_from_snapshot_reconstructs_dynamic_nodes_via_factory_registry() -> None
 def test_to_json_has_trailing_newline() -> None:
     g = Graph("g")
     g.add("a", state(0))
-    j = g.to_json()
+    j = g.to_json_string()
     assert j.endswith("\n")
 
 
@@ -1139,7 +1139,7 @@ def test_from_snapshot_round_trip_matches_to_json() -> None:
     g.add("a", state(1))
     snap = g.snapshot()
     g2 = Graph.from_snapshot(snap)
-    assert g2.to_json() == g.to_json()
+    assert g2.to_json_string() == g.to_json_string()
 
 
 def test_observe_derived_sees_dirty_before_data() -> None:
@@ -1167,7 +1167,7 @@ def test_snapshot_json_wire_round_trip_with_mount() -> None:
     child = Graph("sub")
     child.add("x", state(42, meta={"tag": "hi"}))
     root.mount("sub", child)
-    snap_json = root.to_json()
+    snap_json = root.to_json_string()
     parsed = json.loads(snap_json)
 
     def build(g: Graph) -> None:

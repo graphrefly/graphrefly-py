@@ -15,6 +15,7 @@ from contextlib import suppress
 from types import MappingProxyType
 from typing import Any
 
+from graphrefly.core.node import _SENTINEL
 from graphrefly.core.protocol import Messages, MessageType, emit_with_batch, propagates_to_meta
 
 # ---------------------------------------------------------------------------
@@ -189,7 +190,7 @@ class DynamicNodeImpl[T]:
         self._thread_safe = bool(thread_safe)
         self._inspector_hook: Callable[[dict[str, Any]], None] | None = None
 
-        self._cached: T | None = None
+        self._cached: Any = _SENTINEL
         self._status: str = "disconnected"
         self._terminal = False
         self._connected = False
@@ -277,8 +278,10 @@ class DynamicNodeImpl[T]:
         lock = self._cache_lock
         if lock is not None:
             with lock:
-                return self._cached
-        return self._cached
+                v = self._cached
+        else:
+            v = self._cached
+        return None if v is _SENTINEL else v
 
     def down(
         self,
@@ -346,6 +349,12 @@ class DynamicNodeImpl[T]:
     ) -> Callable[[], None]:
         if self._terminal and self._resubscribable:
             self._terminal = False
+            lock = self._cache_lock
+            if lock is not None:
+                with lock:
+                    self._cached = _SENTINEL
+            else:
+                self._cached = _SENTINEL
             self._status = "disconnected"
             if self._on_resubscribe is not None:
                 self._on_resubscribe()
@@ -519,11 +528,14 @@ class DynamicNodeImpl[T]:
             if t is MessageType.INVALIDATE:
                 if lock is not None:
                     with lock:
-                        self._cached = None
+                        self._cached = _SENTINEL
                 else:
-                    self._cached = None
-            if t is MessageType.DATA or t is MessageType.RESOLVED:
+                    self._cached = _SENTINEL
+                self._status = "dirty"
+            if t is MessageType.DATA:
                 self._status = "settled"
+            elif t is MessageType.RESOLVED:
+                self._status = "resolved"
             elif t is MessageType.DIRTY:
                 self._status = "dirty"
             elif t is MessageType.COMPLETE:
@@ -536,9 +548,9 @@ class DynamicNodeImpl[T]:
                 if self._reset_on_teardown:
                     if lock is not None:
                         with lock:
-                            self._cached = None
+                            self._cached = _SENTINEL
                     else:
-                        self._cached = None
+                        self._cached = _SENTINEL
                 try:
                     self._propagate_to_meta(t)
                 finally:
@@ -561,7 +573,13 @@ class DynamicNodeImpl[T]:
                 cached_snapshot = self._cached
         else:
             cached_snapshot = self._cached
-        unchanged = self._equals(cached_snapshot, value)
+        try:
+            unchanged = cached_snapshot is not _SENTINEL and self._equals(cached_snapshot, value)
+        except Exception as eq_err:
+            wrapped = RuntimeError(f'Node "{self._name}": equals threw: {eq_err}')
+            wrapped.__cause__ = eq_err
+            self._down_internal([(MessageType.ERROR, wrapped)])
+            return
         if unchanged:
             msgs: Messages = (
                 [(MessageType.RESOLVED,)]

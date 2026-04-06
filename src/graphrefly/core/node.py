@@ -32,6 +32,12 @@ from graphrefly.core.versioning import (
     default_hash,
 )
 
+# Internal sentinel: "no cached value has been set or emitted."
+# Distinct from None so that None can be a valid emitted value.
+_SENTINEL = object()
+
+NO_VALUE = _SENTINEL
+
 # --- Status & typing (graphrefly-ts node.ts) ---------------------------------
 
 type NodeStatus = str  # structural: same strings as TS NodeStatus
@@ -197,13 +203,13 @@ class NodeImpl[T]:
         "_fn",
         "_guard",
         "_has_deps",
-        "_has_emitted_data",
         "_last_dep_values",
         "_last_mutation",
         "_manual_emit_used",
         "_meta",
         "_name",
         "_on_message",
+        "_on_resubscribe",
         "_opts",
         "_producer_started",
         "_resubscribable",
@@ -237,6 +243,7 @@ class NodeImpl[T]:
         self._thread_safe: bool = bool(opts.get("thread_safe", True))
 
         self._on_message = opts.get("on_message")
+        self._on_resubscribe: Callable[[], None] | None = opts.get("on_resubscribe")
         self._fn = fn
         self._deps = deps
         self._has_deps = len(deps) > 0
@@ -249,7 +256,7 @@ class NodeImpl[T]:
         self._last_mutation: dict[str, Any] | None = None
 
         self._cache_lock = threading.Lock() if self._thread_safe else None
-        self._cached: T | None = opts.get("initial")
+        self._cached: Any = opts["initial"] if "initial" in opts else _SENTINEL
         self._status: NodeStatus = "disconnected" if self._has_deps else "settled"
 
         # Versioning (GRAPHREFLY-SPEC §7)
@@ -258,7 +265,7 @@ class NodeImpl[T]:
         self._versioning: NodeVersionInfo | None = (
             create_versioning(
                 versioning_level,
-                self._cached,
+                None if self._cached is _SENTINEL else self._cached,
                 id=opts.get("versioning_id"),
                 hash_fn=self._hash_fn,
             )
@@ -281,7 +288,6 @@ class NodeImpl[T]:
         self._last_dep_values: list[Any] | None = None
         self._cleanup: Callable[[], None] | None = None
         self._manual_emit_used = False
-        self._has_emitted_data = False
 
         self._sinks: Callable[[Messages], None] | set[Callable[[Messages], None]] | None = None
         self._sink_count = 0
@@ -370,10 +376,9 @@ class NodeImpl[T]:
                     cb()
                 if lock is not None:
                     with lock:
-                        self._cached = None
+                        self._cached = _SENTINEL
                 else:
-                    self._cached = None
-                self._has_emitted_data = False
+                    self._cached = _SENTINEL
                 self._last_dep_values = None
             self._status = _status_after_message(self._status, m)
             if t is MessageType.COMPLETE or t is MessageType.ERROR:
@@ -382,10 +387,9 @@ class NodeImpl[T]:
                 if self._reset_on_teardown:
                     if lock is not None:
                         with lock:
-                            self._cached = None
+                            self._cached = _SENTINEL
                     else:
-                        self._cached = None
-                    self._has_emitted_data = False
+                        self._cached = _SENTINEL
                 # Invoke cleanup for compute nodes (deps+fn) — spec §2.4
                 if self._cleanup is not None:
                     cb = self._cleanup
@@ -420,17 +424,16 @@ class NodeImpl[T]:
                 cached_snapshot = self._cached
         else:
             cached_snapshot = self._cached
-        # §2.5: equals() only compares two real DATA values. _has_emitted_data
+        # §2.5: equals() only compares two real DATA values. _SENTINEL
         # disambiguates "never emitted" from "emitted None" and
         # "reset via INVALIDATE/reset_on_teardown".
         try:
-            unchanged = self._has_emitted_data and self._equals(cached_snapshot, value)
+            unchanged = cached_snapshot is not _SENTINEL and self._equals(cached_snapshot, value)
         except Exception as eq_err:
             wrapped = RuntimeError(f'Node "{self._name}": equals threw: {eq_err}')
             wrapped.__cause__ = eq_err
             self.down([(MessageType.ERROR, wrapped)], internal=True)
             return
-        self._has_emitted_data = True
         if unchanged:
             if was_dirty:
                 self.down([(MessageType.RESOLVED,)], internal=True)
@@ -641,7 +644,15 @@ class NodeImpl[T]:
     ) -> None:
         if self._terminal and self._resubscribable:
             self._terminal = False
+            lock = self._cache_lock
+            if lock is not None:
+                with lock:
+                    self._cached = _SENTINEL
+            else:
+                self._cached = _SENTINEL
             self._status = "disconnected" if self._has_deps else "settled"
+            if self._on_resubscribe is not None:
+                self._on_resubscribe()
 
         h = hints or SubscribeHints()
         self._sink_count += 1
@@ -744,8 +755,10 @@ class NodeImpl[T]:
         lock = self._cache_lock
         if lock is not None:
             with lock:
-                return self._cached
-        return self._cached
+                v = self._cached
+        else:
+            v = self._cached
+        return None if v is _SENTINEL else v
 
     @property
     def last_mutation(self) -> dict[str, Any] | None:
@@ -778,7 +791,7 @@ class NodeImpl[T]:
             self._hash_fn = hash_fn
         self._versioning = create_versioning(
             level,
-            self._cached,
+            None if self._cached is _SENTINEL else self._cached,
             id=id,
             hash_fn=self._hash_fn,
         )
@@ -978,4 +991,4 @@ def node(
 # Public alias for type hints
 Node = NodeImpl
 
-__all__ = ["Node", "NodeActions", "NodeFn", "NodeImpl", "NodeStatus", "SubscribeHints", "node"]
+__all__ = ["NO_VALUE", "Node", "NodeActions", "NodeFn", "NodeImpl", "NodeStatus", "SubscribeHints", "node"]

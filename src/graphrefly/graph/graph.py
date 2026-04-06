@@ -735,7 +735,7 @@ class Graph:
 
         Wraps :meth:`describe` output in a versioned envelope required by
         :meth:`restore` / :meth:`from_snapshot`. The format is stable for
-        :meth:`to_json` determinism.
+        :meth:`to_json_string` determinism.
 
         Returns:
             A ``dict`` with keys ``version``, ``name``, ``nodes``, ``edges``,
@@ -768,7 +768,15 @@ class Graph:
             "subgraphs": subgraphs_sorted,
         }
 
-    def to_json(self) -> str:
+    def to_dict(self) -> dict[str, Any]:
+        """Return the current snapshot as a plain dict with sorted keys (§3.8).
+
+        Equivalent to :meth:`snapshot`. Use :meth:`to_json_string` for
+        deterministic text.
+        """
+        return self.snapshot()
+
+    def to_json_string(self) -> str:
         """Return deterministic JSON text for the current :meth:`snapshot` (§3.8).
 
         Produces compact, sorted-key JSON with a trailing newline (suitable for
@@ -783,7 +791,7 @@ class Graph:
             from graphrefly import Graph, state
             g = Graph("g")
             g.add("x", state(0))
-            assert g.to_json().startswith("{")
+            assert g.to_json_string().startswith("{")
             ```
         """
         return (
