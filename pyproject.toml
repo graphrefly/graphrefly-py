@@ -1,7 +1,7 @@
 [project]
 name = "graphrefly"
 version = "0.10.0"
-description = "Reactive graph protocol for human + LLM co-operation. Composable nodes, glitch-free diamond resolution, two-phase push, durable streaming. Zero dependencies."
+description = "Reactive harness layer for agent workflows. Describe automations in plain language, trace every decision, enforce policies, persist checkpoints. Zero dependencies."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
@@ -13,6 +13,9 @@ keywords = [
 	"workflow",
 	"llm",
 	"ai-agents",
+	"harness-engineering",
+	"agent-harness",
+	"causal-trace",
 	"orchestration",
 	"state-management",
 	"signals",
