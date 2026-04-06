@@ -143,7 +143,7 @@ def test_graph_connect_unknown_node_raises_keyerror() -> None:
 def test_graph_disconnect_without_connect_raises() -> None:
     g = Graph("g")
     a = node(initial=1)
-    b = node([a], lambda deps, _: deps[0])
+    b = node(initial=2)
     g.add("a", a)
     g.add("b", b)
     with pytest.raises(ValueError, match="no registered edge"):

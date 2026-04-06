@@ -64,6 +64,7 @@ from graphrefly.core.sugar import (
     producer,
     state,
 )
+from graphrefly.core.timer import ResettableTimer
 from graphrefly.core.versioning import (
     V0,
     V1,
@@ -95,6 +96,7 @@ __all__ = [
     "NodeFn",
     "NodeImpl",
     "NodeStatus",
+    "ResettableTimer",
     "SubscribeHints",
     "monotonic_ns",
     "wall_clock_ns",

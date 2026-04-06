@@ -306,7 +306,7 @@ def emit_with_batch(
     messages: Messages,
     *,
     phase: int = 2,
-    strategy: EmitStrategy = "sequential",
+    strategy: EmitStrategy = "partition",
     defer_when: DeferWhen = "batching",
     subgraph_lock: object | None = None,
 ) -> None:
@@ -428,11 +428,11 @@ def _emit_sequential(
 
             queue.append(_wrap_deferred_subgraph(_emit, subgraph_lock))
         elif kind in _TERMINAL_TYPES and _should_defer_phase2(bs, defer_when):
-            # Terminal: defer so preceding deferred flushes first.
+            # Terminal: always route to phase-3 queue so all phase-2 drains first.
             def _emit_term(m: Message = msg, s: Callable[[Messages], None] = sink) -> None:
                 s([m])
 
-            queue.append(_wrap_deferred_subgraph(_emit_term, subgraph_lock))
+            bs.pending_phase3.append(_wrap_deferred_subgraph(_emit_term, subgraph_lock))
         else:
             sink([msg])
 

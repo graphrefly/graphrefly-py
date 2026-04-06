@@ -138,10 +138,12 @@ def test_from_any_scalar() -> None:
 
 
 def test_from_any_none_scalar() -> None:
+    """§2.5: first DATA is always treated as changed, even when value is None."""
     sink: list[Any] = []
     n = from_any(None)
     n.subscribe(sink.append)
-    assert not any(m[0] is MessageType.DATA for batch in sink for m in batch)
+    # of(None) emits DATA(None) then COMPLETE — first emit is always "changed"
+    assert any(m[0] is MessageType.DATA and m[1] is None for batch in sink for m in batch)
     assert any(m[0] is MessageType.COMPLETE for batch in sink for m in batch)
     assert not any(m[0] is MessageType.ERROR for batch in sink for m in batch)
 
@@ -439,11 +441,13 @@ def test_from_fs_watch_setup_failure_emits_error(monkeypatch: pytest.MonkeyPatch
     unsub = node.subscribe(sink.append)
     time.sleep(0.05)
     unsub()
-    assert any(
-        m[0] is MessageType.ERROR and isinstance(m[1], RuntimeError) and str(m[1]) == "setup-failed"
-        for batch in sink
-        for m in batch
-    )
+    errors = [m[1] for batch in sink for m in batch if m[0] is MessageType.ERROR]
+    assert len(errors) >= 1
+    err = errors[0]
+    # Error may be wrapped with node name context; check cause chain
+    cause = err.__cause__ if err.__cause__ is not None else err
+    assert isinstance(cause, RuntimeError)
+    assert str(cause) == "setup-failed"
 
 
 def test_from_fs_watch_rejects_empty_paths() -> None:

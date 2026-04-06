@@ -472,6 +472,19 @@ class Graph:
             if self._default_versioning_level is not None:
                 n._apply_versioning(self._default_versioning_level)
             self._nodes[node_name] = n
+            # Auto-register edges from constructor deps already in this graph.
+            # Forward: this node's deps → already-registered nodes.
+            for dep in n._deps:
+                for existing_name, existing in self._nodes.items():
+                    if existing is dep:
+                        self._edges.add((existing_name, node_name))
+                        break
+            # Reverse: already-registered nodes that depend on this newly added node.
+            for other_name, other_node in self._nodes.items():
+                if other_name == node_name:
+                    continue
+                if n in other_node._deps:
+                    self._edges.add((node_name, other_name))
 
     def set_versioning(self, level: int | None) -> None:
         """Set default versioning level for all nodes in this graph (roadmap §6.0).

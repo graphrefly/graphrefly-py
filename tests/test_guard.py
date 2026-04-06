@@ -250,7 +250,10 @@ def test_on_message_error_propagates() -> None:
     downstream.subscribe(sink)
     src.down([(MessageType.DATA, 1)])
     assert len(errors) == 1
-    assert str(errors[0]) == "boom"
+    err = errors[0]
+    assert "on_message threw" in str(err)
+    assert err.__cause__ is not None
+    assert str(err.__cause__) == "boom"
 
 
 # --- subscribe observe guard (direct node test) ---

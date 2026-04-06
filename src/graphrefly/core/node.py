@@ -197,6 +197,7 @@ class NodeImpl[T]:
         "_fn",
         "_guard",
         "_has_deps",
+        "_has_emitted_data",
         "_last_dep_values",
         "_last_mutation",
         "_manual_emit_used",
@@ -280,6 +281,7 @@ class NodeImpl[T]:
         self._last_dep_values: list[Any] | None = None
         self._cleanup: Callable[[], None] | None = None
         self._manual_emit_used = False
+        self._has_emitted_data = False
 
         self._sinks: Callable[[Messages], None] | set[Callable[[Messages], None]] | None = None
         self._sink_count = 0
@@ -371,6 +373,7 @@ class NodeImpl[T]:
                         self._cached = None
                 else:
                     self._cached = None
+                self._has_emitted_data = False
                 self._last_dep_values = None
             self._status = _status_after_message(self._status, m)
             if t is MessageType.COMPLETE or t is MessageType.ERROR:
@@ -382,6 +385,7 @@ class NodeImpl[T]:
                             self._cached = None
                     else:
                         self._cached = None
+                    self._has_emitted_data = False
                 # Invoke cleanup for compute nodes (deps+fn) — spec §2.4
                 if self._cleanup is not None:
                     cb = self._cleanup
@@ -416,7 +420,17 @@ class NodeImpl[T]:
                 cached_snapshot = self._cached
         else:
             cached_snapshot = self._cached
-        unchanged = self._equals(cached_snapshot, value)
+        # §2.5: equals() only compares two real DATA values. _has_emitted_data
+        # disambiguates "never emitted" from "emitted None" and
+        # "reset via INVALIDATE/reset_on_teardown".
+        try:
+            unchanged = self._has_emitted_data and self._equals(cached_snapshot, value)
+        except Exception as eq_err:
+            wrapped = RuntimeError(f'Node "{self._name}": equals threw: {eq_err}')
+            wrapped.__cause__ = eq_err
+            self.down([(MessageType.ERROR, wrapped)], internal=True)
+            return
+        self._has_emitted_data = True
         if unchanged:
             if was_dirty:
                 self.down([(MessageType.RESOLVED,)], internal=True)
@@ -470,7 +484,9 @@ class NodeImpl[T]:
                 return
             self._emit_auto_value(out)
         except Exception as err:
-            self.down([(MessageType.ERROR, err)], internal=True)
+            wrapped = RuntimeError(f'Node "{self._name}": fn threw: {err}')
+            wrapped.__cause__ = err
+            self.down([(MessageType.ERROR, wrapped)], internal=True)
 
     def _run_fn(self) -> None:
         if self._fn is None:
@@ -519,7 +535,9 @@ class NodeImpl[T]:
                     if self._on_message(msg, index, self._actions):
                         continue
                 except Exception as err:
-                    self.down([(MessageType.ERROR, err)], internal=True)
+                    wrapped = RuntimeError(f'Node "{self._name}": on_message threw: {err}')
+                    wrapped.__cause__ = err
+                    self.down([(MessageType.ERROR, wrapped)], internal=True)
                     return
             if self._fn is None:
                 if t is MessageType.COMPLETE and len(self._deps) > 1:

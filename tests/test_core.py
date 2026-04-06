@@ -262,7 +262,10 @@ def test_error_payload_is_exception_instance() -> None:
     unsub()
 
     assert len(payloads) == 1
-    assert payloads[0] is err
+    wrapped = payloads[0]
+    assert isinstance(wrapped, RuntimeError)
+    assert 'fn threw' in str(wrapped)
+    assert wrapped.__cause__ is err
 
 
 def test_source_node_emits_to_subscribers() -> None:

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 from graphrefly.core.clock import monotonic_ns
 from graphrefly.core.node import Node, NodeActions, node
 from graphrefly.core.protocol import Messages, MessageType, batch
+from graphrefly.core.timer import ResettableTimer
 from graphrefly.extra.backoff import (
     BackoffPreset,
     BackoffStrategy,
@@ -104,14 +105,9 @@ def retry(
         stopped = [False]
         prev_delay: list[int | None] = [None]
         upstream_unsub: list[Callable[[], None] | None] = [None]
-        timer_holder: list[threading.Timer | None] = [None]
+        retry_timer = ResettableTimer()
         timer_generation = [0]
         lock = threading.Lock()
-
-        def cancel_timer() -> None:
-            if timer_holder[0] is not None:
-                timer_holder[0].cancel()
-                timer_holder[0] = None
 
         def disconnect_upstream() -> None:
             if upstream_unsub[0] is not None:
@@ -119,11 +115,13 @@ def retry(
                 upstream_unsub[0] = None
 
         def connect() -> None:
-            cancel_timer()
+            retry_timer.cancel()
             disconnect_upstream()
 
             def sink(msgs: Messages) -> None:
                 for m in msgs:
+                    if stopped[0]:
+                        return
                     t = m[0]
                     if t is MessageType.DIRTY:
                         actions.down([(MessageType.DIRTY,)])
@@ -167,14 +165,12 @@ def retry(
                 with lock:
                     if stopped[0] or current_gen != timer_generation[0]:
                         return
+                # connect() outside lock — subscribe may trigger immediate emission
                 connect()
 
-            # §5.10: threading.Timer (not from_timer) — retry delay needs cancel/restart;
+            # §5.10: ResettableTimer (not from_timer) — retry delay needs cancel/restart;
             # from_timer creates a new Node per reset, adding lifecycle overhead per retry.
-            tt = threading.Timer(safe_delay, fire)
-            tt.daemon = True
-            tt.start()
-            timer_holder[0] = tt
+            retry_timer.start(safe_delay, fire)
 
         connect()
 
@@ -182,7 +178,7 @@ def retry(
             with lock:
                 stopped[0] = True
                 timer_generation[0] += 1
-            cancel_timer()
+            retry_timer.cancel()
             disconnect_upstream()
 
         return cleanup
@@ -562,13 +558,8 @@ def rate_limiter(source: Node[Any], max_events: int, window_ns: int) -> Node[Any
     def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
         times: deque[int] = deque()
         pending: deque[Any] = deque()
-        timer: list[threading.Timer | None] = [None]
+        rl_timer = ResettableTimer()
         timer_gen = [0]
-
-        def cancel_timer() -> None:
-            if timer[0] is not None:
-                timer[0].cancel()
-                timer[0] = None
 
         def prune(now: int) -> None:
             boundary = now - window_ns
@@ -576,7 +567,6 @@ def rate_limiter(source: Node[Any], max_events: int, window_ns: int) -> Node[Any
                 times.popleft()
 
         def schedule_emit(when_ns: int) -> None:
-            cancel_timer()
             timer_gen[0] += 1
             gen = timer_gen[0]
             delay = max(0.0, (when_ns - monotonic_ns()) / 1_000_000_000)
@@ -584,15 +574,11 @@ def rate_limiter(source: Node[Any], max_events: int, window_ns: int) -> Node[Any
             def fire() -> None:
                 if gen != timer_gen[0]:
                     return
-                timer[0] = None
                 try_emit()
 
-            # §5.10: threading.Timer (not from_timer) — sliding-window
+            # §5.10: ResettableTimer (not from_timer) — sliding-window
             # needs cancel/restart; from_timer adds Node overhead per check.
-            tt = threading.Timer(delay, fire)
-            tt.daemon = True
-            tt.start()
-            timer[0] = tt
+            rl_timer.start(delay, fire)
 
         def try_emit() -> None:
             while pending:
@@ -617,12 +603,12 @@ def rate_limiter(source: Node[Any], max_events: int, window_ns: int) -> Node[Any
                 elif t is MessageType.RESOLVED:
                     actions.down([(MessageType.RESOLVED,)])
                 elif t is MessageType.COMPLETE:
-                    cancel_timer()
+                    rl_timer.cancel()
                     pending.clear()
                     times.clear()
                     actions.down([(MessageType.COMPLETE,)])
                 elif t is MessageType.ERROR:
-                    cancel_timer()
+                    rl_timer.cancel()
                     pending.clear()
                     times.clear()
                     actions.down([m])
@@ -633,7 +619,7 @@ def rate_limiter(source: Node[Any], max_events: int, window_ns: int) -> Node[Any
 
         def cleanup() -> None:
             timer_gen[0] += 1
-            cancel_timer()
+            rl_timer.cancel()
             unsub()
 
         return cleanup
@@ -796,7 +782,8 @@ def fallback(source: Node[Any], fb: Any) -> Node[Any]:
                         if cur is not None:
                             actions.down([(MessageType.DATA, cur)])
                     else:
-                        actions.down([(MessageType.DATA, fb), (MessageType.COMPLETE,)])
+                        actions.emit(fb)
+                        actions.down([(MessageType.COMPLETE,)])
                     return
                 if t is MessageType.TEARDOWN:
                     if fb_unsub[0] is not None:
@@ -851,17 +838,11 @@ def timeout(source: Node[Any], timeout_ns: int) -> Node[Any]:
         raise ValueError(msg)
 
     def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
-        timer_holder: list[threading.Timer | None] = [None]
+        to_timer = ResettableTimer()
         timer_gen = [0]
         done = [False]
 
-        def cancel_timer() -> None:
-            if timer_holder[0] is not None:
-                timer_holder[0].cancel()
-                timer_holder[0] = None
-
         def arm_timer() -> None:
-            cancel_timer()
             timer_gen[0] += 1
             gen = timer_gen[0]
             delay_s = timeout_ns / 1_000_000_000
@@ -870,15 +851,12 @@ def timeout(source: Node[Any], timeout_ns: int) -> Node[Any]:
                 if gen != timer_gen[0] or done[0]:
                     return
                 done[0] = True
-                # §5.10: threading.Timer (not from_timer) — resettable
+                # §5.10: ResettableTimer (not from_timer) — resettable
                 # deadline; from_timer adds Node overhead per DATA reset.
                 unsub_holder[0]()
                 actions.down([(MessageType.ERROR, TimeoutError(timeout_ns))])
 
-            tt = threading.Timer(delay_s, fire)
-            tt.daemon = True
-            tt.start()
-            timer_holder[0] = tt
+            to_timer.start(delay_s, fire)
 
         unsub_holder: list[Callable[[], None] | None] = [None]
 
@@ -891,15 +869,15 @@ def timeout(source: Node[Any], timeout_ns: int) -> Node[Any]:
                     arm_timer()
                     actions.emit(_msg_val(m))
                 elif t is MessageType.COMPLETE:
-                    cancel_timer()
+                    to_timer.cancel()
                     done[0] = True
                     actions.down([(MessageType.COMPLETE,)])
                 elif t is MessageType.ERROR:
-                    cancel_timer()
+                    to_timer.cancel()
                     done[0] = True
                     actions.down([m])
                 elif t is MessageType.TEARDOWN:
-                    cancel_timer()
+                    to_timer.cancel()
                     done[0] = True
                     actions.down([m])
                     return
@@ -917,7 +895,7 @@ def timeout(source: Node[Any], timeout_ns: int) -> Node[Any]:
         def cleanup() -> None:
             done[0] = True
             timer_gen[0] += 1
-            cancel_timer()
+            to_timer.cancel()
             unsub()
 
         return cleanup

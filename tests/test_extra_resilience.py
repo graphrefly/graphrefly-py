@@ -175,7 +175,12 @@ def test_retry_backoff_delay_rejects_non_numeric() -> None:
     sink: list[Messages] = []
     out.subscribe(sink.append)
     time.sleep(0.05)
-    assert any(m[0] is MessageType.ERROR and isinstance(m[1], TypeError) for b in sink for m in b)
+    errors = [m[1] for b in sink for m in b if m[0] is MessageType.ERROR]
+    assert len(errors) >= 1
+    err = errors[0]
+    # Error may be wrapped with node name context
+    cause = err.__cause__ if err.__cause__ is not None else err
+    assert isinstance(cause, TypeError)
 
 
 def test_retry_backoff_delay_rejects_non_finite() -> None:
@@ -188,7 +193,12 @@ def test_retry_backoff_delay_rejects_non_finite() -> None:
     sink: list[Messages] = []
     out.subscribe(sink.append)
     time.sleep(0.05)
-    assert any(m[0] is MessageType.ERROR and isinstance(m[1], TypeError) for b in sink for m in b)
+    errors = [m[1] for b in sink for m in b if m[0] is MessageType.ERROR]
+    assert len(errors) >= 1
+    err = errors[0]
+    # Error may be wrapped with node name context
+    cause = err.__cause__ if err.__cause__ is not None else err
+    assert isinstance(cause, TypeError)
 
 
 def test_circuit_breaker_opens() -> None:

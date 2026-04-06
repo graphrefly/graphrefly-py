@@ -1814,8 +1814,11 @@ def to_kafka(
 
     def dispose() -> None:
         unsub()
-        with suppress(Exception):
+        try:
             errors_node.down([(MessageType.TEARDOWN,)])
+        except Exception as exc:
+            with suppress(Exception):
+                errors_node.down([(MessageType.ERROR, exc)])
 
     return SinkHandle(dispose=dispose, errors=errors_node)
 
@@ -1973,8 +1976,11 @@ def to_redis_stream(
 
     def dispose() -> None:
         unsub()
-        with suppress(Exception):
+        try:
             errors_node.down([(MessageType.TEARDOWN,)])
+        except Exception as exc:
+            with suppress(Exception):
+                errors_node.down([(MessageType.ERROR, exc)])
 
     return SinkHandle(dispose=dispose, errors=errors_node)
 
@@ -2045,6 +2051,7 @@ def from_csv(
 
         def cleanup() -> None:
             active[0] = False
+            t.join(timeout=1)
 
         return cleanup
 
@@ -2092,6 +2099,7 @@ def from_ndjson(source: Iterable[str]) -> Node[Any]:
 
         def cleanup() -> None:
             active[0] = False
+            t.join(timeout=1)
 
         return cleanup
 
@@ -2350,8 +2358,11 @@ def to_pulsar(
 
     def dispose() -> None:
         unsub()
-        with suppress(Exception):
+        try:
             errors_node.down([(MessageType.TEARDOWN,)])
+        except Exception as exc:
+            with suppress(Exception):
+                errors_node.down([(MessageType.ERROR, exc)])
 
     return SinkHandle(dispose=dispose, errors=errors_node)
 
@@ -2565,8 +2576,11 @@ def to_nats(
 
     def dispose() -> None:
         unsub()
-        with suppress(Exception):
+        try:
             errors_node.down([(MessageType.TEARDOWN,)])
+        except Exception as exc:
+            with suppress(Exception):
+                errors_node.down([(MessageType.ERROR, exc)])
 
     return SinkHandle(dispose=dispose, errors=errors_node)
 
@@ -2781,8 +2795,11 @@ def to_rabbitmq(
 
     def dispose() -> None:
         unsub()
-        with suppress(Exception):
+        try:
             errors_node.down([(MessageType.TEARDOWN,)])
+        except Exception as exc:
+            with suppress(Exception):
+                errors_node.down([(MessageType.ERROR, exc)])
 
     return SinkHandle(dispose=dispose, errors=errors_node)
 
@@ -2926,8 +2943,11 @@ def to_file(
         do_flush()
         writer.close()
         unsub()
-        with suppress(Exception):
+        try:
             errors_node.down([(MessageType.TEARDOWN,)])
+        except Exception as exc:
+            with suppress(Exception):
+                errors_node.down([(MessageType.ERROR, exc)])
 
     return BufferedSinkHandle(dispose=dispose, errors=errors_node, flush=do_flush)
 
@@ -3116,8 +3136,11 @@ def to_clickhouse(
         _cancel_timer()
         do_flush()
         unsub()
-        with suppress(Exception):
+        try:
             errors_node.down([(MessageType.TEARDOWN,)])
+        except Exception as exc:
+            with suppress(Exception):
+                errors_node.down([(MessageType.ERROR, exc)])
 
     return BufferedSinkHandle(dispose=dispose, errors=errors_node, flush=do_flush)
 
@@ -3259,8 +3282,11 @@ def to_s3(
         _cancel_timer()
         do_flush()
         unsub()
-        with suppress(Exception):
+        try:
             errors_node.down([(MessageType.TEARDOWN,)])
+        except Exception as exc:
+            with suppress(Exception):
+                errors_node.down([(MessageType.ERROR, exc)])
 
     return BufferedSinkHandle(dispose=dispose, errors=errors_node, flush=do_flush)
 
@@ -3325,8 +3351,11 @@ def to_postgres(
 
     def dispose() -> None:
         unsub()
-        with suppress(Exception):
+        try:
             errors_node.down([(MessageType.TEARDOWN,)])
+        except Exception as exc:
+            with suppress(Exception):
+                errors_node.down([(MessageType.ERROR, exc)])
 
     return SinkHandle(dispose=dispose, errors=errors_node)
 
@@ -3382,8 +3411,11 @@ def to_mongo(
 
     def dispose() -> None:
         unsub()
-        with suppress(Exception):
+        try:
             errors_node.down([(MessageType.TEARDOWN,)])
+        except Exception as exc:
+            with suppress(Exception):
+                errors_node.down([(MessageType.ERROR, exc)])
 
     return SinkHandle(dispose=dispose, errors=errors_node)
 
@@ -3451,8 +3483,11 @@ def to_loki(
 
     def dispose() -> None:
         unsub()
-        with suppress(Exception):
+        try:
             errors_node.down([(MessageType.TEARDOWN,)])
+        except Exception as exc:
+            with suppress(Exception):
+                errors_node.down([(MessageType.ERROR, exc)])
 
     return SinkHandle(dispose=dispose, errors=errors_node)
 
@@ -3509,8 +3544,11 @@ def to_tempo(
 
     def dispose() -> None:
         unsub()
-        with suppress(Exception):
+        try:
             errors_node.down([(MessageType.TEARDOWN,)])
+        except Exception as exc:
+            with suppress(Exception):
+                errors_node.down([(MessageType.ERROR, exc)])
 
     return SinkHandle(dispose=dispose, errors=errors_node)
 
@@ -3790,8 +3828,11 @@ def to_sqlite(
             disposed[0] = True
             _flush_transaction()
             unsub()
-            with suppress(Exception):
+            try:
                 errors_node.down([(MessageType.TEARDOWN,)])
+            except Exception as exc:
+                with suppress(Exception):
+                    errors_node.down([(MessageType.ERROR, exc)])
 
         return BufferedSinkHandle(
             dispose=_batch_dispose,
@@ -3801,8 +3842,11 @@ def to_sqlite(
 
     def _simple_dispose() -> None:
         unsub()
-        with suppress(Exception):
+        try:
             errors_node.down([(MessageType.TEARDOWN,)])
+        except Exception as exc:
+            with suppress(Exception):
+                errors_node.down([(MessageType.ERROR, exc)])
 
     return SinkHandle(dispose=_simple_dispose, errors=errors_node)
 
@@ -3960,8 +4004,11 @@ def to_sqlalchemy(
             disposed[0] = True
             _flush_batch()
             unsub()
-            with suppress(Exception):
+            try:
                 errors_node.down([(MessageType.TEARDOWN,)])
+            except Exception as exc:
+                with suppress(Exception):
+                    errors_node.down([(MessageType.ERROR, exc)])
 
         return BufferedSinkHandle(
             dispose=_batch_dispose,
@@ -3971,13 +4018,38 @@ def to_sqlalchemy(
 
     def dispose() -> None:
         unsub()
-        with suppress(Exception):
+        try:
             errors_node.down([(MessageType.TEARDOWN,)])
+        except Exception as exc:
+            with suppress(Exception):
+                errors_node.down([(MessageType.ERROR, exc)])
 
     return SinkHandle(dispose=dispose, errors=errors_node)
 
 
 # -- Django ORM ---------------------------------------------------------------
+
+
+def _from_sync_rows(
+    rows: Any,
+    map_row: Callable[[Any], Any],
+) -> Node[Any]:
+    """Shared iteration helper for sync ORM sources (Django, Tortoise)."""
+
+    def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
+        try:
+            materialised = list(rows)
+            mapped = [map_row(row) for row in materialised]
+        except Exception as err:
+            actions.down([(MessageType.ERROR, err)])
+            return lambda: None
+        with batch():
+            for item in mapped:
+                actions.emit(item)
+            actions.down([(MessageType.COMPLETE,)])
+        return lambda: None
+
+    return node(start, describe_kind="producer", complete_when_deps_complete=False)
 
 
 def from_django_orm(
@@ -3999,21 +4071,7 @@ def from_django_orm(
     """
     if map_row is None:
         map_row = lambda r: r  # noqa: E731
-
-    def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
-        try:
-            rows = list(queryset)
-            mapped = [map_row(row) for row in rows]
-        except Exception as err:
-            actions.down([(MessageType.ERROR, err)])
-            return lambda: None
-        with batch():
-            for item in mapped:
-                actions.emit(item)
-            actions.down([(MessageType.COMPLETE,)])
-        return lambda: None
-
-    return node(start, describe_kind="producer", complete_when_deps_complete=False)
+    return _from_sync_rows(queryset, map_row)
 
 
 def to_django_orm(
@@ -4074,8 +4132,11 @@ def to_django_orm(
 
     def dispose() -> None:
         unsub()
-        with suppress(Exception):
+        try:
             errors_node.down([(MessageType.TEARDOWN,)])
+        except Exception as exc:
+            with suppress(Exception):
+                errors_node.down([(MessageType.ERROR, exc)])
 
     return SinkHandle(dispose=dispose, errors=errors_node)
 
@@ -4126,21 +4187,7 @@ def from_tortoise(
 
     if map_row is None:
         map_row = lambda r: r  # noqa: E731
-
-    def start(_deps: list[Any], actions: NodeActions) -> Callable[[], None]:
-        try:
-            rows = list(queryset)
-            mapped = [map_row(row) for row in rows]
-        except Exception as err:
-            actions.down([(MessageType.ERROR, err)])
-            return lambda: None
-        with batch():
-            for item in mapped:
-                actions.emit(item)
-            actions.down([(MessageType.COMPLETE,)])
-        return lambda: None
-
-    return node(start, describe_kind="producer", complete_when_deps_complete=False)
+    return _from_sync_rows(queryset, map_row)
 
 
 def to_tortoise(
@@ -4208,8 +4255,11 @@ def to_tortoise(
 
     def dispose() -> None:
         unsub()
-        with suppress(Exception):
+        try:
             errors_node.down([(MessageType.TEARDOWN,)])
+        except Exception as exc:
+            with suppress(Exception):
+                errors_node.down([(MessageType.ERROR, exc)])
 
     return SinkHandle(dispose=dispose, errors=errors_node)
 
