@@ -13,7 +13,7 @@ def emit_with_batch(
     messages: Messages,
     *,
     phase: int = 2,
-    strategy: EmitStrategy = "sequential",
+    strategy: EmitStrategy = "partition",
     defer_when: DeferWhen = "batching",
     subgraph_lock: object | None = None,
 ) -> None

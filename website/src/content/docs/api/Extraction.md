@@ -8,5 +8,5 @@ Shape consumed by :func:`distill` extraction stages.
 ## Signature
 
 ```python
-class Extraction(TypedDict)
+class Extraction
 ```

@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 from graphrefly.core.node import NodeImpl  # noqa: TC001
 from graphrefly.core.protocol import MessageType, batch
 from graphrefly.core.sugar import derived, effect, state
+from graphrefly.extra.data_structures import reactive_log
 from graphrefly.graph.graph import Graph
 from graphrefly.patterns.reduction import (
     StratifyRule,
@@ -381,6 +382,7 @@ class ContentModerationGraphOptions:
     system_prompt: str | None = None
     weights: tuple[float, float, float] = (0.1, 1.0, 2.0)
     max_feedback_iterations: int = 5
+    max_queue_size: int | None = None
 
 
 def content_moderation_graph(
@@ -431,19 +433,13 @@ def content_moderation_graph(
     )
     g.mount("stratify", strat)
 
-    # --- Review queue (human-writable state) ---
-    review_queue = state(
+    # --- Review queue (reactiveLog — O(1) append, bounded) ---
+    review_log = reactive_log(
         [],
-        meta=_base_meta(
-            "content_moderation",
-            {
-                "stage": "review_queue",
-                "access": "both",
-                "description": "Items awaiting human review",
-            },
-        ),
+        max_size=opts.max_queue_size,
+        name="review_queue",
     )
-    g.add("review_queue", review_queue)
+    g.add("review_queue", review_log.entries)
 
     # Bridge review branch → review queue accumulator
     try:
@@ -455,13 +451,7 @@ def content_moderation_graph(
     def _accumulate(vals: list[Any], _a: Any) -> None:
         item = vals[0]
         if item is not None:
-            current = review_queue.get() or []
-            with batch():
-                review_queue.down(
-                    [
-                        (MessageType.DATA, [*current, item]),
-                    ]
-                )
+            review_log.append(item)
 
     review_accumulator = effect([review_branch], _accumulate)
     g.add("__review_accumulator", review_accumulator)
@@ -526,15 +516,16 @@ def content_moderation_graph(
 
     # --- Feedback (false positive → policy refinement) ---
     def _fb_cond(vals: list[Any], _a: Any) -> Any:
-        queue = vals[0]
-        if isinstance(queue, list) and len(queue) > 0:
-            latest = queue[-1]
+        snap = vals[0]
+        entries = getattr(snap, "value", None) if snap is not None else None
+        if entries and len(entries) > 0:
+            latest = entries[-1]
             if isinstance(latest, dict) and latest.get("false_positive"):
                 return latest
         return None
 
     fb_condition = derived(
-        [review_queue, policy],
+        [review_log.entries, policy],
         _fb_cond,
         meta=_base_meta("content_moderation", {"stage": "feedback_condition"}),
     )

@@ -22,5 +22,5 @@ from graphrefly.extra.checkpoint import MemoryCheckpointAdapter, save_graph_chec
 g = Graph("g"); g.add("x", state(1))
 adapter = MemoryCheckpointAdapter()
 save_graph_checkpoint(g, adapter)
-assert adapter.load()["nodes"]["x"]["value"] == 1
+assert adapter.load("g")["nodes"]["x"]["value"] == 1
 ```

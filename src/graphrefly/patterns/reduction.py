@@ -7,6 +7,7 @@ factory or a Node factory, built on top of core + extra primitives.
 
 from __future__ import annotations
 
+from collections import deque
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -188,7 +189,7 @@ def _add_branch(
             else:
                 actions.down([(MessageType.RESOLVED,)])
             return True
-        if t in (MessageType.COMPLETE, MessageType.ERROR):
+        if t in (MessageType.COMPLETE, MessageType.ERROR, MessageType.TEARDOWN):
             pending_dirty[0] = False
             actions.down([msg])
             return True
@@ -391,13 +392,16 @@ def feedback(
         on_message=_on_feedback_message,
         describe_kind="effect",
         name=feedback_effect_name,
-        meta=_base_meta(
-            "feedback_effect",
-            {
-                "feedbackFrom": condition,
-                "feedbackTo": reentry,
-            },
-        ),
+        meta={
+            **_base_meta(
+                "feedback_effect",
+                {
+                    "feedbackFrom": condition,
+                    "feedbackTo": reentry,
+                },
+            ),
+            "_internal": True,
+        },
     )
     graph.add(feedback_effect_name, feedback_effect)
     graph.connect(condition, feedback_effect_name)
@@ -454,7 +458,7 @@ def budget_gate(
     constraint_nodes = [c.node for c in constraints]
     all_deps: list[NodeImpl[Any]] = [source, *constraint_nodes]
 
-    buffer: list[Any] = []
+    buffer: deque[Any] = deque()
     paused = [False]
     pending_resolved = [False]
     lock_id = object()
@@ -464,7 +468,7 @@ def budget_gate(
 
     def flush_buffer(actions: Any) -> None:
         while buffer and check_budget():
-            item = buffer.pop(0)
+            item = buffer.popleft()
             actions.emit(item)
         # Drain deferred RESOLVED once buffer is empty
         if not buffer and pending_resolved[0]:

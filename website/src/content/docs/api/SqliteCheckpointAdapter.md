@@ -1,11 +1,11 @@
 ---
 title: 'SqliteCheckpointAdapter'
-description: 'Persist one checkpoint blob under a fixed key using :mod:`sqlite3` (stdlib, zero deps).'
+description: 'Persist checkpoint blobs by key using :mod:`sqlite3` (stdlib, zero deps).'
 ---
 
-Persist one checkpoint blob under a fixed key using :mod:`sqlite3` (stdlib, zero deps).
+Persist checkpoint blobs by key using :mod:`sqlite3` (stdlib, zero deps).
 
-Uses a single-row table. Call :meth:`close` when the adapter is no longer needed.
+Uses a key-value table. Call :meth:`close` when the adapter is no longer needed.
 
 ## Signature
 
@@ -18,7 +18,6 @@ class SqliteCheckpointAdapter
 | Parameter | Description |
 |-----------|-------------|
 | `path` | Path to the SQLite database file (``str`` or :class:`pathlib.Path`). |
-| `key` | Row key for the checkpoint (default ``"graphrefly_checkpoint"``). |
 
 ## Basic Usage
 
@@ -28,8 +27,8 @@ from graphrefly.extra.checkpoint import SqliteCheckpointAdapter
 with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
     tmp = f.name
 adapter = SqliteCheckpointAdapter(tmp)
-adapter.save({"version": 1, "nodes": {}, "edges": [], "subgraphs": [], "name": "g"})
-assert adapter.load()["version"] == 1
+adapter.save("g", {"version": 1, "nodes": {}, "edges": [], "subgraphs": [], "name": "g"})
+assert adapter.load("g")["version"] == 1
 adapter.close()
 os.unlink(tmp)
 ```

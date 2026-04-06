@@ -1,9 +1,9 @@
 ---
 title: 'token_tracker'
-description: 'Create a token bucket (alias for :func:`token_bucket`, kept for backward compat).'
+description: 'Create a token bucket (alias for :func:`token_bucket`, naming parity with graphrefly-ts).'
 ---
 
-Create a token bucket (alias for :func:`token_bucket`, kept for backward compat).
+Create a token bucket (alias for :func:`token_bucket`, naming parity with graphrefly-ts).
 
 ## Signature
 

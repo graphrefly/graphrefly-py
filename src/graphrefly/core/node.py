@@ -106,6 +106,15 @@ def _status_after_message(status: NodeStatus, msg: Message) -> NodeStatus:
 type Message = tuple[Any, Any] | tuple[Any]
 
 
+def _is_cleanup_result(value: object) -> bool:
+    """Check for explicit cleanup wrapper: ``{"cleanup": fn}`` or ``{"cleanup": fn, "value": v}``."""
+    return (
+        isinstance(value, dict)
+        and "cleanup" in value
+        and callable(value["cleanup"])
+    )
+
+
 def _is_cleanup_fn(value: object) -> bool:
     """Matches TS ``typeof out === 'function'`` (cleanup vs emitted value)."""
     return callable(value)
@@ -485,6 +494,15 @@ class NodeImpl[T]:
             if self._inspector_hook is not None:
                 self._inspector_hook({"kind": "run", "dep_values": dep_values})
             out = self._fn(dep_values, self._actions)  # type: ignore[misc]
+            # Explicit cleanup wrapper: {"cleanup": fn, "value"?: v}
+            if _is_cleanup_result(out):
+                self._cleanup = out["cleanup"]
+                if self._manual_emit_used:
+                    return
+                if "value" in out:
+                    self._emit_auto_value(out["value"])
+                return
+            # Legacy: plain callable return → cleanup (backward compat)
             if _is_cleanup_fn(out):
                 self._cleanup = out
                 return

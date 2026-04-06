@@ -140,6 +140,7 @@ def bridge(
         on_message=on_message,
         describe_kind="effect",
         name=name,
+        meta={"_internal": True},
     )
 
 

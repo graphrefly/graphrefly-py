@@ -2,9 +2,12 @@
 """Generate Starlight API pages from docstrings in graphrefly.extra modules.
 
 Scanned modules are listed in ``EXTRA_MODULES`` (tier1, tier2, sources, backoff,
-checkpoint, resilience, data_structures, …).
+checkpoint, resilience, data_structures, …). When the same export name appears in
+more than one scanned module, set ``EXPORT_DOC_STEM`` so each page gets a unique
+filename.
 
-Emits one page per ``__all__`` name that maps to a top-level function, async
+Emits one page per ``__all__`` name (after ``EXPORT_DOC_STEM`` remapping) that maps
+to a top-level function, async
 function, class, or :pep:`695` type alias (``type X = ...``).
 
 Usage (from repo root):
@@ -38,6 +41,15 @@ EXTRA_MODULES: list[tuple[str, Path]] = [
     ("reactive_layout", REPO / "src/graphrefly/patterns/reactive_layout/reactive_layout.py"),
     ("reactive_block_layout", REPO / "src/graphrefly/patterns/reactive_layout/reactive_block_layout.py"),
 ]
+
+# One markdown file per stem below. When two scanned modules use the same export name,
+# map (module label, export name) -> distinct filename stem.
+EXPORT_DOC_STEM: dict[tuple[str, str], str] = {
+    # ``graphrefly.extra.timeout`` is the tier2 pipe operator; resilience exposes a
+    # node-level DATA deadline combinator under the same local name.
+    ("resilience", "timeout"): "timeout_node",
+}
+
 WEBSITE = Path(__file__).resolve().parent.parent
 OUT = WEBSITE / "src/content/docs/api"
 
@@ -466,14 +478,15 @@ def main() -> None:
             # Case-insensitive FS: Node.md vs node.md collide; keep `node()` as primary API page.
             if name == "Node":
                 continue
-            if name in nodes:
-                msg = f"duplicate export {name!r} across scanned modules"
+            doc_stem = EXPORT_DOC_STEM.get((label, name), name)
+            if doc_stem in nodes:
+                msg = f"duplicate export doc stem {doc_stem!r} across scanned modules"
                 raise ValueError(msg)
             node = exports[name]
-            doc_names.append(name)
-            nodes[name] = node
-            sources[name] = source
-            kinds[name] = type(node).__name__
+            doc_names.append(doc_stem)
+            nodes[doc_stem] = node
+            sources[doc_stem] = source
+            kinds[doc_stem] = type(node).__name__
 
     OUT.mkdir(parents=True, exist_ok=True)
 

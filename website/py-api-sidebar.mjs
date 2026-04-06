@@ -118,6 +118,7 @@ export const pyApiSidebar = [
 			{ label: "TokenBucket", link: "/api/tokenbucket" },
 			{ label: "token_tracker()", link: "/api/token_tracker" },
 			{ label: "rate_limiter()", link: "/api/rate_limiter" },
+			{ label: "timeout() (resilience)", link: "/api/timeout_node" },
 			{ label: "with_breaker()", link: "/api/with_breaker" },
 			{ label: "WithBreakerBundle", link: "/api/withbreakerbundle" },
 			{ label: "with_status()", link: "/api/with_status" },

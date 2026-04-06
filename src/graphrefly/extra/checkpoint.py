@@ -196,10 +196,13 @@ class SqliteCheckpointAdapter:
         ```
     """
 
-    __slots__ = ("_conn",)
+    __slots__ = ("_conn", "_lock")
 
     def __init__(self, path: str | Path) -> None:
-        self._conn = sqlite3.connect(str(path))
+        import threading
+
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(str(path), check_same_thread=False)
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS graphrefly_checkpoint (k TEXT PRIMARY KEY, v TEXT NOT NULL)"
         )
@@ -207,23 +210,26 @@ class SqliteCheckpointAdapter:
 
     def save(self, key: str, data: Any) -> None:
         payload = _stable_snapshot_json(data)
-        self._conn.execute(
-            "INSERT OR REPLACE INTO graphrefly_checkpoint (k, v) VALUES (?, ?)",
-            (key, payload),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO graphrefly_checkpoint (k, v) VALUES (?, ?)",
+                (key, payload),
+            )
+            self._conn.commit()
 
     def load(self, key: str) -> Any | None:
-        row = self._conn.execute(
-            "SELECT v FROM graphrefly_checkpoint WHERE k = ?", (key,)
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT v FROM graphrefly_checkpoint WHERE k = ?", (key,)
+            ).fetchone()
         if row is None or not isinstance(row[0], str) or not row[0].strip():
             return None
         return json.loads(row[0])
 
     def clear(self, key: str) -> None:
-        self._conn.execute("DELETE FROM graphrefly_checkpoint WHERE k = ?", (key,))
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute("DELETE FROM graphrefly_checkpoint WHERE k = ?", (key,))
+            self._conn.commit()
 
     def close(self) -> None:
         """Close the underlying SQLite connection (safe to call more than once)."""

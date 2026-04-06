@@ -577,6 +577,11 @@ def decompile_graph(graph: Graph) -> dict[str, Any]:
             continue
         if feedback_counter_pattern.match(path):
             continue
+        # Skip internal infrastructure nodes (bridge, feedback effect) via meta tag
+        node_meta = node_desc.get("meta")
+        if isinstance(node_meta, dict) and node_meta.get("_internal"):
+            continue
+        # Legacy fallback: skip by naming convention
         if path.startswith("__feedback_effect_"):
             continue
         if path.startswith("__bridge_"):

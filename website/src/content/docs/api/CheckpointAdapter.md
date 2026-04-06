@@ -1,9 +1,9 @@
 ---
 title: 'CheckpointAdapter'
-description: 'JSON-friendly snapshot persistence (single blob in / out).'
+description: 'Key-value checkpoint persistence (§3.1c).'
 ---
 
-JSON-friendly snapshot persistence (single blob in / out).
+Key-value checkpoint persistence (§3.1c).
 
 ## Signature
 
