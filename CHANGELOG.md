@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.12.0 (2026-04-06)
+
+### Features
+
+- Optimize
+  ([`f13c4e4`](https://github.com/graphrefly/graphrefly-py/commit/f13c4e4031f00b6a34ab1f94ddc2f5f4184b2545))
+
+
 ## v0.11.0 (2026-04-06)
 
 ### Features
