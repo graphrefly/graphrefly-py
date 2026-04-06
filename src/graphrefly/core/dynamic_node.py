@@ -19,7 +19,13 @@ if TYPE_CHECKING:
     from graphrefly.core.guard import MutationRecord
 
 from graphrefly.core.node import _SENTINEL
-from graphrefly.core.protocol import Messages, MessageType, emit_with_batch, propagates_to_meta
+from graphrefly.core.protocol import (
+    Messages,
+    MessageType,
+    emit_with_batch,
+    message_tier,
+    propagates_to_meta,
+)
 
 # ---------------------------------------------------------------------------
 # Public types
@@ -506,9 +512,7 @@ class DynamicNodeImpl[T]:
 
         # singleDep DIRTY skip optimization
         if self._can_skip_dirty():
-            has_phase2 = any(
-                m[0] is MessageType.DATA or m[0] is MessageType.RESOLVED for m in messages
-            )
+            has_phase2 = any(message_tier(m[0]) == 2 for m in messages)
             if has_phase2:
                 filtered = [m for m in messages if m[0] is not MessageType.DIRTY]
                 if filtered:

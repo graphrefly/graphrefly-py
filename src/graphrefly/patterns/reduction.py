@@ -346,11 +346,37 @@ def feedback(
         The same graph (mutated with feedback nodes added).
     """
     counter_name = f"__feedback_{condition}"
-    counter = state(0, meta=_base_meta("feedback_counter", {"max_iterations": max_iterations}))
+    counter = state(
+        0,
+        meta=_base_meta(
+            "feedback_counter",
+            {
+                "maxIterations": max_iterations,
+                "feedbackFrom": condition,
+                "feedbackTo": reentry,
+            },
+        ),
+    )
     graph.add(counter_name, counter)
 
     cond_node = graph.resolve(condition)
     reentry_node = graph.resolve(reentry)
+
+    # Feedback via subscribe: when condition emits DATA, route back to reentry.
+    # Subscribe-based (not effect-based) because the feedback must be
+    # immediately active -- no lazy activation required.
+    _unsub_cond: list[Any] = [None]
+    _unsub_counter: list[Any] = [None]
+    _torn_down = [False]
+
+    def _safe_unsub() -> None:
+        if _torn_down[0]:
+            return
+        _torn_down[0] = True
+        if _unsub_cond[0] is not None:
+            _unsub_cond[0]()
+        if _unsub_counter[0] is not None:
+            _unsub_counter[0]()
 
     def _on_condition(msgs: Any) -> None:
         for msg in msgs:
@@ -363,8 +389,24 @@ def feedback(
                     continue
                 counter.down([(MessageType.DATA, current_count + 1)])
                 reentry_node.down([(MessageType.DATA, cond_value)])
+            elif msg[0] is MessageType.COMPLETE or msg[0] is MessageType.ERROR:
+                # Terminal on condition -- finalize the feedback cycle.
+                # Forward terminal to counter so observers know the cycle is done.
+                terminal_msg = (msg[0], msg[1]) if len(msg) > 1 else (msg[0],)
+                counter.down([terminal_msg])
+                _safe_unsub()
 
-    cond_node.subscribe(_on_condition)
+    _unsub_cond[0] = cond_node.subscribe(_on_condition)
+
+    # Register teardown: when graph destroys, clean up the subscription.
+    # Counter teardown acts as the cleanup trigger.
+    def _on_counter_teardown(msgs: Any) -> None:
+        for msg in msgs:
+            if msg[0] is MessageType.COMPLETE or msg[0] is MessageType.ERROR:
+                _safe_unsub()
+                return
+
+    _unsub_counter[0] = counter.subscribe(_on_counter_teardown)
 
     return graph
 
@@ -419,6 +461,7 @@ def budget_gate(
 
     buffer: list[Any] = []
     paused = [False]
+    pending_resolved = [False]
     lock_id = object()
 
     def check_budget() -> bool:
@@ -428,6 +471,10 @@ def budget_gate(
         while buffer and check_budget():
             item = buffer.pop(0)
             actions.emit(item)
+        # Drain deferred RESOLVED once buffer is empty
+        if not buffer and pending_resolved[0]:
+            pending_resolved[0] = False
+            actions.down([(MessageType.RESOLVED,)])
 
     def on_message(msg: Any, dep_index: int, actions: Any) -> bool:
         t = msg[0]
@@ -449,12 +496,16 @@ def budget_gate(
             if t is MessageType.RESOLVED:
                 if not buffer:
                     actions.down([(MessageType.RESOLVED,)])
+                else:
+                    # Buffer non-empty: defer RESOLVED until buffer drains
+                    pending_resolved[0] = True
                 return True
             if t in (MessageType.COMPLETE, MessageType.ERROR):
                 # Force-flush all buffered items regardless of budget (terminal = done)
                 for item in list(buffer):
                     actions.emit(item)
                 buffer.clear()
+                pending_resolved[0] = False
                 # Release PAUSE lock before forwarding terminal
                 if paused[0]:
                     paused[0] = False

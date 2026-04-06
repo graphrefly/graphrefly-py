@@ -3,6 +3,7 @@
 from graphrefly.patterns import (
     ai,
     cqrs,
+    graphspec,
     memory,
     messaging,
     orchestration,
@@ -10,4 +11,13 @@ from graphrefly.patterns import (
     reduction,
 )
 
-__all__ = ["ai", "cqrs", "memory", "messaging", "orchestration", "reactive_layout", "reduction"]
+__all__ = [
+    "ai",
+    "cqrs",
+    "graphspec",
+    "memory",
+    "messaging",
+    "orchestration",
+    "reactive_layout",
+    "reduction",
+]

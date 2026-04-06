@@ -359,7 +359,7 @@ def _emit_partition(
     # skip partition_for_batch allocation entirely.
     if len(messages) == 1:
         t = messages[0][0]
-        if t is MessageType.DATA or t is MessageType.RESOLVED:
+        if message_tier(t) == 2:
             if _should_defer_phase2(bs, defer_when):
 
                 def _emit_single() -> None:

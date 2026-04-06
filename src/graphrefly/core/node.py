@@ -18,7 +18,13 @@ from graphrefly.core.guard import (
     normalize_actor,
     record_mutation,
 )
-from graphrefly.core.protocol import Messages, MessageType, emit_with_batch, propagates_to_meta
+from graphrefly.core.protocol import (
+    Messages,
+    MessageType,
+    emit_with_batch,
+    message_tier,
+    propagates_to_meta,
+)
 from graphrefly.core.subgraph_locks import (
     acquire_subgraph_write_lock_with_defer,
     ensure_registered,
@@ -824,12 +830,7 @@ class NodeImpl[T]:
             sink_messages = terminal_passthrough
         self._handle_local_lifecycle(lifecycle_messages)
         if self._can_skip_dirty():
-            has_phase2 = False
-            for m in sink_messages:
-                t = m[0]
-                if t is MessageType.DATA or t is MessageType.RESOLVED:
-                    has_phase2 = True
-                    break
+            has_phase2 = any(message_tier(m[0]) == 2 for m in sink_messages)
             if has_phase2:
                 filtered = [m for m in sink_messages if m[0] is not MessageType.DIRTY]
                 if filtered:

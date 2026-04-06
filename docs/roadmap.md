@@ -501,15 +501,19 @@ Pre-wired graphs for common "info → action" domains. Users fork/extend.
 - [ ] `issue_tracker_graph(opts)` → Graph — findings → extraction → verifiable assertions → regression detection → distillation → prioritized queue
 - [ ] `content_moderation_graph(opts)` → Graph — ingest → LLM classification → human review → feedback → policy refinement
 - [ ] `data_quality_graph(opts)` → Graph — DB/API ingest → schema validation → anomaly detection → drift alerting → remediation suggestions
+- [ ] Rearchitect `feedback()` as graph-visible bridge node (replaces subscribe-based shortcut; enables proper DIRTY→DATA two-phase on reentry/counter; resolves bare-DATA protocol gap)
+- [ ] Rearchitect `funnel()` bridges as graph-visible nodes (replaces subscribe forwarding; resolves §5.9 imperative trigger violation + teardown leak)
+- [ ] `stratify` two-dep gating: gate classification on both source and rules settling (eliminates stale-rules race when both updated in same `batch()`)
 
 ### 8.3 — LLM graph composition
 
-- [ ] `GraphSpec` schema — JSON schema for declarative graph topology. Serializable, diffable.
-- [ ] `compile_spec(spec)` → Graph — instantiate from spec
-- [ ] `decompile_graph(graph)` → GraphSpec — extract spec from running graph
-- [ ] `llm_compose(problem, adapter, opts)` → GraphSpec — LLM generates topology from natural language
-- [ ] `llm_refine(graph, feedback, adapter)` → GraphSpec — LLM modifies existing topology
-- [ ] `spec_diff(spec_a, spec_b)` — structural diff between specs
+- [x] `GraphSpec` schema — JSON schema for declarative graph topology. Serializable, diffable.
+- [x] `compile_spec(spec, catalog)` → Graph — instantiate from spec (dep-order resolution, templates via `mount()`, feedback via §8.1)
+- [x] `decompile_graph(graph)` → GraphSpec — extract spec from running graph (meta-based + structural fingerprint template detection)
+- [x] `llm_compose(problem, adapter, opts)` → GraphSpec — LLM generates topology from natural language
+- [x] `llm_refine(spec, feedback, adapter)` → GraphSpec — LLM modifies existing topology
+- [x] `spec_diff(spec_a, spec_b)` — structural diff between specs (template-aware, feedback-aware)
+- [x] `validate_spec(spec)` → GraphSpecValidation — structural validation (types, deps, templates, feedback, bind targets)
 
 ### 8.4 — Audit & accountability
 
