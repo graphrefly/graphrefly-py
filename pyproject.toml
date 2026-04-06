@@ -1,6 +1,6 @@
 [project]
 name = "graphrefly"
-version = "0.9.0"
+version = "0.10.0"
 description = "Reactive graph protocol for human + LLM co-operation. Composable nodes, glitch-free diamond resolution, two-phase push, durable streaming. Zero dependencies."
 readme = "README.md"
 license = "MIT"
