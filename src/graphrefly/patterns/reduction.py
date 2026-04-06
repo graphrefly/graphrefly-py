@@ -12,8 +12,9 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
+from graphrefly.core.bridge import DEFAULT_DOWN, bridge
 from graphrefly.core.node import NodeImpl, node
-from graphrefly.core.protocol import MessageType
+from graphrefly.core.protocol import MessageType, batch
 from graphrefly.core.sugar import derived, state
 from graphrefly.extra.tier1 import merge
 from graphrefly.graph.graph import GRAPH_META_SEGMENT, Graph
@@ -283,30 +284,23 @@ def funnel(
 
         g.mount(stage.name, sub)
 
-        # Bridge: subscribe prev output → forward messages to stage input.
-        # Forwards DIRTY, DATA, RESOLVED, COMPLETE, ERROR to preserve
-        # two-phase protocol across stages.
-        # TODO(8.2): replace with graph-visible bridge nodes once the
-        # core bridge() helper lands.
+        # Graph-visible bridge: forwards all standard types EXCEPT TEARDOWN
+        # from the previous output to the next stage's input. Participates in
+        # two-phase push and shows up in describe(). Stage lifecycle is managed
+        # by the parent graph, not the upstream stage.
         prev_node = g.resolve(prev_output_path)
         stage_input = g.resolve(f"{stage.name}::input")
+        bridge_name = f"__bridge_{prev_output_path}→{stage.name}_input"
+        br = bridge(
+            prev_node,
+            stage_input,
+            name=bridge_name,
+            down=[t for t in DEFAULT_DOWN if t is not MessageType.TEARDOWN],
+        )
+        g.add(bridge_name, br)
+        g.connect(prev_output_path, bridge_name)
+        br.subscribe(lambda _: None)  # keepalive: activate the bridge
 
-        def _make_bridge(target: NodeImpl[Any]) -> Callable[[Any], None]:
-            def _bridge(msgs: Any) -> None:
-                for m in msgs:
-                    t = m[0]
-                    if t is MessageType.DATA:
-                        target.down([(MessageType.DATA, m[1])])
-                    elif t is MessageType.DIRTY:
-                        target.down([(MessageType.DIRTY,)])
-                    elif t is MessageType.RESOLVED:
-                        target.down([(MessageType.RESOLVED,)])
-                    elif t in (MessageType.COMPLETE, MessageType.ERROR):
-                        target.down([m])
-
-            return _bridge
-
-        prev_node.subscribe(_make_bridge(stage_input))
         prev_output_path = f"{stage.name}::output"
 
     return g
@@ -362,51 +356,52 @@ def feedback(
     cond_node = graph.resolve(condition)
     reentry_node = graph.resolve(reentry)
 
-    # Feedback via subscribe: when condition emits DATA, route back to reentry.
-    # Subscribe-based (not effect-based) because the feedback must be
-    # immediately active -- no lazy activation required.
-    _unsub_cond: list[Any] = [None]
-    _unsub_counter: list[Any] = [None]
-    _torn_down = [False]
+    # Graph-visible feedback effect: intercepts condition DATA, routes back to
+    # reentry with iteration counting. Registered in the graph so it shows up
+    # in describe() and cleans up on graph.destroy().
+    feedback_effect_name = f"__feedback_effect_{condition}"
 
-    def _safe_unsub() -> None:
-        if _torn_down[0]:
-            return
-        _torn_down[0] = True
-        if _unsub_cond[0] is not None:
-            _unsub_cond[0]()
-        if _unsub_counter[0] is not None:
-            _unsub_counter[0]()
-
-    def _on_condition(msgs: Any) -> None:
-        for msg in msgs:
-            if msg[0] is MessageType.DATA:
-                current_count = int(counter.get() or 0)
-                if current_count >= max_iterations:
-                    continue
-                cond_value = msg[1]
-                if cond_value is None:
-                    continue
+    def _on_feedback_message(msg: Any, dep_index: int, actions: Any) -> bool:  # noqa: ARG001
+        t = msg[0]
+        if t is MessageType.DATA:
+            current_count = int(counter.get() or 0)
+            if current_count >= max_iterations:
+                return True
+            cond_value = msg[1]
+            if cond_value is None:
+                return True
+            # Batch counter + reentry so both arrive atomically — no
+            # downstream listener sees the counter incremented while
+            # reentry still holds the old value (or vice versa).
+            with batch():
                 counter.down([(MessageType.DATA, current_count + 1)])
                 reentry_node.down([(MessageType.DATA, cond_value)])
-            elif msg[0] is MessageType.COMPLETE or msg[0] is MessageType.ERROR:
-                # Terminal on condition -- finalize the feedback cycle.
-                # Forward terminal to counter so observers know the cycle is done.
-                terminal_msg = (msg[0], msg[1]) if len(msg) > 1 else (msg[0],)
-                counter.down([terminal_msg])
-                _safe_unsub()
+            return True
+        if t is MessageType.COMPLETE or t is MessageType.ERROR:
+            # Terminal on condition — finalize the feedback cycle.
+            # Forward terminal to counter so observers know the cycle is done.
+            terminal_msg = (t, msg[1]) if len(msg) > 1 else (t,)
+            counter.down([terminal_msg])
+            return True
+        return False
 
-    _unsub_cond[0] = cond_node.subscribe(_on_condition)
-
-    # Register teardown: when graph destroys, clean up the subscription.
-    # Counter teardown acts as the cleanup trigger.
-    def _on_counter_teardown(msgs: Any) -> None:
-        for msg in msgs:
-            if msg[0] is MessageType.COMPLETE or msg[0] is MessageType.ERROR:
-                _safe_unsub()
-                return
-
-    _unsub_counter[0] = counter.subscribe(_on_counter_teardown)
+    feedback_effect = node(
+        [cond_node],
+        lambda _d, _a: None,
+        on_message=_on_feedback_message,
+        describe_kind="effect",
+        name=feedback_effect_name,
+        meta=_base_meta(
+            "feedback_effect",
+            {
+                "feedbackFrom": condition,
+                "feedbackTo": reentry,
+            },
+        ),
+    )
+    graph.add(feedback_effect_name, feedback_effect)
+    graph.connect(condition, feedback_effect_name)
+    feedback_effect.subscribe(lambda _: None)  # keepalive: activate
 
     return graph
 

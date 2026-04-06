@@ -3,6 +3,7 @@
 from graphrefly.patterns import (
     ai,
     cqrs,
+    domain_templates,
     graphspec,
     memory,
     messaging,
@@ -14,6 +15,7 @@ from graphrefly.patterns import (
 __all__ = [
     "ai",
     "cqrs",
+    "domain_templates",
     "graphspec",
     "memory",
     "messaging",

@@ -551,7 +551,7 @@ def decompile_graph(graph: Graph) -> dict[str, Any]:
     }
 
     # Detect feedback counter nodes and extract feedback edges from meta
-    feedback_counter_pattern = _re.compile(r"^__feedback_(.+)$")
+    feedback_counter_pattern = _re.compile(r"^__feedback_(?!effect_)(.+)$")
     feedback_conditions: set[str] = set()
 
     for path in list(desc["nodes"].keys()):
@@ -571,11 +571,15 @@ def decompile_graph(graph: Graph) -> dict[str, Any]:
                     fb_edge["maxIterations"] = meta["maxIterations"]
                 feedback_edges.append(fb_edge)
 
-    # Build nodes map, skipping meta and feedback internals
+    # Build nodes map, skipping meta, feedback internals, and bridge nodes
     for path, node_desc in desc["nodes"].items():
         if meta_segment in path:
             continue
         if feedback_counter_pattern.match(path):
+            continue
+        if path.startswith("__feedback_effect_"):
+            continue
+        if path.startswith("__bridge_"):
             continue
         # Skip subgraph-internal nodes (they belong to templates)
         if "::" in path:

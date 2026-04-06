@@ -1,5 +1,6 @@
 """Core node primitives and protocol types for graphrefly."""
 
+from graphrefly.core.bridge import DEFAULT_DOWN, bridge
 from graphrefly.core.cancellation import CancellationToken, cancellation_token
 from graphrefly.core.clock import monotonic_ns, wall_clock_ns
 from graphrefly.core.dynamic_node import DynamicNodeImpl, dynamic_node
@@ -80,6 +81,8 @@ from graphrefly.core.versioning import (
 
 __all__ = [
     "Actor",
+    "bridge",
+    "DEFAULT_DOWN",
     "CancellationToken",
     "cancellation_token",
     "DynamicNodeImpl",

@@ -10,6 +10,58 @@
 
 ---
 
+## Harness Engineering Sprint — Priority Build Order
+
+> **Context:** Mirrors the TS harness engineering sprint (`graphrefly-ts/docs/roadmap.md`). Python tracks TS for core parity on the audit/accountability layer (§9.2). Eval harness is TS-primary (corpus, rubrics, runner). MCP server and framework infiltration packages are TS-only. Python focus: §9.2 parity + §8.2 rearchitecture debt + backpressure.
+>
+> **Design reference:** `~/src/graphrefly-ts/archive/docs/SESSION-harness-engineering-strategy.md`
+
+### Wave 1 (Python): Eval parity prep (Weeks 1-3)
+
+No new Python deliverables — Wave 1 is TS-primary (eval runner, CI, blog). Python work during this window:
+
+#### 9.0 — Architecture debt (8.2 rearchitecture) [HIGH PRIORITY]
+
+These fix protocol violations identified post-8.2 ship. Must land before §9.2 audit layer, which assumes clean two-phase propagation on all paths.
+
+- [x] Rearchitect `feedback()` as graph-visible bridge node (8.2 → 9.0) — replaces subscribe-based shortcut; enables proper DIRTY→DATA two-phase on reentry/counter; resolves bare-DATA protocol gap
+- [x] Rearchitect `funnel()` bridges as graph-visible nodes (8.2 → 9.0) — replaces subscribe forwarding; resolves §5.9 imperative trigger violation + teardown leak
+- [ ] `stratify` two-dep gating (8.2 → 9.0) — gate classification on both source and rules settling (eliminates stale-rules race)
+
+### Wave 2 (Python): Audit & accountability parity (Weeks 4-9)
+
+#### 9.2 — Audit & accountability (8.4 → 9.2) — TS parity
+
+- [ ] `explain_path(graph, from_node, to_node)` — walk backward through graph derivation chain. Human + LLM readable causal chain. (8.4 → 9.2)
+- [ ] `audit_trail(graph, opts)` → Graph — wraps graph with `reactive_log` recording every mutation, actor, timestamp, causal chain. (8.4 → 9.2)
+- [ ] `policy_enforcer(graph, policies)` — reactive constraint enforcement. Policies are nodes. Violations → alert subgraph. (8.4 → 9.2)
+- [ ] `compliance_snapshot(graph)` — point-in-time export for regulatory archival. (8.4 → 9.2)
+
+#### 9.2b — Backpressure protocol (8.5 → 9.2b)
+
+TS has this shipped; Python needs parity for production reduction pipelines.
+
+- [ ] Backpressure protocol — formalize PAUSE/RESUME for throughput control across graph boundaries (8.5 → 9.2b)
+
+### Wave 3 (Python): Polish & publish (Weeks 10-15)
+
+- [ ] `llms.txt` for AI agent discovery (7 → 9.3)
+- [ ] PyPI publish: `graphrefly-py` (7 → 9.3)
+- [ ] Docs site at `py.graphrefly.dev` (7 → 9.3)
+
+### Deferred (post-Wave 3)
+
+- §7.2 Showcase demos (Pyodide/WASM lab) — after TS demos prove the pattern
+- §7.2b Universal reduction demos — after Demo 0 + Demo 6
+- §7.3 Scenario tests — after demos
+- §7.4 Inspection stress tests
+- §7.5 Foreseen building blocks
+- §8.5 `peer_graph`, `sharded_graph`, adaptive sampling — distributed scale
+- §6.2 V2 schema, §6.3 V3 caps+refs — versioning depth
+- Free-threaded Python 3.14 benchmark suite — perf exploration
+
+---
+
 ## Phase 0: Foundation
 
 ### 0.1 — Project scaffold
@@ -497,12 +549,12 @@ Composable building blocks between sources and sinks.
 
 Pre-wired graphs for common "info → action" domains. Users fork/extend.
 
-- [ ] `observability_graph(opts)` → Graph — OTel ingest → stratified reduction → correlation → SLO verification → alert prioritization → sink
-- [ ] `issue_tracker_graph(opts)` → Graph — findings → extraction → verifiable assertions → regression detection → distillation → prioritized queue
-- [ ] `content_moderation_graph(opts)` → Graph — ingest → LLM classification → human review → feedback → policy refinement
-- [ ] `data_quality_graph(opts)` → Graph — DB/API ingest → schema validation → anomaly detection → drift alerting → remediation suggestions
-- [ ] Rearchitect `feedback()` as graph-visible bridge node (replaces subscribe-based shortcut; enables proper DIRTY→DATA two-phase on reentry/counter; resolves bare-DATA protocol gap)
-- [ ] Rearchitect `funnel()` bridges as graph-visible nodes (replaces subscribe forwarding; resolves §5.9 imperative trigger violation + teardown leak)
+- [x] `observability_graph(opts)` → Graph — OTel ingest → stratified reduction → correlation → SLO verification → alert prioritization → sink
+- [x] `issue_tracker_graph(opts)` → Graph — findings → extraction → verifiable assertions → regression detection → distillation → prioritized queue
+- [x] `content_moderation_graph(opts)` → Graph — ingest → LLM classification → human review → feedback → policy refinement
+- [x] `data_quality_graph(opts)` → Graph — DB/API ingest → schema validation → anomaly detection → drift alerting → remediation suggestions
+- [x] Rearchitect `feedback()` as graph-visible bridge node (replaces subscribe-based shortcut; enables proper DIRTY→DATA two-phase on reentry/counter; resolves bare-DATA protocol gap)
+- [x] Rearchitect `funnel()` bridges as graph-visible nodes (replaces subscribe forwarding; resolves §5.9 imperative trigger violation + teardown leak)
 - [ ] `stratify` two-dep gating: gate classification on both source and rules settling (eliminates stale-rules race when both updated in same `batch()`)
 
 ### 8.3 — LLM graph composition
