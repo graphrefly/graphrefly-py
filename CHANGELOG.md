@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.9.0 (2026-04-06)
+
+### Features
+
+- 8.3
+  ([`39b0a9e`](https://github.com/graphrefly/graphrefly-py/commit/39b0a9e8e2a034a27352b2ea054182d58065903f))
+
+
 ## v0.8.0 (2026-04-06)
 
 ### Features
