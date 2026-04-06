@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.8.0 (2026-04-06)
+
+### Features
+
+- 8.1 + django integration
+  ([`5dcfd3d`](https://github.com/graphrefly/graphrefly-py/commit/5dcfd3d78561e7ae8cdc905f95f9b4922926881e))
+
+
 ## v0.7.0 (2026-04-06)
 
 ### Features
