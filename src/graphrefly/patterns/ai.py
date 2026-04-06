@@ -13,7 +13,7 @@ import re as _re
 import threading
 from collections.abc import AsyncIterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
 from graphrefly.core.clock import monotonic_ns
 from graphrefly.core.node import Node
@@ -433,7 +433,7 @@ class SystemPromptHandle:
     dispose: Callable[[], None]
 
     def get(self) -> str:
-        return self.node.get()
+        return cast("str", self.node.get())
 
     def subscribe(self, listener: Any) -> Any:
         return self.node.subscribe(listener)

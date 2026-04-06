@@ -14,7 +14,7 @@ projections (4.3). Guards (1.5) enforce command/query boundary.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from graphrefly.core.clock import wall_clock_ns
 from graphrefly.core.guard import policy
@@ -34,29 +34,32 @@ if TYPE_CHECKING:
 # Guards
 # ---------------------------------------------------------------------------
 
-COMMAND_GUARD: GuardFn = policy(
-    lambda allow, deny: [
-        allow("write"),
-        allow("signal"),
-        deny("observe"),
-    ]
-)
 
-PROJECTION_GUARD: GuardFn = policy(
-    lambda allow, deny: [
-        allow("observe"),
-        allow("signal"),
-        deny("write"),
-    ]
-)
+def _build_command_guard(allow: Any, deny: Any) -> None:
+    allow("write")
+    allow("signal")
+    deny("observe")
 
-EVENT_GUARD: GuardFn = policy(
-    lambda allow, deny: [
-        allow("observe"),
-        allow("signal"),
-        deny("write"),
-    ]
-)
+
+COMMAND_GUARD: GuardFn = policy(_build_command_guard)
+
+
+def _build_projection_guard(allow: Any, deny: Any) -> None:
+    allow("observe")
+    allow("signal")
+    deny("write")
+
+
+PROJECTION_GUARD: GuardFn = policy(_build_projection_guard)
+
+
+def _build_event_guard(allow: Any, deny: Any) -> None:
+    allow("observe")
+    allow("signal")
+    deny("write")
+
+
+EVENT_GUARD: GuardFn = policy(_build_event_guard)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -80,7 +83,7 @@ class _EventLogEntry:
 
 def _keepalive(n: Any) -> Callable[[], None]:
     """Keep dep wiring alive; returns unsubscribe handle for cleanup."""
-    return n.subscribe(lambda _msgs: None)
+    return cast("Callable[[], None]", n.subscribe(lambda _msgs: None))
 
 
 def _tuple_snapshot(raw: Any) -> tuple[Any, ...]:
@@ -260,7 +263,7 @@ class CqrsGraph(Graph):
         """
         existing = self._event_logs.get(name)
         if existing is not None:
-            return existing.node
+            return cast("Node[Any]", existing.node)
 
         log = reactive_log(name=name)
         entries = log.entries

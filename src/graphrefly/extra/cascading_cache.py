@@ -5,6 +5,9 @@ from __future__ import annotations
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar, runtime_checkable
 
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
 from graphrefly.core.protocol import MessageType
 from graphrefly.core.sugar import state
 
@@ -155,7 +158,7 @@ class CascadingCache(Generic[V]):  # noqa: UP046
 
     def __init__(
         self,
-        tiers: list[CacheTier],
+        tiers: Sequence[CacheTier],
         *,
         max_size: int = 0,
         eviction: EvictionPolicy | None = None,
@@ -171,7 +174,7 @@ class CascadingCache(Generic[V]):  # noqa: UP046
         for i in range(hit_tier):
             tier = self._tiers[i]
             if _tier_has_save(tier):
-                tier.save(key, value)  # type: ignore[union-attr]
+                tier.save(key, value)
 
     def _cascade(self, key: str, nd: Node[Any]) -> None:
         for tier_index, tier in enumerate(self._tiers):
@@ -199,10 +202,10 @@ class CascadingCache(Generic[V]):  # noqa: UP046
                         # Demote to deepest tier with save before evicting
                         for i in range(len(self._tiers) - 1, -1, -1):
                             if _tier_has_save(self._tiers[i]):
-                                self._tiers[i].save(victim, value)  # type: ignore[union-attr]
+                                self._tiers[i].save(victim, value)
                                 for j in range(i):
                                     if _tier_has_clear(self._tiers[j]):
-                                        self._tiers[j].clear(victim)  # type: ignore[union-attr]
+                                        self._tiers[j].clear(victim)
                                 break
                     nd.down([(MessageType.TEARDOWN,)])
                     del self._entries[victim]
@@ -236,10 +239,9 @@ class CascadingCache(Generic[V]):  # noqa: UP046
         if self._write_through:
             for tier in self._tiers:
                 if _tier_has_save(tier):
-                    tier.save(key, value)  # type: ignore[union-attr]
+                    tier.save(key, value)
         elif self._tiers and _tier_has_save(self._tiers[0]):
-            self._tiers[0].save(key, value)  # type: ignore[union-attr]
-
+            self._tiers[0].save(key, value)
         if key in self._entries:
             self._entries[key].down([(MessageType.DATA, value)])
             if self._eviction is not None:
@@ -271,7 +273,7 @@ class CascadingCache(Generic[V]):  # noqa: UP046
                 self._eviction.delete(key)
         for tier in self._tiers:
             if _tier_has_clear(tier):
-                tier.clear(key)  # type: ignore[union-attr]
+                tier.clear(key)
 
     def has(self, key: str) -> bool:
         """Check if a key is in the in-memory entries."""
@@ -284,7 +286,7 @@ class CascadingCache(Generic[V]):  # noqa: UP046
 
 
 def cascading_cache(
-    tiers: list[CacheTier],
+    tiers: Sequence[CacheTier],
     *,
     max_size: int = 0,
     eviction: EvictionPolicy | None = None,
@@ -398,5 +400,10 @@ def tiered_storage(
         ```
     """
     tiers = [_CheckpointTier(a) for a in adapters]
-    inner = CascadingCache(tiers, max_size=max_size, eviction=eviction, write_through=True)
+    inner: CascadingCache[Any] = CascadingCache(
+        tiers,
+        max_size=max_size,
+        eviction=eviction,
+        write_through=True,
+    )
     return TieredStorage(inner)

@@ -60,6 +60,7 @@ dev = [
 	"ruff>=0.9",
 	"mypy>=1.14",
 	"croniter>=2.0",
+	"django>=4.2",
 	"fastapi>=0.100",
 	"httpx>=0.24",
 	"pillow>=12.2.0",

@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
-    import trio  # type: ignore[import-not-found]
+    import trio
 
 
 class TrioRunner:

@@ -168,7 +168,7 @@ class PillowMeasureAdapter:
         self._cache: dict[tuple[str, int] | None, Any] = {}
 
     def _get_font(self, font: str) -> Any:
-        from PIL import ImageFont  # type: ignore[import-untyped]
+        from PIL import ImageFont
 
         spec = self._font_map.get(font, self._fallback_font)
         if spec in self._cache:

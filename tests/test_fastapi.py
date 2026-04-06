@@ -226,11 +226,11 @@ def test_router_observe_node_sse() -> None:
     app.include_router(graphrefly_router(g))
 
     with TestClient(app) as client:
-        # Set the value after a short delay in a background thread.
+        ready = threading.Event()
+
         def _set_then_complete() -> None:
-            time.sleep(0.1)
+            ready.wait(timeout=5)
             g.set("x", 42)
-            time.sleep(0.05)
             s.down([(MessageType.COMPLETE,)])
 
         t = threading.Thread(target=_set_then_complete, daemon=True)
@@ -240,6 +240,8 @@ def test_router_observe_node_sse() -> None:
             assert resp.headers["content-type"] == "text/event-stream; charset=utf-8"
             text = ""
             for chunk in resp.iter_text():
+                # Signal emitter once the iterator is consuming.
+                ready.set()
                 text += chunk
                 if "event: complete" in text:
                     break

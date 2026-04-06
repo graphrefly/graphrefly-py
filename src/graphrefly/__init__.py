@@ -2,6 +2,7 @@
 
 from graphrefly import compat, integrations, patterns
 from graphrefly.core import (
+    NO_VALUE,
     V0,
     V1,
     Actor,
@@ -15,7 +16,6 @@ from graphrefly.core import (
     Message,
     Messages,
     MessageType,
-    NO_VALUE,
     Node,
     NodeActions,
     NodeFn,

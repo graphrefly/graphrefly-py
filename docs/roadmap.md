@@ -293,7 +293,7 @@ Composition layer over 3.2 (`reactive_log`), 4.1 (sagas), 4.2 (event bus), 4.3 (
 ### 5.1 — Framework compat
 
 - [x] FastAPI integration
-- [ ] Django integration
+- [x] Django integration
 - [x] asyncio / trio Runner protocol
 - [x] Async utilities: `to_async_iter`, `first_value_from_async`, `settled`
 
@@ -487,11 +487,11 @@ Reusable patterns for taking heterogeneous massive inputs and producing prioriti
 
 Composable building blocks between sources and sinks.
 
-- [ ] `stratify(source, rules)` → Graph — route input to different reduction branches based on classifier fn. Each branch gets independent operator chains. Rules are reactive — an LLM can rewrite them at runtime.
-- [ ] `funnel(sources, stages)` → Graph — multi-source merge with sequential reduction stages. Each stage is a named subgraph. Stages are pluggable — swap a stage by graph composition.
-- [ ] `feedback(graph, condition, reentry)` → Graph — introduce a cycle: when condition node fires, route output back to reentry point. Bounded by max iterations + budget constraints.
-- [ ] `budget_gate(source, constraints)` → Node — pass-through respecting reactive constraint nodes (token budget, network IO, cost ceiling). Backpressure via PAUSE/RESUME.
-- [ ] `scorer(sources, weights)` → Node — reactive multi-signal scoring. Weights are nodes (LLM or human can adjust live). Output: sorted, prioritized items with full score breakdown in meta.
+- [x] `stratify(source, rules)` → Graph — route input to different reduction branches based on classifier fn. Each branch gets independent operator chains. Rules are reactive — an LLM can rewrite them at runtime.
+- [x] `funnel(sources, stages)` → Graph — multi-source merge with sequential reduction stages. Each stage is a named subgraph. Stages are pluggable — swap a stage by graph composition.
+- [x] `feedback(graph, condition, reentry)` → Graph — introduce a cycle: when condition node fires, route output back to reentry point. Bounded by max iterations + budget constraints.
+- [x] `budget_gate(source, constraints)` → Node — pass-through respecting reactive constraint nodes (token budget, network IO, cost ceiling). Backpressure via PAUSE/RESUME.
+- [x] `scorer(sources, weights)` → Node — reactive multi-signal scoring. Weights are nodes (LLM or human can adjust live). Output: sorted, prioritized items with full score breakdown in meta.
 
 ### 8.2 — Domain templates (opinionated Graph factories)
 

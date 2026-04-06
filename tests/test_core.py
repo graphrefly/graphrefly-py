@@ -264,7 +264,7 @@ def test_error_payload_is_exception_instance() -> None:
     assert len(payloads) == 1
     wrapped = payloads[0]
     assert isinstance(wrapped, RuntimeError)
-    assert 'fn threw' in str(wrapped)
+    assert "fn threw" in str(wrapped)
     assert wrapped.__cause__ is err
 
 

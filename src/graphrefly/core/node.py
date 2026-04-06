@@ -14,6 +14,7 @@ from graphrefly.core.guard import (
     Actor,
     GuardAction,
     GuardDenied,
+    MutationRecord,
     normalize_actor,
     record_mutation,
 )
@@ -253,10 +254,10 @@ class NodeImpl[T]:
             msg = "node option 'guard' must be callable or None"
             raise TypeError(msg)
         self._guard: Callable[[Actor, GuardAction], bool] | None = raw_guard
-        self._last_mutation: dict[str, Any] | None = None
+        self._last_mutation: MutationRecord | None = None
 
         self._cache_lock = threading.Lock() if self._thread_safe else None
-        self._cached: Any = opts["initial"] if "initial" in opts else _SENTINEL
+        self._cached: Any = opts.get("initial", _SENTINEL)
         self._status: NodeStatus = "disconnected" if self._has_deps else "settled"
 
         # Versioning (GRAPHREFLY-SPEC §7)
@@ -367,7 +368,7 @@ class NodeImpl[T]:
                 else:
                     self._cached = m[1]  # type: ignore[misc]
                 if self._versioning is not None:
-                    advance_version(self._versioning, m[1], self._hash_fn)
+                    advance_version(self._versioning, m[1], self._hash_fn)  # type: ignore[misc]
             if t is MessageType.INVALIDATE:
                 # GRAPHREFLY-SPEC §1.2: clear cached state; do not auto-emit from here.
                 if self._cleanup is not None:
@@ -761,7 +762,7 @@ class NodeImpl[T]:
         return None if v is _SENTINEL else v
 
     @property
-    def last_mutation(self) -> dict[str, Any] | None:
+    def last_mutation(self) -> MutationRecord | None:
         """Last non-internal ``write`` attribution (``actor``, ``timestamp_ns``), if any."""
         return self._last_mutation
 
@@ -991,4 +992,13 @@ def node(
 # Public alias for type hints
 Node = NodeImpl
 
-__all__ = ["NO_VALUE", "Node", "NodeActions", "NodeFn", "NodeImpl", "NodeStatus", "SubscribeHints", "node"]
+__all__ = [
+    "NO_VALUE",
+    "Node",
+    "NodeActions",
+    "NodeFn",
+    "NodeImpl",
+    "NodeStatus",
+    "SubscribeHints",
+    "node",
+]

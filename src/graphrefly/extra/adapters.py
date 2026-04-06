@@ -2022,6 +2022,7 @@ def from_csv(
         def drain() -> None:
             try:
                 headers: list[str] | None = list(columns) if columns else None
+                rows_iter: Iterable[list[str]]
                 if parse_line is not None:
                     rows_iter = (parse_line(line) for line in source)
                 else:
@@ -2475,7 +2476,7 @@ def from_nats(
                 async for msg in sub:
                     if not active[0]:
                         return
-                    actions.emit(_nats_msg_to_nats_message(msg, deserialize))  # type: ignore[arg-type]
+                    actions.emit(_nats_msg_to_nats_message(msg, deserialize))
                 # Iterator exhausted — subscription closed (inline, matching TS pattern).
                 if active[0]:
                     actions.down([(MessageType.COMPLETE,)])
@@ -2501,7 +2502,7 @@ def from_nats(
                 for msg in sub_or_coro:
                     if not active[0]:
                         return
-                    actions.emit(_nats_msg_to_nats_message(msg, deserialize))  # type: ignore[arg-type]
+                    actions.emit(_nats_msg_to_nats_message(msg, deserialize))
                 # Iterator exhausted — subscription closed.
                 if active[0]:
                     actions.down([(MessageType.COMPLETE,)])
@@ -2512,10 +2513,10 @@ def from_nats(
         t = threading.Thread(target=_run, daemon=True)
         t.start()
 
-        def cleanup() -> None:
+        def _sync_cleanup() -> None:
             active[0] = False
 
-        return cleanup
+        return _sync_cleanup
 
     return node(start, describe_kind="producer", complete_when_deps_complete=False)
 
@@ -2769,12 +2770,12 @@ def to_rabbitmq(
         if msg[0] is MessageType.DATA:
             value = msg[1] if len(msg) > 1 else None
             try:
-                rk = routing_key_extractor(value)  # type: ignore[misc]
+                rk = routing_key_extractor(value)
             except Exception as err:
                 handler(SinkTransportError(stage="routing_key", error=err, value=value))
                 return True
             try:
-                body = serialize(value)  # type: ignore[misc]
+                body = serialize(value)
             except Exception as err:
                 handler(SinkTransportError(stage="serialize", error=err, value=value))
                 return True
@@ -2908,7 +2909,7 @@ def to_file(
         if msg[0] is MessageType.DATA:
             value = msg[1] if len(msg) > 1 else None
             try:
-                line = serialize(value)  # type: ignore[misc]
+                line = serialize(value)
             except Exception as err:
                 handler(SinkTransportError(stage="serialize", error=err, value=value))
                 return True
@@ -3004,15 +3005,11 @@ def to_csv(
             header_written[0] = True
             header = delimiter.join(_escape_csv_field(c, delimiter) for c in columns)
             data = delimiter.join(
-                _escape_csv_field(cell_extractor(row, c), delimiter)  # type: ignore[misc]
-                for c in columns
+                _escape_csv_field(cell_extractor(row, c), delimiter) for c in columns
             )
             return header + "\n" + data + "\n"
         return (
-            delimiter.join(
-                _escape_csv_field(cell_extractor(row, c), delimiter)  # type: ignore[misc]
-                for c in columns
-            )
+            delimiter.join(_escape_csv_field(cell_extractor(row, c), delimiter) for c in columns)
             + "\n"
         )
 
@@ -3108,7 +3105,7 @@ def to_clickhouse(
         if msg[0] is MessageType.DATA:
             value = msg[1] if len(msg) > 1 else None
             try:
-                transformed = transform(value)  # type: ignore[misc]
+                transformed = transform(value)
             except Exception as err:
                 handler(SinkTransportError(stage="serialize", error=err, value=value))
                 return True
@@ -3224,7 +3221,7 @@ def to_s3(
         else:
             body = json.dumps(batch_data)
             content_type = "application/json"
-        key = key_generator(seq, wall_clock_ns())  # type: ignore[misc]
+        key = key_generator(seq, wall_clock_ns())
         try:
             client.put_object(Bucket=bucket, Key=key, Body=body, ContentType=content_type)
         except Exception as err:
@@ -3254,7 +3251,7 @@ def to_s3(
         if msg[0] is MessageType.DATA:
             value = msg[1] if len(msg) > 1 else None
             try:
-                transformed = transform(value)  # type: ignore[misc]
+                transformed = transform(value)
             except Exception as err:
                 handler(SinkTransportError(stage="serialize", error=err, value=value))
                 return True
@@ -3330,7 +3327,7 @@ def to_postgres(
         if msg[0] is MessageType.DATA:
             value = msg[1] if len(msg) > 1 else None
             try:
-                sql, params = to_sql(value, table)  # type: ignore[misc]
+                sql, params = to_sql(value, table)
             except Exception as err:
                 handler(SinkTransportError(stage="serialize", error=err, value=value))
                 return True
@@ -3390,7 +3387,7 @@ def to_mongo(
         if msg[0] is MessageType.DATA:
             value = msg[1] if len(msg) > 1 else None
             try:
-                doc = to_document(value)  # type: ignore[misc]
+                doc = to_document(value)
             except Exception as err:
                 handler(SinkTransportError(stage="serialize", error=err, value=value))
                 return True
@@ -3456,7 +3453,7 @@ def to_loki(
         if msg[0] is MessageType.DATA:
             value = msg[1] if len(msg) > 1 else None
             try:
-                line = to_line(value)  # type: ignore[misc]
+                line = to_line(value)
             except Exception as err:
                 handler(SinkTransportError(stage="serialize", error=err, value=value))
                 return True
@@ -3523,7 +3520,7 @@ def to_tempo(
         if msg[0] is MessageType.DATA:
             value = msg[1] if len(msg) > 1 else None
             try:
-                spans = to_resource_spans(value)  # type: ignore[misc]
+                spans = to_resource_spans(value)
             except Exception as err:
                 handler(SinkTransportError(stage="serialize", error=err, value=value))
                 return True
@@ -3792,7 +3789,7 @@ def to_sqlite(
         if msg[0] is MessageType.DATA:
             value = msg[1] if len(msg) > 1 else None
             try:
-                sql, params = to_sql(value, table)  # type: ignore[misc]
+                sql, params = to_sql(value, table)
             except Exception as err:
                 handler(SinkTransportError(stage="serialize", error=err, value=value))
                 return True

@@ -13,7 +13,10 @@ import threading
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from graphrefly.core.guard import MutationRecord
 
 from graphrefly.core.node import _SENTINEL
 from graphrefly.core.protocol import Messages, MessageType, emit_with_batch, propagates_to_meta
@@ -184,7 +187,7 @@ class DynamicNodeImpl[T]:
         self._on_resubscribe = on_resubscribe
         self._auto_complete = complete_when_deps_complete
         self._describe_kind = describe_kind
-        self._last_mutation: dict[str, Any] | None = None
+        self._last_mutation: MutationRecord | None = None
         self._resubscribable = resubscribable
         self._reset_on_teardown = reset_on_teardown
         self._thread_safe = bool(thread_safe)
@@ -255,7 +258,7 @@ class DynamicNodeImpl[T]:
         return self._meta
 
     @property
-    def last_mutation(self) -> dict[str, Any] | None:
+    def last_mutation(self) -> MutationRecord | None:
         return self._last_mutation
 
     @property

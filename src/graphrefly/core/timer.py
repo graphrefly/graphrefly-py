@@ -5,6 +5,10 @@ from_timer creates a new Node per reset)."""
 from __future__ import annotations
 
 import threading
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class ResettableTimer:
@@ -16,7 +20,7 @@ class ResettableTimer:
         self._timer: threading.Timer | None = None
         self._lock = threading.Lock()
 
-    def start(self, delay_seconds: float, callback: callable) -> None:
+    def start(self, delay_seconds: float, callback: Callable[[], Any]) -> None:
         """Schedule callback after delay_seconds. Cancels any pending timer."""
         with self._lock:
             if self._timer is not None:

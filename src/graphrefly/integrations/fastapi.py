@@ -28,7 +28,7 @@ import queue
 import threading
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
@@ -415,10 +415,11 @@ class ObserveGateway:
 
         actor = self._extract_actor(client)
         try:
-            handle = (
+            handle = cast(
+                "GraphObserveSource",
                 self._graph.observe(path, actor=actor)
                 if actor is not None
-                else self._graph.observe(path)
+                else self._graph.observe(path),
             )
         except Exception as exc:
             send({"type": "err", "message": str(exc)})
@@ -518,6 +519,9 @@ def graphrefly_router(
     prefix: str = "",
     actor_resolver: Any | None = None,
     tags: Sequence[str] | None = None,
+    include_resolved: bool = False,
+    high_water_mark: int | None = None,
+    low_water_mark: int | None = None,
 ) -> Any:
     """Pre-built :class:`~fastapi.APIRouter` exposing a graph's HTTP API.
 
@@ -541,6 +545,12 @@ def graphrefly_router(
         When provided, it is injected into write/signal/observe endpoints.
     tags:
         FastAPI tags for OpenAPI grouping.
+    include_resolved:
+        When ``True``, RESOLVED messages are forwarded as SSE events.
+    high_water_mark:
+        When set, observe SSE endpoints apply watermark backpressure.
+    low_water_mark:
+        Low watermark threshold (default: ``high_water_mark // 2``).
     """
     router = APIRouter(prefix=prefix, tags=list(tags or ["graphrefly"]))
 
@@ -595,7 +605,13 @@ def graphrefly_router(
     @router.get("/observe")
     async def observe_all(actor: Any = Depends(_resolve_actor)) -> Any:  # noqa: B008
         obs = graph.observe(actor=actor) if actor is not None else graph.observe()
-        return _observe_sse_response(obs, graph_wide=True)
+        return _observe_sse_response(
+            obs,
+            graph_wide=True,
+            include_resolved=include_resolved,
+            high_water_mark=high_water_mark,
+            low_water_mark=low_water_mark,
+        )
 
     @router.get("/observe/{name:path}")
     async def observe_node(
@@ -606,7 +622,13 @@ def graphrefly_router(
             obs = graph.observe(name, actor=actor) if actor is not None else graph.observe(name)
         except KeyError:
             return JSONResponse({"error": f"node {name!r} not found"}, status_code=404)
-        return _observe_sse_response(obs, graph_wide=False)
+        return _observe_sse_response(
+            obs,
+            graph_wide=False,
+            include_resolved=include_resolved,
+            high_water_mark=high_water_mark,
+            low_water_mark=low_water_mark,
+        )
 
     @router.get("/snapshot")
     async def snapshot() -> Any:
@@ -624,6 +646,7 @@ def _observe_sse_response(
     obs: GraphObserveSource,
     *,
     graph_wide: bool,
+    include_resolved: bool = False,
     high_water_mark: int | None = None,
     low_water_mark: int | None = None,
 ) -> Any:
@@ -633,6 +656,10 @@ def _observe_sse_response(
     PAUSE upstream when the queue depth exceeds the threshold and RESUME
     when the consumer drains below *low_water_mark* (default:
     ``high_water_mark // 2``).
+
+    When *include_resolved* is ``True``, RESOLVED messages are forwarded
+    as ``event: resolved`` (or ``resolved:<path>`` for graph-wide) SSE
+    frames.
     """
     from graphrefly.extra.adapters import sse_frame
 
@@ -651,6 +678,13 @@ def _observe_sse_response(
     # consumer can call ``wm.on_dequeue()`` only for items that had a
     # matching ``wm.on_enqueue()``.  Non-DATA frames are plain strings.
 
+    def _enqueue_data(frame: str) -> None:
+        if wm is not None:
+            wm.on_enqueue()
+            q.put((frame, True))
+        else:
+            q.put(frame)
+
     if graph_wide:
 
         def sink(path: str, msgs: Messages) -> None:
@@ -660,12 +694,9 @@ def _observe_sse_response(
                 t = msg[0]
                 if t is MessageType.DATA:
                     payload = msg[1] if len(msg) > 1 else None
-                    frame = sse_frame(path, _json_encode(payload))
-                    if wm is not None:
-                        wm.on_enqueue()
-                        q.put((frame, True))
-                    else:
-                        q.put(frame)
+                    _enqueue_data(sse_frame(path, _json_encode(payload)))
+                elif t is MessageType.RESOLVED and include_resolved:
+                    q.put(sse_frame(f"resolved:{path}"))
                 elif t is MessageType.ERROR:
                     payload = msg[1] if len(msg) > 1 else None
                     q.put(sse_frame(f"error:{path}", _json_encode(payload)))
@@ -684,12 +715,9 @@ def _observe_sse_response(
                 t = msg[0]
                 if t is MessageType.DATA:
                     payload = msg[1] if len(msg) > 1 else None
-                    frame = sse_frame("data", _json_encode(payload))
-                    if wm is not None:
-                        wm.on_enqueue()
-                        q.put((frame, True))
-                    else:
-                        q.put(frame)
+                    _enqueue_data(sse_frame("data", _json_encode(payload)))
+                elif t is MessageType.RESOLVED and include_resolved:
+                    q.put(sse_frame("resolved"))
                 elif t is MessageType.ERROR:
                     payload = msg[1] if len(msg) > 1 else None
                     q.put(sse_frame("error", _json_encode(payload)))

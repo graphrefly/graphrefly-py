@@ -10,11 +10,11 @@ import threading
 from collections import deque
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from graphrefly.core.clock import monotonic_ns
 from graphrefly.core.guard import GuardDenied, normalize_actor
-from graphrefly.core.meta import describe_node, resolve_describe_fields
+from graphrefly.core.meta import DescribeDetail, describe_node, resolve_describe_fields
 from graphrefly.core.node import NodeImpl
 from graphrefly.core.protocol import Messages, MessageType, is_batching, message_tier
 from graphrefly.core.sugar import state
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
 
-class DescribeResult(dict):
+class DescribeResult(dict[str, Any]):
     """Dict subclass returned by :meth:`Graph.describe`.
 
     Provides an ``expand()`` method for re-reading the live graph at a higher
@@ -34,7 +34,7 @@ class DescribeResult(dict):
     def expand(self, detail_or_fields: Any = None) -> DescribeResult:
         """Re-read the live graph at a higher detail level or with explicit fields."""
         fn = object.__getattribute__(self, "_expand_fn")
-        return fn(detail_or_fields)
+        return cast("DescribeResult", fn(detail_or_fields))
 
 
 @dataclass(frozen=True, slots=True)
@@ -1050,7 +1050,7 @@ class Graph:
         detail: str | None = None,
         fields: list[str] | None = None,
         format: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> DescribeResult:
         """Static structure snapshot (GRAPHREFLY-SPEC §3.6, Appendix B).
 
         ``nodes`` keys are qualified paths (including ``::__meta__::`` for companions).
@@ -1099,7 +1099,7 @@ class Graph:
         if format == "spec":
             include_fields: set[str] | None = {"type", "deps"}
         else:
-            include_fields = resolve_describe_fields(detail, fields)
+            include_fields = resolve_describe_fields(cast("DescribeDetail | None", detail), fields)
 
         targets = _collect_observe_targets(self, "")
         paths_by_id = {id(n): p for p, n in targets}
@@ -2057,7 +2057,14 @@ class Graph:
                 va = na.get(key)
                 vb = nb.get(key)
                 if va != vb:
-                    changed_nodes.append({"path": p, "field": key, "from": va, "to": vb})
+                    changed_nodes.append(
+                        GraphDiffNodeChange(
+                            path=p,
+                            field=key,
+                            from_value=va,
+                            to_value=vb,
+                        )
+                    )
 
         a_edges = {(e["from"], e["to"]) for e in a.get("edges", [])}
         b_edges = {(e["from"], e["to"]) for e in b.get("edges", [])}

@@ -796,7 +796,7 @@ def fallback(source: Node[Any], fb: Any) -> Node[Any]:
                     actions.down([m])
 
         unsub_holder[0] = source.subscribe(sink)
-        unsub = unsub_holder[0]
+        unsub: Callable[[], None] = unsub_holder[0]  # type: ignore[assignment]
 
         def cleanup() -> None:
             unsub()
@@ -853,7 +853,8 @@ def timeout(source: Node[Any], timeout_ns: int) -> Node[Any]:
                 done[0] = True
                 # §5.10: ResettableTimer (not from_timer) — resettable
                 # deadline; from_timer adds Node overhead per DATA reset.
-                unsub_holder[0]()
+                if unsub_holder[0] is not None:
+                    unsub_holder[0]()
                 actions.down([(MessageType.ERROR, TimeoutError(timeout_ns))])
 
             to_timer.start(delay_s, fire)
@@ -890,7 +891,7 @@ def timeout(source: Node[Any], timeout_ns: int) -> Node[Any]:
 
         arm_timer()
         unsub_holder[0] = source.subscribe(sink)
-        unsub = unsub_holder[0]
+        unsub: Callable[[], None] = unsub_holder[0]  # type: ignore[assignment]
 
         def cleanup() -> None:
             done[0] = True
