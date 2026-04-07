@@ -106,13 +106,25 @@ def _status_after_message(status: NodeStatus, msg: Message) -> NodeStatus:
 type Message = tuple[Any, Any] | tuple[Any]
 
 
+_CLEANUP_RESULT = "__graphrefly_cleanup_result__"
+"""Branded key that marks a :func:`cleanup_result` wrapper — prevents duck-type
+collisions with domain dicts that happen to have a ``cleanup`` key."""
+
+
+def cleanup_result(cleanup: Callable[[], None], value: Any = _SENTINEL) -> dict[str, Any]:
+    """Create a branded cleanup-result wrapper.
+
+    >>> node([dep], lambda vals, _: cleanup_result(release, computed))
+    """
+    r: dict[str, Any] = {_CLEANUP_RESULT: True, "cleanup": cleanup}
+    if value is not _SENTINEL:
+        r["value"] = value
+    return r
+
+
 def _is_cleanup_result(value: object) -> bool:
-    """Check for explicit cleanup wrapper: ``{"cleanup": fn}`` or ``{"cleanup": fn, "value": v}``."""
-    return (
-        isinstance(value, dict)
-        and "cleanup" in value
-        and callable(value["cleanup"])
-    )
+    """Check for branded cleanup wrapper created by :func:`cleanup_result`."""
+    return isinstance(value, dict) and value.get(_CLEANUP_RESULT) is True
 
 
 def _is_cleanup_fn(value: object) -> bool:

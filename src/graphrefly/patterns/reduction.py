@@ -151,55 +151,105 @@ def _add_branch(
 ) -> None:
     """Add a stratify branch to the graph.
 
+    Two-dep gating: intercepts messages from **both** source (dep 0) and rules
+    (dep 1).  Classification is deferred until all dirty deps have settled,
+    eliminating the stale-rules race when both are updated in the same
+    ``batch()``.
+
     Protocol: DIRTY is buffered until DATA arrives. If the classifier matches,
     emit [DIRTY, DATA]. If not, emit [DIRTY, RESOLVED] so downstream exits
     dirty status cleanly (spec §1.3.1). Source RESOLVED forwards as RESOLVED.
+    Rules-only changes produce no downstream emission ("future items only").
     """
     branch_name = f"branch/{rule.name}"
-    pending_dirty = [False]
+    _no_value = object()
+
+    # Per-branch two-dep gating state
+    _source_dirty = [False]
+    _rules_dirty = [False]
+    _source_phase2 = [False]  # source delivered DATA or RESOLVED this cycle
+    _source_value: list[Any] = [_no_value]  # DATA payload, or _no_value for RESOLVED
+    _pending_dirty = [False]  # owe downstream a DIRTY
+
+    def _resolve(actions: Any) -> None:
+        if _source_phase2[0]:
+            _source_phase2[0] = False
+            value = _source_value[0]
+            _source_value[0] = _no_value
+            if value is not _no_value:
+                # Source emitted DATA — classify with settled rules
+                current_rules: list[StratifyRule] = rules_node.get() or []
+                current_rule = next((r for r in current_rules if r.name == rule.name), None)
+                try:
+                    matches = current_rule is not None and current_rule.classify(value)
+                except Exception:
+                    matches = False
+                if matches:
+                    _pending_dirty[0] = False
+                    actions.emit(value)
+                else:
+                    if _pending_dirty[0]:
+                        _pending_dirty[0] = False
+                        actions.down([(MessageType.DIRTY,), (MessageType.RESOLVED,)])
+            else:
+                # Source RESOLVED (unchanged)
+                if _pending_dirty[0]:
+                    _pending_dirty[0] = False
+                    actions.down([(MessageType.DIRTY,), (MessageType.RESOLVED,)])
+                else:
+                    actions.down([(MessageType.RESOLVED,)])
+        # else: rules-only change — no reclassification ("future items only")
 
     def on_message(msg: Any, dep_index: int, actions: Any) -> bool:
-        # Only intercept source messages (dep 0)
-        if dep_index != 0:
-            return False
-
         t = msg[0]
-        if t is MessageType.DATA:
-            value = msg[1]
-            current_rules: list[StratifyRule] = rules_node.get() or []
-            current_rule = next((r for r in current_rules if r.name == rule.name), None)
-            if current_rule is not None and current_rule.classify(value):
-                # Match: emit (actions.emit handles DIRTY+DATA wrapping)
-                pending_dirty[0] = False
-                actions.emit(value)
-            else:
-                # No match: emit DIRTY + RESOLVED so downstream exits dirty
-                if pending_dirty[0]:
-                    pending_dirty[0] = False
-                    actions.down([(MessageType.DIRTY,), (MessageType.RESOLVED,)])
-            return True
+
+        # --- DIRTY (phase 1) ---
         if t is MessageType.DIRTY:
-            pending_dirty[0] = True
-            return True
-        if t is MessageType.RESOLVED:
-            # Source unchanged — forward RESOLVED (with buffered DIRTY if any)
-            if pending_dirty[0]:
-                pending_dirty[0] = False
-                actions.down([(MessageType.DIRTY,), (MessageType.RESOLVED,)])
+            if dep_index == 0:
+                _source_dirty[0] = True
+                _pending_dirty[0] = True
             else:
-                actions.down([(MessageType.RESOLVED,)])
+                _rules_dirty[0] = True
             return True
+
+        # --- Phase 2 (DATA / RESOLVED) ---
+        if t is MessageType.DATA or t is MessageType.RESOLVED:
+            if dep_index == 0:
+                _source_dirty[0] = False
+                _source_phase2[0] = True
+                _source_value[0] = msg[1] if t is MessageType.DATA else _no_value
+            else:
+                _rules_dirty[0] = False
+
+            # Wait for all dirty deps to settle
+            if _source_dirty[0] or _rules_dirty[0]:
+                return True
+
+            _resolve(actions)
+            return True
+
+        # --- Terminal ---
         if t in (MessageType.COMPLETE, MessageType.ERROR, MessageType.TEARDOWN):
-            pending_dirty[0] = False
-            actions.down([msg])
+            _source_dirty[0] = False
+            _rules_dirty[0] = False
+            _source_phase2[0] = False
+            _source_value[0] = _no_value
+            _pending_dirty[0] = False
+            if dep_index == 0:
+                actions.down([msg])
+            # Rules terminal: swallow (branch stays alive)
             return True
-        return False
+
+        # Swallow PAUSE/RESUME/INVALIDATE from rules dep (internal impl detail);
+        # forward unknown source messages via default handling.
+        return dep_index == 1
 
     filter_node = node(
         [source, rules_node],
         lambda _d, _a: None,
         on_message=on_message,
         describe_kind="operator",
+        complete_when_deps_complete=False,
         meta=_base_meta("stratify_branch", {"branch": rule.name}),
     )
 

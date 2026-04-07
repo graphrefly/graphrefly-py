@@ -112,6 +112,104 @@ class TestStratify:
         source.down([(MessageType.COMPLETE,)])
         assert completed[0] is True
 
+    def test_two_dep_gating_batch_source_and_rules(self) -> None:
+        """Stale-rules race: both source and rules update in same batch."""
+        source = state("x")
+        rules = [StratifyRule("match", classify=lambda v: v == "a")]
+
+        g = stratify("gate", source, rules)
+
+        seen: list[str] = []
+
+        def _sink(msgs: list) -> None:
+            for msg in msgs:
+                if msg[0] is MessageType.DATA:
+                    seen.append(msg[1])
+
+        g.resolve("branch/match").subscribe(_sink)
+
+        # Batch: update rules to match "b" AND send source "b" simultaneously.
+        # Without two-dep gating, classification would use old rules (match "a")
+        # and "b" would be dropped.  With gating, both settle first.
+        from graphrefly.core.protocol import batch
+
+        with batch():
+            g.set("rules", [StratifyRule("match", classify=lambda v: v == "b")])
+            source.down([(MessageType.DATA, "b")])
+
+        assert seen == ["b"]
+
+    def test_source_only_update_still_works(self) -> None:
+        """Regression: source-only updates must still classify correctly."""
+        source = state(0)
+        rules = [StratifyRule("pos", classify=lambda v: v > 0)]
+
+        g = stratify("src-only", source, rules)
+        seen: list[int] = []
+
+        def _sink(msgs: list) -> None:
+            for msg in msgs:
+                if msg[0] is MessageType.DATA:
+                    seen.append(msg[1])
+
+        g.resolve("branch/pos").subscribe(_sink)
+
+        source.down([(MessageType.DATA, 5)])
+        source.down([(MessageType.DATA, -1)])
+        source.down([(MessageType.DATA, 3)])
+        assert seen == [5, 3]
+
+    def test_rules_only_update_no_downstream(self) -> None:
+        """Rules-only change should not trigger reclassification."""
+        source = state("a")
+        rules = [StratifyRule("match", classify=lambda v: v == "a")]
+
+        g = stratify("rules-only", source, rules)
+
+        emissions: list[object] = []
+
+        def _sink(msgs: list) -> None:
+            for msg in msgs:
+                emissions.append(msg)
+
+        g.resolve("branch/match").subscribe(_sink)
+
+        # Initial source DATA
+        source.down([(MessageType.DATA, "a")])
+        initial_count = len(emissions)
+
+        # Change rules only — should NOT produce any new downstream messages
+        g.set("rules", [StratifyRule("match", classify=lambda v: v == "b")])
+        assert len(emissions) == initial_count
+
+    def test_both_settle_source_resolved(self) -> None:
+        """Source DIRTY→RESOLVED + rules DATA in same batch → RESOLVED downstream."""
+        source = state("x")
+        rules = [StratifyRule("match", classify=lambda v: v == "x")]
+
+        g = stratify("resolved", source, rules)
+
+        data_seen: list[object] = []
+        resolved_count = [0]
+
+        def _sink(msgs: list) -> None:
+            for msg in msgs:
+                if msg[0] is MessageType.DATA:
+                    data_seen.append(msg[1])
+                elif msg[0] is MessageType.RESOLVED:
+                    resolved_count[0] += 1
+
+        g.resolve("branch/match").subscribe(_sink)
+
+        # Initial emission
+        source.down([(MessageType.DATA, "x")])
+        assert data_seen == ["x"]
+
+        # Now update rules in isolation — source not involved
+        g.set("rules", [StratifyRule("match", classify=lambda v: v == "y")])
+        # No new data should appear
+        assert data_seen == ["x"]
+
 
 # ---------------------------------------------------------------------------
 # funnel

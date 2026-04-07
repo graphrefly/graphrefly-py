@@ -26,7 +26,7 @@ These fix protocol violations identified post-8.2 ship. Must land before §9.2 a
 
 - [x] Rearchitect `feedback()` as graph-visible bridge node (8.2 → 9.0) — replaces subscribe-based shortcut; enables proper DIRTY→DATA two-phase on reentry/counter; resolves bare-DATA protocol gap
 - [x] Rearchitect `funnel()` bridges as graph-visible nodes (8.2 → 9.0) — replaces subscribe forwarding; resolves §5.9 imperative trigger violation + teardown leak
-- [ ] `stratify` two-dep gating (8.2 → 9.0) — gate classification on both source and rules settling (eliminates stale-rules race)
+- [x] `stratify` two-dep gating (8.2 → 9.0) — gate classification on both source and rules settling (eliminates stale-rules race)
 
 ### Wave 2 (Python): Audit & accountability parity (Weeks 4-9)
 
@@ -555,7 +555,7 @@ Pre-wired graphs for common "info → action" domains. Users fork/extend.
 - [x] `data_quality_graph(opts)` → Graph — DB/API ingest → schema validation → anomaly detection → drift alerting → remediation suggestions
 - [x] Rearchitect `feedback()` as graph-visible bridge node (replaces subscribe-based shortcut; enables proper DIRTY→DATA two-phase on reentry/counter; resolves bare-DATA protocol gap)
 - [x] Rearchitect `funnel()` bridges as graph-visible nodes (replaces subscribe forwarding; resolves §5.9 imperative trigger violation + teardown leak)
-- [ ] `stratify` two-dep gating: gate classification on both source and rules settling (eliminates stale-rules race when both updated in same `batch()`)
+- [x] `stratify` two-dep gating: gate classification on both source and rules settling (eliminates stale-rules race when both updated in same `batch()`)
 
 ### 8.3 — LLM graph composition
 

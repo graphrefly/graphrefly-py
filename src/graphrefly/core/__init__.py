@@ -26,6 +26,7 @@ from graphrefly.core.node import (
     NodeImpl,
     NodeStatus,
     SubscribeHints,
+    cleanup_result,
     node,
 )
 from graphrefly.core.protocol import (
