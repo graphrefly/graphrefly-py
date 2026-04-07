@@ -1,6 +1,6 @@
 [project]
 name = "graphrefly"
-version = "0.13.0"
+version = "0.14.0"
 description = "Reactive harness layer for agent workflows. Describe automations in plain language, trace every decision, enforce policies, persist checkpoints. Zero dependencies."
 readme = "README.md"
 license = "MIT"
