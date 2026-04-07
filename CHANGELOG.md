@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.16.0 (2026-04-07)
+
+### Features
+
+- 9.0 wiring
+  ([`d4d6c72`](https://github.com/graphrefly/graphrefly-py/commit/d4d6c720015b197d8c0f76d5364c090f21a24709))
+
+
 ## v0.15.0 (2026-04-07)
 
 ### Features
