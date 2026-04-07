@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.15.0 (2026-04-07)
+
+### Features
+
+- Emit -> down
+  ([`3c693dd`](https://github.com/graphrefly/graphrefly-py/commit/3c693dda94eb289ef9b017fa5d742cc6bb16059e))
+
+
 ## v0.14.0 (2026-04-07)
 
 ### Features
