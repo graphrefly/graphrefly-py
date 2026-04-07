@@ -11,7 +11,7 @@ import json
 import math
 import re as _re
 import threading
-from collections.abc import AsyncIterable
+from collections.abc import AsyncIterable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
@@ -112,6 +112,14 @@ class LLMAdapter(Protocol):
         opts: LLMInvokeOptions | None = None,
     ) -> Any:
         """Invoke the LLM. Returns NodeInput[LLMResponse]."""
+        ...
+
+    def stream(
+        self,
+        messages: Sequence[ChatMessage],
+        opts: LLMInvokeOptions | None = None,
+    ) -> Iterable[str]:
+        """Stream token chunks from the LLM (synchronous iterator for thread-based consumption)."""
         ...
 
 
@@ -221,6 +229,91 @@ def from_llm(
         return adapter.invoke(msgs, invoke_opts)
 
     return switch_map(_invoke)(msgs_node)
+
+
+# ---------------------------------------------------------------------------
+# from_llm_stream
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class LLMStreamHandle:
+    """Bundle returned by :func:`from_llm_stream`.
+
+    ``node`` is a ``reactive_log``-backed node accumulating token chunks.
+    Call ``dispose()`` to tear down the internal effect and release resources.
+    """
+
+    node: Node[Any]
+    dispose: Callable[[], None]
+
+
+def from_llm_stream(
+    adapter: LLMAdapter,
+    messages: Any,
+    *,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    tools: Sequence[ToolDefinition] | None = None,
+    system_prompt: str | None = None,
+    name: str | None = None,
+) -> LLMStreamHandle:
+    """Streaming LLM invocation via ``reactive_log``.
+
+    Returns a :class:`LLMStreamHandle` where ``node`` is a reactive log that
+    accumulates token chunks as they arrive from ``adapter.stream()``.
+
+    An ``effect`` watches the *messages* input; new values cancel the
+    in-flight stream and clear the log before starting a new one.
+    Call ``dispose()`` to tear down the effect and release resources.
+    """
+    msgs_node = from_any(messages)
+    cancel = cancellation_token()
+    log = reactive_log([], name=name or "llm_stream")
+    invoke_opts = LLMInvokeOptions(
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        tools=tuple(tools) if tools else None,
+        system_prompt=system_prompt,
+    )
+
+    def _run_stream(deps: list[Any], _actions: Any) -> Callable[[], None] | None:
+        cancel.cancel()
+        log.clear()
+        chat_msgs = deps[0]
+        if not chat_msgs:
+            return None
+        token = cancellation_token()
+        cancel_ref = [token]
+
+        def _bg() -> None:
+            try:
+                for chunk in adapter.stream(chat_msgs, invoke_opts):
+                    if cancel_ref[0].is_cancelled:
+                        break
+                    log.append(chunk)
+            except Exception:
+                pass  # stream errors absorbed; callers use meta for visibility
+
+        t = threading.Thread(target=_bg, daemon=True)
+        t.start()
+
+        def _cleanup() -> None:
+            cancel_ref[0].cancel()
+
+        return _cleanup
+
+    eff = effect([msgs_node], _run_stream)
+    unsub = _keepalive(eff)
+
+    def _dispose() -> None:
+        cancel.cancel()
+        unsub()
+        eff.down([(MessageType.TEARDOWN,)])
+
+    return LLMStreamHandle(node=log.entries, dispose=_dispose)
 
 
 # ---------------------------------------------------------------------------

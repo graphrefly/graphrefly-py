@@ -389,6 +389,9 @@ class NodeImpl[T]:
         for m in messages:
             t = m[0]
             if t is MessageType.DATA:
+                if len(m) < 2:
+                    # GRAPHREFLY-SPEC §1.2: bare [DATA] without payload is a protocol violation.
+                    continue
                 if lock is not None:
                     with lock:
                         self._cached = m[1]  # type: ignore[misc]

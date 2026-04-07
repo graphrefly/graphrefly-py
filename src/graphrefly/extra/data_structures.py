@@ -162,7 +162,9 @@ class ReactiveMapBundle:
         from graphrefly.extra import reactive_map
         m = reactive_map(max_size=10)
         m.set("a", 1)
-        assert m.data.get().value["a"] == 1
+        assert m.get("a") == 1        # synchronous key lookup
+        assert m.has("a") is True
+        assert m.size == 1
         ```
     """
 
@@ -217,6 +219,31 @@ class ReactiveMapBundle:
     def clear(self) -> None:
         _push_two_phase(self._state, _MapState.empty())
         self._sync_data()
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        """Synchronous key lookup (matches TS ``ReactiveMapBundle.get(key)``)."""
+        snap = self.data.get()
+        if snap is None:
+            return default
+        mapping = snap.value if isinstance(snap, Versioned) else {}
+        return mapping.get(key, default)
+
+    def has(self, key: Any) -> bool:
+        """Check if key exists (matches TS ``ReactiveMapBundle.has(key)``)."""
+        snap = self.data.get()
+        if snap is None:
+            return False
+        mapping = snap.value if isinstance(snap, Versioned) else {}
+        return key in mapping
+
+    @property
+    def size(self) -> int:
+        """Number of non-expired entries (matches TS ``ReactiveMapBundle.size``)."""
+        snap = self.data.get()
+        if snap is None:
+            return 0
+        mapping = snap.value if isinstance(snap, Versioned) else {}
+        return len(mapping)
 
     def prune(self) -> None:
         """Drop expired keys (monotonic clock) and emit."""

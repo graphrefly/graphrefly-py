@@ -31,6 +31,8 @@ install dependencies.
 ## Key docs
 
 - `~/src/graphrefly/GRAPHREFLY-SPEC.md` — protocol and behavioral specification (shared with graphrefly-ts)
+- `~/src/graphrefly/COMPOSITION-GUIDE.md` — **composition guide** — 坑, patterns, recipes for Phase 4+ factory authors. Read before building factories that compose primitives.
+- `~/src/graphrefly/composition-guide.jsonl` — machine-readable composition entries (appendable)
 - `docs/roadmap.md` — phased implementation plan
 - `docs/docs-guidance.md` — how to write and maintain documentation here
 - `docs/test-guidance.md` — testing conventions and organization

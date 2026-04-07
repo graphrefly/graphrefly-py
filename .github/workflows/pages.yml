@@ -1,4 +1,5 @@
-# Deploy Starlight + Pyodide docs to GitHub Pages (custom domain: py.graphrefly.dev).
+# Deploy Starlight + Pyodide docs to GitHub Pages.
+# Served under graphrefly.dev/py/* via Cloudflare Worker proxy.
 # Repo → Settings → Pages → Build: GitHub Actions (first run may require approval).
 
 name: Deploy docs to GitHub Pages
@@ -52,8 +53,8 @@ jobs:
       - name: Build Astro site
         run: pnpm run build
         env:
-          ASTRO_SITE_URL: https://py.graphrefly.dev
-          ASTRO_BASE_PATH: /
+          ASTRO_SITE_URL: https://graphrefly.dev
+          ASTRO_BASE_PATH: /py/
 
       - uses: actions/upload-pages-artifact@v3
         with:

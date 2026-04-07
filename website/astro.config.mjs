@@ -5,7 +5,9 @@ import { defineConfig } from "astro/config";
 import { pyApiSidebar } from "./py-api-sidebar.mjs";
 
 /** GitHub Project Pages: set to `/repo-name/` (trailing slash). Root site: `'/'`. */
-const base = process.env.ASTRO_BASE_PATH ?? "/";
+// Served under /py/ on graphrefly.dev via Cloudflare Worker proxy.
+// GitHub Pages URL: graphrefly.github.io/graphrefly-py/py/...
+const base = process.env.ASTRO_BASE_PATH ?? "/py/";
 
 export default defineConfig({
 	site: process.env.ASTRO_SITE_URL ?? "https://example.invalid",
