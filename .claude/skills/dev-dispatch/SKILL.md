@@ -22,7 +22,7 @@ Load context and plan the implementation in a single pass. **Parallelize all rea
 Read in parallel:
 
 - **`~/src/graphrefly/GRAPHREFLY-SPEC.md`** — primary behavioral authority; read sections relevant to the task
-- **`~/src/graphrefly/COMPOSITION-GUIDE.md`** — composition patterns and 坑 (read when building Phase 4+ factories that compose primitives — covers lazy activation, subscription ordering, null guards, Versioned navigation, factory wiring order)
+- **`~/src/graphrefly/COMPOSITION-GUIDE.md`** — composition patterns and insights (read when building Phase 4+ factories that compose primitives — covers lazy activation, subscription ordering, null guards, Versioned navigation, factory wiring order)
 - `docs/optimizations.md` — **active work items**, anti-patterns, and **deferred follow-ups** (read when touching protocol, batch, node lifecycle, or parity). Resolved decisions are archived in `archive/optimizations/*.jsonl` — search there for historical context (see `docs/docs-guidance.md` § "Optimization decision log")
 - **`docs/test-guidance.md`** — checklists for the layer you touch (protocol, node, graph, operators)
 - **`docs/roadmap.md`** — phase alignment and acceptance criteria (active/open items only; completed phases archived to `archive/roadmap/*.jsonl`)

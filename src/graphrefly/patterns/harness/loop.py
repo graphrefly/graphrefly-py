@@ -8,11 +8,12 @@ insight applied to human+LLM collaboration.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from graphrefly.core.sugar import effect
-from graphrefly.extra.tier1 import merge
+from graphrefly.extra.tier1 import merge, with_latest_from
 from graphrefly.graph.graph import Graph
 from graphrefly.patterns.ai import prompt_node
 from graphrefly.patterns.messaging import TopicGraph
@@ -32,6 +33,13 @@ from .types import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+_RETRY_PREFIX_RE = re.compile(r"^\[RETRY \d+/\d+\]\s*")
+
+
+def _base_summary(summary: str) -> str:
+    """Strip ``[RETRY N/M] `` prefix to get the stable item identity key."""
+    return _RETRY_PREFIX_RE.sub("", summary)
 
 
 
@@ -101,6 +109,8 @@ class HarnessGraph(Graph):
         "gates",
         "strategy",
         "verify_results",
+        "retry_tracker",
+        "reingestion_tracker",
     )
 
     def __init__(
@@ -111,6 +121,8 @@ class HarnessGraph(Graph):
         gates: dict[str, Any],  # GateController
         strategy: StrategyModelBundle,
         verify_results: TopicGraph,
+        retry_tracker: dict[str, int],
+        reingestion_tracker: dict[str, int],
     ) -> None:
         super().__init__(name)
         self.intake = intake
@@ -118,6 +130,8 @@ class HarnessGraph(Graph):
         self.gates = gates
         self.strategy = strategy
         self.verify_results = verify_results
+        self.retry_tracker = retry_tracker
+        self.reingestion_tracker = reingestion_tracker
 
 
 # ---------------------------------------------------------------------------
@@ -169,16 +183,24 @@ def harness_loop(
     strat = strategy_model()
 
     # --- Stage 2: TRIAGE ---
+    # Strategy context uses with_latest_from: intake.latest is the reactive
+    # trigger, strat.node is sampled without being a trigger. This breaks the
+    # feedback cycle (verify → strategy.record() → strat.node) reactively —
+    # strategy changes don't re-fire triage, only new intake items do.
+    triage_input = intake.latest | with_latest_from(strat.node)
+
     _triage_prompt = triage_prompt or (
-        lambda item, strategy: DEFAULT_TRIAGE_PROMPT.format(
-            strategy=json.dumps(strategy, default=str),
-            item=json.dumps(item, default=str) if not isinstance(item, str) else item,
+        lambda pair: DEFAULT_TRIAGE_PROMPT.format(
+            strategy=json.dumps(pair[1], default=str),
+            item=json.dumps(pair[0], default=str) if not isinstance(pair[0], str) else pair[0],
         )
+        if pair[0] is not None
+        else ""
     )
 
     triage_node = prompt_node(
         adapter,
-        [intake.latest, strat.node],
+        [triage_input],
         _triage_prompt,
         name="triage",
         format="json",
@@ -202,6 +224,7 @@ def harness_loop(
             queue_topics[route].publish(item)
 
     _router = effect([triage_node], _route)
+    _router.subscribe(lambda _msgs: None)  # keepalive (COMPOSITION-GUIDE §1)
 
     # --- Stage 4: GATE ---
     gate_graph = Graph("gates")
@@ -273,94 +296,89 @@ def harness_loop(
     )
 
     # --- Fast-retry path ---
+    # Assemble full VerifyResult from verify output + execution context.
+    #
+    # F2 fix: use nested with_latest_from so the effect fires ONLY when
+    # verify_node settles, sampling execute_node + execute_input at that moment.
+    verify_with_exec = verify_node | with_latest_from(execute_node)
+    verify_context = verify_with_exec | with_latest_from(execute_input)
+
     _max_reingestions = max_reingestions
-    _reingestion_count = 0
+    retry_tracker: dict[str, int] = {}
+    reingestion_tracker: dict[str, int] = {}
 
     def _fast_retry(deps: list[Any], _actions: Any) -> None:
-        nonlocal _reingestion_count
-        vr = deps[0]
-        if vr is None:
+        ctx = deps[0]
+        if ctx is None:
+            return
+        (vo, exec_raw), item = ctx
+        if vo is None or item is None:
             return
 
-        verified = getattr(vr, "verified", None)
-        if isinstance(vr, dict):
-            verified = vr.get("verified")
+        verified = vo.get("verified") if isinstance(vo, dict) else getattr(vo, "verified", None)
+        findings = vo.get("findings", ()) if isinstance(vo, dict) else getattr(vo, "findings", ())
+
+        # Assemble full ExecutionResult from LLM output + context
+        rc = item.get("root_cause") if isinstance(item, dict) else getattr(item, "root_cause", None)
+        iv = item.get("intervention") if isinstance(item, dict) else getattr(item, "intervention", None)
+        summary = item.get("summary", str(item)) if isinstance(item, dict) else getattr(item, "summary", str(item))
+        key = _base_summary(summary)
 
         if verified:
-            item = getattr(vr, "item", None)
-            if isinstance(vr, dict):
-                item = vr.get("item")
-            if item:
-                rc = getattr(item, "root_cause", None)
-                iv = getattr(item, "intervention", None)
-                if isinstance(item, dict):
-                    rc = item.get("root_cause")
-                    iv = item.get("intervention")
-                if rc and iv:
-                    strat.record(rc, iv, True)
-            verify_results.publish(vr)
+            if rc and iv:
+                strat.record(rc, iv, True)
+            verify_results.publish(vo)
             return
 
         # Failed verification
-        item = getattr(vr, "item", vr.get("item") if isinstance(vr, dict) else None)
-        execution = getattr(vr, "execution", vr.get("execution") if isinstance(vr, dict) else None)
-        findings = getattr(vr, "findings", vr.get("findings") if isinstance(vr, dict) else ())
-        retry_count = getattr(execution, "retry_count", 0) if execution else 0
-
-        err_class = getattr(vr, "error_class", None)
-        if isinstance(vr, dict):
-            err_class = vr.get("error_class")
-        if not err_class and item:
+        err_class = vo.get("error_class") if isinstance(vo, dict) else getattr(vo, "error_class", None)
+        if not err_class:
             err_class = classify_error(
                 ExecutionResult(
                     item=item,
                     outcome="failure",
                     detail="; ".join(findings) if findings else "",
-                    retry_count=0,
                 )
             )
 
+        retry_count = retry_tracker.get(key, 0)
+
         if err_class == "self-correctable" and retry_count < max_retries:
-            # Fast-retry: publish to retry topic (reactive, not imperative .down())
+            retry_tracker[key] = retry_count + 1
             if isinstance(item, TriagedItem):
                 retry_item = replace(
                     item,
-                    summary=f"[RETRY {retry_count + 1}/{max_retries}] {item.summary} — Previous: {'; '.join(findings)}",
+                    summary=f"[RETRY {retry_count + 1}/{max_retries}] {key} — Previous: {'; '.join(findings)}",
                 )
             else:
                 retry_item = item
             retry_topic.publish(retry_item)
         else:
-            # Structural failure or max retries → full loop via INTAKE
-            if item:
-                rc = getattr(item, "root_cause", None)
-                iv = getattr(item, "intervention", None)
-                if isinstance(item, dict):
-                    rc = item.get("root_cause")
-                    iv = item.get("intervention")
-                if rc and iv:
-                    strat.record(rc, iv, False)
-            verify_results.publish(vr)
+            # Structural failure or max retries exceeded → full loop via INTAKE
+            if rc and iv:
+                strat.record(rc, iv, False)
+            verify_results.publish(vo)
 
-            # Re-ingest only if under reingestion cap
-            if item and _reingestion_count < _max_reingestions:
-                _reingestion_count += 1
-                summary = getattr(item, "summary", str(item))
-                areas = getattr(item, "affects_areas", ())
-                eval_tasks = getattr(item, "affects_eval_tasks", None)
+            # Per-item reingestion cap
+            item_reingestions = reingestion_tracker.get(key, 0)
+            if item_reingestions < _max_reingestions:
+                reingestion_tracker[key] = item_reingestions + 1
+                areas = item.get("affects_areas", ()) if isinstance(item, dict) else getattr(item, "affects_areas", ())
+                eval_tasks = item.get("affects_eval_tasks") if isinstance(item, dict) else getattr(item, "affects_eval_tasks", None)
                 intake.publish(
                     IntakeItem(
                         source="eval",
-                        summary=f"Verification failed for: {summary}",
+                        summary=f"Verification failed for: {key}",
                         evidence="\n".join(findings) if findings else "",
                         affects_areas=tuple(areas),
                         affects_eval_tasks=tuple(eval_tasks) if eval_tasks else None,
                         severity="high",
-                        related_to=(summary,),
+                        related_to=(key,),
                     )
                 )
 
-    _retry_effect = effect([verify_node], _fast_retry)
+    _retry_effect = effect([verify_context], _fast_retry)
+    _retry_effect.subscribe(lambda _msgs: None)  # keepalive (COMPOSITION-GUIDE §1)
 
     # --- Assemble HarnessGraph ---
     harness = HarnessGraph(
@@ -370,6 +388,8 @@ def harness_loop(
         gates=gate_controllers,
         strategy=strat,
         verify_results=verify_results,
+        retry_tracker=retry_tracker,
+        reingestion_tracker=reingestion_tracker,
     )
 
     # Mount subgraphs

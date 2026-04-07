@@ -373,10 +373,17 @@ def prompt_node(
     cache_lock = threading.Lock() if cache else None
 
     def _build_messages(dep_values: list[Any]) -> list[ChatMessage]:
+        # SENTINEL gate: if any dep is None, deps aren't ready yet.
+        # Return empty list → switch_map skips LLM call → emits None.
+        # Eliminates the need for null guards in every prompt function.
+        if any(v is None for v in dep_values):
+            return []
         if callable(prompt) and not isinstance(prompt, str):
             prompt_text = prompt(*dep_values)
         else:
             prompt_text = str(prompt)
+        if not prompt_text:
+            return []
         msgs: list[ChatMessage] = []
         if system_prompt:
             msgs.append(ChatMessage(role="system", content=system_prompt))

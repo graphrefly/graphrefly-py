@@ -47,6 +47,13 @@ Non-blocking items tracked for later. **Keep this section identical in both repo
 | **JSDoc / docstrings on `node()` and public APIs** | `docs/docs-guidance.md`: JSDoc on new TS exports; docstrings on new Python public APIs. |
 | **Roadmap §0.3 checkboxes** | Mark Phase 0.3 items when the team agrees the milestone is complete. |
 
+### Factory teardown — `dispose()` pattern (D1/D2, noted 2026-04-07)
+
+| Item | Status | Notes |
+|------|--------|-------|
+| **Phase 4+ factories don't register internal nodes on the graph** | Proposed (2026-04-07) | `harness_loop` (and other factories) create internal nodes (`triage_node`, `_router` effect, `_retry_effect`, `execute_node`, `verify_node`, `with_latest_from` combinators, etc.) that are never added to the parent graph via `graph.add()`. When `graph.destroy()` fires, these nodes retain their subscriptions and closures — memory leak on repeated create/destroy cycles. Keepalive subscriptions (`_router.subscribe(...)`, `_retry_effect.subscribe(...)`) also leak because their unsub handles are discarded. |
+| **Proposed: `dispose()` convention** | Proposed (2026-04-07) | Factories collect all cleanup functions into a `_disposers: list[Callable[[], None]]` list. Override `destroy()` on the returned graph class to drain the list. Keepalive unsubs are just more entries in the same list. This is a Phase 0 primitive addition — a lightweight contract that any factory can adopt. Alternatives considered: (A) `graph.add()` all internal nodes — simple but pollutes the node registry with internals; (B) manual bookkeeping of unsub handles — fragile, easy to miss one. Option C (dispose list) is composable, private, and hard to get wrong. D2 (leaked keepalive handles) collapses into D1 — same list, same `destroy()` drain. |
+
 ### AI surface (Phase 4.4) — deferred optimizations
 
 | Item | Status | Notes |

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, Required, TypedDict
 
 # ---------------------------------------------------------------------------
 # Intake
@@ -96,14 +96,20 @@ def strategy_key(root_cause: RootCause, intervention: Intervention) -> StrategyK
 # ---------------------------------------------------------------------------
 
 
+class ExecuteOutput(TypedDict, total=False):
+    """LLM output shape from the EXECUTE stage (partial — lacks ``item``)."""
+
+    outcome: Required[Literal["success", "failure", "partial"]]
+    detail: Required[str]
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionResult:
-    """Result of the EXECUTE stage."""
+    """Full execution result assembled downstream (LLM output + context)."""
 
     item: TriagedItem
     outcome: Literal["success", "failure", "partial"]
     detail: str
-    retry_count: int = 0
 
 
 ErrorClass = Literal["self-correctable", "structural"]
