@@ -2,7 +2,7 @@
 
 Domain-layer helpers that build workflow shapes on top of core + extra primitives.
 Export under ``graphrefly.patterns.orchestration`` to avoid collisions with Phase 2
-operator names like ``gate`` and ``for_each``.
+operator names like ``valve`` and ``for_each``.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from graphrefly.core.node import Node, NodeActions, node
 from graphrefly.core.protocol import MessageType
+from graphrefly.core.sugar import derived, state
 from graphrefly.graph.graph import GRAPH_META_SEGMENT, PATH_SEP, Graph
 
 if TYPE_CHECKING:
@@ -172,7 +173,7 @@ def branch(
     return step
 
 
-def gate(
+def valve(
     graph: Graph,
     name: str,
     source: StepRef,
@@ -181,7 +182,7 @@ def gate(
     meta: dict[str, Any] | None = None,
     **node_opts: Any,
 ) -> Node[Any]:
-    """Register a value-level gate step controlled by a boolean signal."""
+    """Register a value-level valve step controlled by a boolean signal."""
     source_node, source_path = _resolve_dep(graph, source)
     control_node, control_path = _resolve_dep(graph, control)
 
@@ -196,7 +197,7 @@ def gate(
         compute,
         name=name,
         describe_kind="operator",
-        meta=_base_meta("gate", meta),
+        meta=_base_meta("valve", meta),
         **node_opts,
     )
     paths = [p for p in (source_path, control_path) if p is not None]
@@ -520,14 +521,223 @@ def on_failure(
     return step
 
 
+@dataclass(frozen=True, slots=True)
+class GateController:
+    """Result bundle for :func:`gate` — queue-based human approval primitive.
+
+    Provides reactive state for the pending queue, count, and open/closed
+    status, plus imperative controls to approve, reject, modify, open, and
+    close the gate.
+    """
+
+    node: Node[Any]
+    pending: Node[list[Any]]
+    count: Node[int]
+    is_open: Node[bool]
+    approve: Callable[..., None]
+    reject: Callable[..., None]
+    modify: Callable[..., None]
+    open: Callable[[], None]
+    close: Callable[[], None]
+
+
+def gate(
+    graph: Graph,
+    name: str,
+    source: StepRef,
+    *,
+    max_pending: int | float = float("inf"),
+    start_open: bool = False,
+    meta: dict[str, Any] | None = None,
+    **node_opts: Any,
+) -> GateController:
+    """Register a queue-based human-in-the-loop approval gate.
+
+    Incoming DATA values are enqueued in a pending list when the gate is
+    closed. Callers can then :meth:`approve`, :meth:`reject`, or
+    :meth:`modify` individual items. Calling :meth:`open` flushes pending
+    items and auto-forwards future values; :meth:`close` re-enables manual
+    gating.
+
+    Args:
+        graph: The orchestration graph to register nodes in.
+        name: Base name for the gate nodes.
+        source: Upstream step (string path or node).
+        max_pending: Maximum pending queue size (must be >= 1).
+        start_open: If ``True`` the gate starts in auto-forward mode.
+        meta: Extra metadata merged onto the orchestration meta.
+        **node_opts: Additional node options.
+
+    Returns:
+        A :class:`GateController` with reactive state and imperative controls.
+
+    Raises:
+        ValueError: If *max_pending* < 1.
+    """
+    if max_pending < 1:
+        msg = "gate: max_pending must be >= 1"
+        raise ValueError(msg)
+
+    source_node, source_path = _resolve_dep(graph, source)
+
+    # Internal mutable state protected by a lock.
+    lock = threading.Lock()
+    queue: list[Any] = []
+    open_flag = [start_open]
+    torn = [False]
+
+    # Reactive state nodes ------------------------------------------------
+    pending_node: Node[list[Any]] = state(list(queue), name=f"{name}::pending")
+    is_open_node: Node[bool] = state(start_open, name=f"{name}::is_open")
+    count_node: Node[int] = derived(
+        [pending_node],
+        lambda deps, _a: len(deps[0]) if isinstance(deps[0], list) else 0,
+        name=f"{name}::count",
+        initial=0,
+    )
+
+    def _sync_pending() -> None:
+        """Push internal queue state into reactive pending node."""
+        pending_node.down([(MessageType.DATA, list(queue))])
+
+    def _sync_open() -> None:
+        """Push internal open state into reactive is_open node."""
+        is_open_node.down([(MessageType.DATA, open_flag[0])])
+
+    # Output node with on_message intercept --------------------------------
+    def on_message(msg: Any, index: int, actions: NodeActions) -> bool:
+        if index != 0:
+            actions.down([msg])
+            return True
+
+        mtype = msg[0]
+
+        if mtype is MessageType.DATA:
+            with lock:
+                if torn[0]:
+                    return True
+                if open_flag[0]:
+                    # Auto-forward mode.
+                    actions.down([msg])
+                    return True
+                # Enqueue the value (FIFO-evict oldest if over capacity).
+                queue.append(msg[1])
+                if len(queue) > max_pending:
+                    queue.pop(0)
+                _sync_pending()
+            actions.down([(MessageType.RESOLVED,)])
+            return True
+
+        if mtype in (MessageType.TEARDOWN, MessageType.COMPLETE, MessageType.ERROR):
+            with lock:
+                torn[0] = True
+                queue.clear()
+                _sync_pending()
+            actions.down([msg])
+            return True
+
+        # Forward all other message types unchanged.
+        actions.down([msg])
+        return True
+
+    output_node = node(
+        [source_node],
+        lambda _deps, _actions: None,
+        name=name,
+        describe_kind="operator",
+        complete_when_deps_complete=False,
+        on_message=on_message,
+        meta=_base_meta("gate", meta),
+        **node_opts,
+    )
+
+    # Register output node and internal state sub-graph.
+    _register_step(graph, name, output_node, [source_path] if source_path else [])
+    internal = Graph(f"{name}_state")
+    internal.add("pending", pending_node)
+    internal.add("is_open", is_open_node)
+    internal.add("count", count_node)
+    internal.connect("pending", "count")
+    graph.mount(f"{name}_state", internal)
+
+    # Imperative controls --------------------------------------------------
+    def _assert_not_torn(method: str) -> None:
+        if torn[0]:
+            msg = f"gate: {method}() called after gate was torn down"
+            raise RuntimeError(msg)
+
+    def _approve(count: int = 1) -> None:
+        with lock:
+            _assert_not_torn("approve")
+            to_send = queue[:count]
+            del queue[:count]
+            _sync_pending()
+        for item in to_send:
+            if torn[0]:
+                break
+            output_node.down([(MessageType.DATA, item)])
+
+    def _reject(count: int = 1) -> None:
+        with lock:
+            _assert_not_torn("reject")
+            del queue[:count]
+            _sync_pending()
+
+    def _modify(fn: Callable[..., Any], count: int = 1) -> None:
+        with lock:
+            _assert_not_torn("modify")
+            pending_snapshot = list(queue)
+            to_process = queue[:count]
+            del queue[:count]
+            _sync_pending()
+        for idx, item in enumerate(to_process):
+            if torn[0]:
+                break
+            transformed = fn(item, idx, pending_snapshot)
+            output_node.down([(MessageType.DATA, transformed)])
+
+    def _open() -> None:
+        with lock:
+            _assert_not_torn("open")
+            open_flag[0] = True
+            to_flush = list(queue)
+            queue.clear()
+            _sync_pending()
+            _sync_open()
+        for item in to_flush:
+            if torn[0]:
+                break
+            output_node.down([(MessageType.DATA, item)])
+
+    def _close() -> None:
+        with lock:
+            _assert_not_torn("close")
+            open_flag[0] = False
+            _sync_open()
+
+    return GateController(
+        node=output_node,
+        pending=pending_node,
+        count=count_node,
+        is_open=is_open_node,
+        approve=_approve,
+        reject=_reject,
+        modify=_modify,
+        open=_open,
+        close=_close,
+    )
+
+
 __all__ = [
     "BranchResult",
+    "GateController",
     "SensorControls",
     "StepRef",
     "approval",
     "branch",
     "for_each",
     "gate",
+    "valve",
     "join",
     "loop",
     "on_failure",

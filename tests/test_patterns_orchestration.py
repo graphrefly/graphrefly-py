@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import time
+from typing import Any
+
+import pytest
 
 from graphrefly import Graph, state
 from graphrefly.core.protocol import MessageType
 from graphrefly.patterns import orchestration
+from graphrefly.patterns.orchestration import GateController, gate
 
 
 def test_pipeline_returns_graph() -> None:
@@ -74,7 +78,7 @@ def test_task_and_branch_describe_as_derived_with_canonical_meta() -> None:
     assert desc["nodes"][b_key]["meta"]["orchestration_type"] == "branch"
 
 
-def test_gate_and_approval_hold_value_when_closed() -> None:
+def test_valve_and_approval_hold_value_when_closed() -> None:
     g = orchestration.pipeline("wf")
     source = state(1)
     opened = state(True)
@@ -82,7 +86,7 @@ def test_gate_and_approval_hold_value_when_closed() -> None:
     g.add("input", source)
     g.add("open", opened)
     g.add("approved", approved)
-    gated = orchestration.gate(g, "gated", "input", "open")
+    gated = orchestration.valve(g, "gated", "input", "open")
     reviewed = orchestration.approval(g, "reviewed", gated, "approved")
     gated.subscribe(lambda _msgs: None)
     reviewed.subscribe(lambda _msgs: None)
@@ -271,3 +275,195 @@ def test_loop_uses_permissive_parse_plus_truncate_for_iteration_dep_values() -> 
     assert g.get("looped") == 4
     g.set("iter", "")
     assert g.get("looped") == 2
+
+
+# ---------------------------------------------------------------------------
+# gate
+# ---------------------------------------------------------------------------
+
+
+def test_gate_queues_values_and_approve_forwards_them() -> None:
+    g = orchestration.pipeline("wf")
+    src = state(0)
+    g.add("input", src)
+    ctrl = gate(g, "g", "input")
+    assert isinstance(ctrl, GateController)
+    forwarded: list[Any] = []
+
+    def sink(msgs: object) -> None:
+        for msg in msgs:  # type: ignore[union-attr]
+            if msg[0] is MessageType.DATA:
+                forwarded.append(msg[1])
+
+    ctrl.node.subscribe(sink)
+    ctrl.count.subscribe(lambda _: None)
+
+    # Push values — they should be queued, not forwarded.
+    g.set("input", 1)
+    g.set("input", 2)
+    g.set("input", 3)
+    assert ctrl.pending.get() == [1, 2, 3]
+    assert ctrl.count.get() == 3
+    assert forwarded == []
+
+    # Approve one at a time.
+    ctrl.approve(1)
+    assert forwarded == [1]
+    assert ctrl.pending.get() == [2, 3]
+
+    ctrl.approve(1)
+    assert forwarded == [1, 2]
+    assert ctrl.pending.get() == [3]
+
+
+def test_gate_reject_discards_pending_values() -> None:
+    g = orchestration.pipeline("wf")
+    src = state(0)
+    g.add("input", src)
+    ctrl = gate(g, "g", "input")
+    ctrl.node.subscribe(lambda _: None)
+
+    g.set("input", "a")
+    g.set("input", "b")
+    assert ctrl.pending.get() == ["a", "b"]
+
+    ctrl.reject(1)
+    assert ctrl.pending.get() == ["b"]
+    ctrl.reject(1)
+    assert ctrl.pending.get() == []
+
+
+def test_gate_modify_transforms_and_forwards() -> None:
+    g = orchestration.pipeline("wf")
+    src = state(0)
+    g.add("input", src)
+    ctrl = gate(g, "g", "input")
+    forwarded: list[Any] = []
+
+    def sink(msgs: object) -> None:
+        for msg in msgs:  # type: ignore[union-attr]
+            if msg[0] is MessageType.DATA:
+                forwarded.append(msg[1])
+
+    ctrl.node.subscribe(sink)
+
+    g.set("input", 10)
+    ctrl.modify(lambda val, _idx, _pending: val * 2)
+    assert forwarded == [20]
+    assert ctrl.pending.get() == []
+
+
+def test_gate_open_flushes_pending_and_auto_approves_future() -> None:
+    g = orchestration.pipeline("wf")
+    src = state(0)
+    g.add("input", src)
+    ctrl = gate(g, "g", "input")
+    forwarded: list[Any] = []
+
+    def sink(msgs: object) -> None:
+        for msg in msgs:  # type: ignore[union-attr]
+            if msg[0] is MessageType.DATA:
+                forwarded.append(msg[1])
+
+    ctrl.node.subscribe(sink)
+
+    g.set("input", 1)
+    g.set("input", 2)
+    assert forwarded == []
+
+    ctrl.open()
+    # Pending items flushed.
+    assert forwarded == [1, 2]
+    assert ctrl.is_open.get() is True
+
+    # Future values auto-forward.
+    g.set("input", 3)
+    assert 3 in forwarded
+
+
+def test_gate_close_re_enables_manual_gating() -> None:
+    g = orchestration.pipeline("wf")
+    src = state(0)
+    g.add("input", src)
+    ctrl = gate(g, "g", "input", start_open=True)
+    forwarded: list[Any] = []
+
+    def sink(msgs: object) -> None:
+        for msg in msgs:  # type: ignore[union-attr]
+            if msg[0] is MessageType.DATA:
+                forwarded.append(msg[1])
+
+    ctrl.node.subscribe(sink)
+
+    g.set("input", 1)
+    assert 1 in forwarded
+
+    ctrl.close()
+    assert ctrl.is_open.get() is False
+
+    g.set("input", 2)
+    # Value should be queued, not forwarded.
+    assert ctrl.pending.get() == [2]
+    assert 2 not in forwarded
+
+
+def test_gate_max_pending_drops_when_full() -> None:
+    g = orchestration.pipeline("wf")
+    src = state(0)
+    g.add("input", src)
+    ctrl = gate(g, "g", "input", max_pending=2)
+    ctrl.node.subscribe(lambda _: None)
+    ctrl.count.subscribe(lambda _: None)
+
+    g.set("input", 1)
+    g.set("input", 2)
+    g.set("input", 3)  # exceeds max_pending — FIFO-evicts oldest
+
+    # Queue retains the two newest values; the oldest is evicted.
+    assert ctrl.pending.get() == [2, 3]
+    assert ctrl.count.get() == 2
+
+
+def test_gate_approve_multiple() -> None:
+    g = orchestration.pipeline("wf")
+    src = state(0)
+    g.add("input", src)
+    ctrl = gate(g, "g", "input")
+    forwarded: list[Any] = []
+
+    def sink(msgs: object) -> None:
+        for msg in msgs:  # type: ignore[union-attr]
+            if msg[0] is MessageType.DATA:
+                forwarded.append(msg[1])
+
+    ctrl.node.subscribe(sink)
+
+    g.set("input", "a")
+    g.set("input", "b")
+    g.set("input", "c")
+
+    ctrl.approve(2)
+    assert forwarded == ["a", "b"]
+    assert ctrl.pending.get() == ["c"]
+
+
+def test_gate_registers_internal_state_nodes() -> None:
+    g = orchestration.pipeline("wf")
+    src = state(0)
+    g.add("input", src)
+    gate(g, "g", "input")
+
+    desc = g.describe()
+    node_keys = set(desc["nodes"].keys())
+    # The gate mounts internal state as a sub-graph.
+    assert any("pending" in k for k in node_keys)
+    assert any("is_open" in k for k in node_keys)
+    assert any("count" in k for k in node_keys)
+
+
+def test_gate_max_pending_below_one_raises() -> None:
+    g = orchestration.pipeline("wf")
+    src = state(0)
+    g.add("input", src)
+    with pytest.raises(ValueError, match="max_pending must be >= 1"):
+        gate(g, "g", "input", max_pending=0)

@@ -15,6 +15,7 @@ from collections.abc import AsyncIterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
+from graphrefly.core.cancellation import cancellation_token
 from graphrefly.core.clock import monotonic_ns
 from graphrefly.core.node import Node
 from graphrefly.core.protocol import MessageType, batch
@@ -85,6 +86,7 @@ class LLMInvokeOptions:
     max_tokens: int | None = None
     tools: tuple[ToolDefinition, ...] | None = None
     system_prompt: str | None = None
+    cancellation_token: Any = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +221,139 @@ def from_llm(
         return adapter.invoke(msgs, invoke_opts)
 
     return switch_map(_invoke)(msgs_node)
+
+
+# ---------------------------------------------------------------------------
+# prompt_node
+# ---------------------------------------------------------------------------
+
+
+def prompt_node(
+    adapter: LLMAdapter,
+    deps: list[Node[Any]],
+    prompt: str | Callable[..., str],
+    *,
+    name: str | None = None,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    format: str = "text",  # "text" | "json"
+    retries: int = 0,
+    cache: bool = False,
+    system_prompt: str | None = None,
+    meta: dict[str, Any] | None = None,
+) -> Node[Any]:
+    """Universal LLM transform factory.
+
+    Creates a derived node from *deps* that assembles chat messages using
+    *prompt* (a static string or a callable that receives each dep's current
+    value and returns the prompt string), invokes the *adapter*, and emits the
+    response content.
+
+    Args:
+        adapter: Provider-agnostic LLM client.
+        deps: Upstream nodes whose values are fed to the prompt.
+        prompt: A static prompt string or a callable that receives the dep
+            values (positional) and returns the prompt string.
+        name: Optional node name.
+        model: Model override passed to the adapter.
+        temperature: Temperature override.
+        max_tokens: Max tokens override.
+        format: ``"text"`` (default) returns raw content; ``"json"`` parses the
+            response as JSON.
+        retries: Number of retries on transient errors (default ``0``).
+        cache: If ``True``, cache responses keyed by the serialised messages.
+        system_prompt: Optional system prompt prepended to messages.
+        meta: Extra metadata merged onto the AI meta dict.
+
+    Returns:
+        A :class:`~graphrefly.core.node.Node` that emits the LLM response
+        content (``str`` for text, parsed value for JSON).
+    """
+    invoke_opts = LLMInvokeOptions(
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        system_prompt=system_prompt,
+    )
+    response_cache: dict[str, Any] | None = {} if cache else None
+    cache_lock = threading.Lock() if cache else None
+
+    def _build_messages(dep_values: list[Any]) -> list[ChatMessage]:
+        if callable(prompt) and not isinstance(prompt, str):
+            prompt_text = prompt(*dep_values)
+        else:
+            prompt_text = str(prompt)
+        msgs: list[ChatMessage] = []
+        if system_prompt:
+            msgs.append(ChatMessage(role="system", content=system_prompt))
+        msgs.append(ChatMessage(role="user", content=prompt_text))
+        return msgs
+
+    def _cache_key(msgs: list[ChatMessage]) -> str:
+        return json.dumps([(m.role, m.content) for m in msgs], sort_keys=True)
+
+    def _invoke_with_retries(msgs: list[ChatMessage]) -> Any:
+        last_err: Exception | None = None
+        attempts = 1 + max(0, retries)
+        for _ in range(attempts):
+            try:
+                raw = adapter.invoke(msgs, invoke_opts)
+                response = _resolve_node_input(raw)
+                return response
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+        raise last_err  # type: ignore[misc]
+
+    def _extract_content(response: Any) -> Any:
+        if isinstance(response, LLMResponse) or hasattr(response, "content"):
+            content = response.content
+        elif isinstance(response, str):
+            content = response
+        else:
+            content = str(response)
+
+        if format == "json":
+            text = content.strip()
+            if text.startswith("```"):
+                # Strip markdown fences.
+                lines = text.splitlines()
+                if lines and lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                text = "\n".join(lines)
+            return json.loads(text)
+        return content
+
+    node_name = name or "prompt_node"
+    messages_node = derived(
+        deps,
+        lambda dep_values, _a: _build_messages(dep_values),
+        name=f"{node_name}::messages",
+        meta=_ai_meta("prompt_node", meta),
+    )
+
+    def _on_messages(msgs: list[ChatMessage]) -> Any:
+        if not msgs:
+            return state(None)
+        key = _cache_key(msgs) if response_cache is not None else ""
+        if response_cache is not None and cache_lock is not None:
+            with cache_lock:
+                if key in response_cache:
+                    return state(response_cache[key])
+
+        response = _invoke_with_retries(msgs)
+        result = _extract_content(response)
+
+        if response_cache is not None and cache_lock is not None:
+            with cache_lock:
+                response_cache[key] = result
+        return state(result)
+
+    return switch_map(
+        _on_messages,
+    )(messages_node)
 
 
 # ---------------------------------------------------------------------------
@@ -1203,6 +1338,7 @@ class AgentLoopGraph(Graph):
     __slots__ = (
         "_abort_event",
         "_adapter",
+        "_cancel_token",
         "_max_tokens",
         "_max_turns",
         "_model",
@@ -1247,6 +1383,7 @@ class AgentLoopGraph(Graph):
         self._max_tokens = max_tokens
         self._running = False
         self._abort_event: threading.Event | None = None
+        self._cancel_token: Any = None
 
         # Mount chat subgraph
         self.chat = chat_stream(f"{name}-chat", max_messages=max_messages)
@@ -1304,6 +1441,7 @@ class AgentLoopGraph(Graph):
             raise RuntimeError(msg)
         self._running = True
         self._abort_event = threading.Event()
+        self._cancel_token = cancellation_token()
 
         with batch():
             self._status_state.down([(MessageType.DATA, "idle")])
@@ -1341,8 +1479,6 @@ class AgentLoopGraph(Graph):
                 # Check stop conditions
                 if self._should_stop(response):
                     self._status_state.down([(MessageType.DATA, "done")])
-                    self._running = False
-                    self._abort_event = None
                     return response
 
                 # Execute tool calls if present
@@ -1362,26 +1498,27 @@ class AgentLoopGraph(Graph):
                 else:
                     # No tool calls and not explicitly stopped → done
                     self._status_state.down([(MessageType.DATA, "done")])
-                    self._running = False
-                    self._abort_event = None
                     return response
 
             # Max turns reached
             self._status_state.down([(MessageType.DATA, "done")])
-            self._running = False
-            self._abort_event = None
             return self.last_response.get()
         except Exception:
             self._status_state.down([(MessageType.DATA, "error")])
+            raise
+        finally:
             self._running = False
             self._abort_event = None
-            raise
+            if self._cancel_token is not None:
+                self._cancel_token.cancel()
+                self._cancel_token = None
 
     def _invoke_llm(
         self,
         msgs: tuple[ChatMessage, ...],
         tools: tuple[ToolDefinition, ...] | Any,
     ) -> LLMResponse:
+        token = self._cancel_token
         result = self._adapter.invoke(
             list(msgs),
             LLMInvokeOptions(
@@ -1390,6 +1527,7 @@ class AgentLoopGraph(Graph):
                 model=self._model,
                 temperature=self._temperature,
                 max_tokens=self._max_tokens,
+                cancellation_token=token,
             ),
         )
         # Guard: None/null — reject before from_any
@@ -1438,6 +1576,9 @@ class AgentLoopGraph(Graph):
         if self._abort_event is not None:
             self._abort_event.set()
             self._abort_event = None
+        if self._cancel_token is not None:
+            self._cancel_token.cancel()
+            self._cancel_token = None
         self._running = False
         super().destroy()
 

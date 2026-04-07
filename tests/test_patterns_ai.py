@@ -31,6 +31,7 @@ from graphrefly.patterns.ai import (
     knobs_as_tools,
     llm_consolidator,
     llm_extractor,
+    prompt_node,
     suggest_strategy,
     system_prompt_builder,
     tool_registry,
@@ -950,3 +951,145 @@ def test_suggest_strategy_raises_on_missing_summary() -> None:
     with pytest.raises(ValueError, match="missing 'summary'"):
         suggest_strategy(g, "problem", adapter)
     g.destroy()
+
+
+# ---------------------------------------------------------------------------
+# prompt_node
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_node_calls_adapter_with_assembled_messages() -> None:
+    """prompt_node assembles messages from deps and the prompt template."""
+    captured: list[list[ChatMessage]] = []
+
+    class CapturingAdapter:
+        def invoke(
+            self,
+            messages: Any,
+            opts: LLMInvokeOptions | None = None,
+        ) -> LLMResponse:
+            captured.append(list(messages))
+            return LLMResponse(content="reply-1")
+
+    adapter = CapturingAdapter()
+    dep = state("world")
+    pn = prompt_node(
+        adapter,
+        [dep],
+        lambda val: f"Hello, {val}!",
+        name="greeter",
+        system_prompt="You are helpful.",
+    )
+    unsub = pn.subscribe(lambda _: None)
+
+    assert pn.get() == "reply-1"
+    assert len(captured) == 1
+    msgs = captured[0]
+    # System prompt comes first, then user message with the assembled prompt.
+    assert msgs[0].role == "system"
+    assert msgs[0].content == "You are helpful."
+    assert msgs[1].role == "user"
+    assert msgs[1].content == "Hello, world!"
+    unsub()
+
+
+def test_prompt_node_re_invokes_on_dep_change() -> None:
+    """Changing a dependency triggers a new LLM invocation."""
+    call_count = [0]
+
+    class CountingAdapter:
+        def invoke(
+            self,
+            messages: Any,
+            opts: LLMInvokeOptions | None = None,
+        ) -> LLMResponse:
+            call_count[0] += 1
+            # Extract user content to echo it back.
+            user_msg = [m for m in messages if m.role == "user"][0]
+            return LLMResponse(content=f"echo:{user_msg.content}")
+
+    adapter = CountingAdapter()
+    dep = state("alpha")
+    pn = prompt_node(adapter, [dep], lambda v: f"say {v}")
+    unsub = pn.subscribe(lambda _: None)
+
+    assert pn.get() == "echo:say alpha"
+    assert call_count[0] == 1
+
+    dep.down([(MessageType.DATA, "beta")])
+    assert pn.get() == "echo:say beta"
+    assert call_count[0] == 2
+    unsub()
+
+
+def test_prompt_node_format_json_parses_response() -> None:
+    """format='json' parses the LLM response content as JSON."""
+    adapter = MockAdapter(
+        [LLMResponse(content='{"key": "value", "n": 42}')]
+    )
+    dep = state("input")
+    pn = prompt_node(adapter, [dep], "parse this", format="json")
+    unsub = pn.subscribe(lambda _: None)
+
+    result = pn.get()
+    assert isinstance(result, dict)
+    assert result == {"key": "value", "n": 42}
+    unsub()
+
+
+def test_prompt_node_retries_on_error() -> None:
+    """prompt_node retries the configured number of times before succeeding."""
+    attempts = [0]
+
+    class FlakyAdapter:
+        def invoke(
+            self,
+            messages: Any,
+            opts: LLMInvokeOptions | None = None,
+        ) -> LLMResponse:
+            attempts[0] += 1
+            if attempts[0] < 3:
+                raise RuntimeError("transient failure")
+            return LLMResponse(content="recovered")
+
+    adapter = FlakyAdapter()
+    dep = state("x")
+    pn = prompt_node(adapter, [dep], "do it", retries=3)
+    unsub = pn.subscribe(lambda _: None)
+
+    assert pn.get() == "recovered"
+    assert attempts[0] == 3  # 2 failures + 1 success
+    unsub()
+
+
+def test_prompt_node_cache_deduplicates_identical_calls() -> None:
+    call_count = [0]
+
+    class CountingAdapter:
+        def invoke(
+            self,
+            messages: Any,
+            opts: LLMInvokeOptions | None = None,
+        ) -> LLMResponse:
+            call_count[0] += 1
+            return LLMResponse(content="result")
+
+    adapter = CountingAdapter()
+    dep = state("hello")
+    pn = prompt_node(adapter, [dep], lambda v: f"summarize: {v}", cache=True)
+    unsub = pn.subscribe(lambda _: None)
+
+    assert pn.get() == "result"
+    assert call_count[0] == 1
+
+    # Re-emit same value — should hit cache
+    dep.down([(MessageType.DATA, "hello")])
+    assert pn.get() == "result"
+    assert call_count[0] == 1  # no additional call
+
+    # Change dep — different prompt text → different cache key
+    dep.down([(MessageType.DATA, "world")])
+    assert pn.get() == "result"
+    assert call_count[0] == 2
+
+    unsub()

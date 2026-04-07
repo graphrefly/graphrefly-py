@@ -1331,10 +1331,10 @@ def repeat(times: int) -> PipeOperator:
     return _op
 
 
-def gate(control: Node[Any]) -> PipeOperator:
+def valve(control: Node[Any]) -> PipeOperator:
     """Forward ``DATA`` only when ``control`` is truthy; otherwise emit ``RESOLVED``.
 
-    This is a value-level gate using a boolean control signal. See :func:`pausable`
+    This is a value-level valve using a boolean control signal. See :func:`pausable`
     for protocol-level ``PAUSE``/``RESUME`` buffering.
 
     Args:
@@ -1346,10 +1346,10 @@ def gate(control: Node[Any]) -> PipeOperator:
     Example:
         ```python
         from graphrefly import state, pipe
-        from graphrefly.extra.tier2 import gate
+        from graphrefly.extra.tier2 import valve
         src = state(1)
         ctrl = state(True)
-        out = pipe(src, gate(ctrl))
+        out = pipe(src, valve(ctrl))
         ```
     """
 
@@ -1360,7 +1360,7 @@ def gate(control: Node[Any]) -> PipeOperator:
                 return None
             return deps[0]
 
-        return node([src, control], compute, describe_kind="gate")
+        return node([src, control], compute, describe_kind="operator")
 
     return _op
 
@@ -1785,7 +1785,7 @@ __all__ = [
     "delay",
     "exhaust_map",
     "flat_map",
-    "gate",
+    "valve",
     "interval",
     "merge_map",
     "pausable",

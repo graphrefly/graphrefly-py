@@ -20,7 +20,6 @@ from graphrefly.extra.tier2 import (
     delay,
     exhaust_map,
     flat_map,
-    gate,
     interval,
     merge_map,
     pausable,
@@ -31,6 +30,7 @@ from graphrefly.extra.tier2 import (
     throttle,
     throttle_time,
     timeout,
+    valve,
 )
 
 
@@ -346,12 +346,12 @@ def test_rxjs_alias_identity_tier2() -> None:
     assert merge_map is flat_map
 
 
-def test_gate() -> None:
-    """gate(control) forwards DATA when control is truthy; RESOLVED otherwise."""
+def test_valve() -> None:
+    """valve(control) forwards DATA when control is truthy; RESOLVED otherwise."""
     src = state(1)
     ctrl = state(True)
     sink: list[Messages] = []
-    out = pipe(src, gate(ctrl))
+    out = pipe(src, valve(ctrl))
     out.subscribe(sink.append)
     assert out.get() == 1
     ctrl.down([(MessageType.DATA, False)])
