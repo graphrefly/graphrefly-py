@@ -11,7 +11,7 @@ thread has isolated batch state (GRAPHREFLY-SPEC §4.2).
 
 If the outermost context exits with an exception, deferred phase-2 work is
 discarded. While the drain loop is running (``flush_in_progress``), nested
-:func:`emit_with_batch` calls with ``defer_when="batching"`` still defer
+:func:`down_with_batch` calls with ``defer_when="batching"`` still defer
 ``DATA``/``RESOLVED`` until the queue drains.
 
 ## Signature

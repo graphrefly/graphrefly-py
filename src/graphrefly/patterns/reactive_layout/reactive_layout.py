@@ -19,7 +19,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from graphrefly.core.clock import monotonic_ns
-from graphrefly.core.protocol import MessageType, emit_with_batch
+from graphrefly.core.protocol import MessageType, down_with_batch
 from graphrefly.core.sugar import derived, state
 from graphrefly.graph.graph import Graph
 
@@ -511,7 +511,7 @@ def compute_line_breaks(
 
     # --- Nested helpers (closures over mutable state) ---
 
-    def emit_line(
+    def flush_line(
         end_seg: int = -1,
         end_grapheme: int = -1,
         width: float = -1.0,
@@ -592,7 +592,7 @@ def compute_line_breaks(
                 start_line_at_grapheme(seg_idx, g, gw)
                 continue
             if line_w + gw > max_width + 0.005:
-                emit_line()
+                flush_line()
                 start_line_at_grapheme(seg_idx, g, gw)
             else:
                 line_w += gw
@@ -611,7 +611,7 @@ def compute_line_breaks(
         # Hard break: emit current line, start fresh
         if seg.kind == SegmentBreakKind.HARD_BREAK:
             if has_content:
-                emit_line()
+                flush_line()
             else:
                 lines.append(LayoutLine("", 0.0, i, 0, i, 0))
             line_start_seg = i + 1
@@ -642,7 +642,7 @@ def compute_line_breaks(
                 line_w += w
                 line_end_seg = i + 1
                 line_end_grapheme = 0
-                emit_line(
+                flush_line(
                     i + 1,
                     0,
                     line_w - w if seg.kind == SegmentBreakKind.SPACE else line_w,
@@ -652,19 +652,19 @@ def compute_line_breaks(
 
             if pending_break_seg >= 0:
                 # Break at last break opportunity
-                emit_line(pending_break_seg, 0, pending_break_width)
+                flush_line(pending_break_seg, 0, pending_break_width)
                 # Don't advance i — re-process current segment on new line
                 continue
 
             if w > max_width and seg.grapheme_widths:
                 # Break-word: split at grapheme level
-                emit_line()
+                flush_line()
                 append_breakable_segment(i, 0, seg.grapheme_widths)
                 i += 1
                 continue
 
             # No break opportunity: force break before this segment
-            emit_line()
+            flush_line()
             continue
 
         # Fits on current line
@@ -679,7 +679,7 @@ def compute_line_breaks(
         i += 1
 
     if has_content:
-        emit_line()
+        flush_line()
 
     return LineBreaksResult(lines=lines, line_count=len(lines))
 
@@ -812,18 +812,18 @@ def reactive_layout(
         hit_rate = 1.0 if lookups == 0 else measure_stats["hits"] / lookups
 
         # Phase-3 deferral: meta companion values arrive after parent's own
-        # DATA has propagated through phase-2 (parity with TS emitWithBatchPhase3).
+        # DATA has propagated through phase-2 (parity with TS downWithBatch phase 3).
         meta = segments_node.meta
         if meta:
             cr = meta.get("cache-hit-rate")
             if cr is not None:
-                emit_with_batch(cr.down, [(MessageType.DATA, hit_rate)], phase=3)
+                down_with_batch(cr.down, [(MessageType.DATA, hit_rate)], phase=3)
             sc = meta.get("segment-count")
             if sc is not None:
-                emit_with_batch(sc.down, [(MessageType.DATA, len(result))], phase=3)
+                down_with_batch(sc.down, [(MessageType.DATA, len(result))], phase=3)
             lt = meta.get("layout-time-ns")
             if lt is not None:
-                emit_with_batch(lt.down, [(MessageType.DATA, elapsed)], phase=3)
+                down_with_batch(lt.down, [(MessageType.DATA, elapsed)], phase=3)
 
         return result
 

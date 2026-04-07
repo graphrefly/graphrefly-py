@@ -16,7 +16,7 @@ Tier    Signals               Role                 Batch behavior
 4       TEARDOWN              Destruction            Immediate (usually sent alone)
 ======  ====================  ===================  ====================================
 
-**Rule:** Within ``emit_with_batch(strategy="partition")``, messages are partitioned
+**Rule:** Within ``down_with_batch(strategy="partition")``, messages are partitioned
 by tier and delivered in tier order. This ensures phase-2 values reach sinks
 before terminal signals mark the node as done.
 
@@ -71,7 +71,7 @@ _BATCH_DEFER_TYPES: frozenset[MessageType] = frozenset({MessageType.DATA, Messag
 # Terminals (GRAPHREFLY-SPEC § 1.3 #4): flush deferred phase-2 first so they are not observed after.
 _TERMINAL_TYPES: frozenset[MessageType] = frozenset({MessageType.COMPLETE, MessageType.ERROR})
 
-type EmitStrategy = Literal["partition", "sequential"]
+type DownStrategy = Literal["partition", "sequential"]
 type DeferWhen = Literal["depth", "batching"]
 
 
@@ -190,7 +190,7 @@ def batch() -> Generator[None]:
 
     If the outermost context exits with an exception, deferred phase-2 work is
     discarded. While the drain loop is running (``flush_in_progress``), nested
-    :func:`emit_with_batch` calls with ``defer_when="batching"`` still defer
+    :func:`down_with_batch` calls with ``defer_when="batching"`` still defer
     ``DATA``/``RESOLVED`` until the queue drains.
 
     Returns:
@@ -301,12 +301,12 @@ def partition_for_batch(messages: Messages) -> tuple[Messages, Messages, Message
     return immediate, deferred, terminal
 
 
-def emit_with_batch(
+def down_with_batch(
     sink: Callable[[Messages], None],
     messages: Messages,
     *,
     phase: int = 2,
-    strategy: EmitStrategy = "partition",
+    strategy: DownStrategy = "partition",
     defer_when: DeferWhen = "batching",
     subgraph_lock: object | None = None,
 ) -> None:
@@ -328,11 +328,11 @@ def emit_with_batch(
 
     Example:
         ```python
-        from graphrefly.core.protocol import emit_with_batch, MessageType, batch
+        from graphrefly.core.protocol import down_with_batch, MessageType, batch
         received = []
         sink = lambda msgs: received.extend(msgs)
         with batch():
-            emit_with_batch(sink, [("DATA", 1), ("DATA", 2)])
+            down_with_batch(sink, [("DATA", 1), ("DATA", 2)])
         # Both DATA messages flushed together after batch exits
         assert len(received) == 2
         ```
@@ -341,12 +341,12 @@ def emit_with_batch(
         return
     queue_attr = "pending_phase3" if phase == 3 else "pending"
     if strategy == "partition":
-        _emit_partition(sink, messages, defer_when, subgraph_lock, queue_attr)
+        _down_partition(sink, messages, defer_when, subgraph_lock, queue_attr)
     else:
-        _emit_sequential(sink, messages, defer_when, subgraph_lock, queue_attr)
+        _down_sequential(sink, messages, defer_when, subgraph_lock, queue_attr)
 
 
-def _emit_partition(
+def _down_partition(
     sink: Callable[[Messages], None],
     messages: Messages,
     defer_when: DeferWhen,
@@ -362,30 +362,30 @@ def _emit_partition(
         if message_tier(t) == 2:
             if _should_defer_phase2(bs, defer_when):
 
-                def _emit_single() -> None:
+                def _down_single() -> None:
                     sink(messages)
 
-                queue.append(_wrap_deferred_subgraph(_emit_single, subgraph_lock))
+                queue.append(_wrap_deferred_subgraph(_down_single, subgraph_lock))
             else:
                 sink(messages)
         elif is_terminal_message(t):
             # Terminal single message: defer when batching so preceding deferred flushes first.
             if _should_defer_phase2(bs, defer_when):
 
-                def _emit_terminal_single() -> None:
+                def _down_terminal_single() -> None:
                     sink(messages)
 
-                queue.append(_wrap_deferred_subgraph(_emit_terminal_single, subgraph_lock))
+                queue.append(_wrap_deferred_subgraph(_down_terminal_single, subgraph_lock))
             else:
                 sink(messages)
         else:
-            # Immediate: emit synchronously.
+            # Immediate: deliver synchronously.
             sink(messages)
         return
     # Multi-message: three-way partition by tier (see module docstring).
     immediate, deferred, terminal = partition_for_batch(messages)
 
-    # 1. Immediate signals (tier 0-1, 4) — emit synchronously now.
+    # 1. Immediate signals (tier 0-1, 4) — deliver synchronously now.
     if immediate:
         sink(immediate)
 
@@ -393,16 +393,16 @@ def _emit_partition(
     if _should_defer_phase2(bs, defer_when):
         if deferred:
 
-            def _emit_deferred() -> None:
+            def _down_deferred() -> None:
                 sink(deferred)
 
-            queue.append(_wrap_deferred_subgraph(_emit_deferred, subgraph_lock))
+            queue.append(_wrap_deferred_subgraph(_down_deferred, subgraph_lock))
         if terminal:
 
-            def _emit_terminal() -> None:
+            def _down_terminal() -> None:
                 sink(terminal)
 
-            queue.append(_wrap_deferred_subgraph(_emit_terminal, subgraph_lock))
+            queue.append(_wrap_deferred_subgraph(_down_terminal, subgraph_lock))
     else:
         if deferred:
             sink(deferred)
@@ -410,7 +410,7 @@ def _emit_partition(
             sink(terminal)
 
 
-def _emit_sequential(
+def _down_sequential(
     sink: Callable[[Messages], None],
     messages: Messages,
     defer_when: DeferWhen,
@@ -423,34 +423,35 @@ def _emit_sequential(
         kind = msg[0]
         if kind in _BATCH_DEFER_TYPES and _should_defer_phase2(bs, defer_when):
 
-            def _emit(m: Message = msg, s: Callable[[Messages], None] = sink) -> None:
+            def _down_msg(m: Message = msg, s: Callable[[Messages], None] = sink) -> None:
                 s([m])
 
-            queue.append(_wrap_deferred_subgraph(_emit, subgraph_lock))
+            queue.append(_wrap_deferred_subgraph(_down_msg, subgraph_lock))
         elif kind in _TERMINAL_TYPES and _should_defer_phase2(bs, defer_when):
-            # Terminal: always route to phase-3 queue so all phase-2 drains first.
-            def _emit_term(m: Message = msg, s: Callable[[Messages], None] = sink) -> None:
+            # Terminal: always route to phase-3 queue regardless of the caller's
+            # `phase` param — terminals must drain after all phase-2 work.
+            def _down_term(m: Message = msg, s: Callable[[Messages], None] = sink) -> None:
                 s([m])
 
-            bs.pending_phase3.append(_wrap_deferred_subgraph(_emit_term, subgraph_lock))
+            bs.pending_phase3.append(_wrap_deferred_subgraph(_down_term, subgraph_lock))
         else:
             sink([msg])
 
 
 def dispatch_messages(messages: Messages, sink: Callable[[Messages], None]) -> None:
-    """Backward-compatible alias: ``emit_with_batch(sink, messages)`` with defaults."""
-    emit_with_batch(sink, messages)
+    """Backward-compatible alias: ``down_with_batch(sink, messages)`` with defaults."""
+    down_with_batch(sink, messages)
 
 
 __all__ = [
     "DeferWhen",
-    "EmitStrategy",
+    "DownStrategy",
     "Message",
     "MessageType",
     "Messages",
     "batch",
     "dispatch_messages",
-    "emit_with_batch",
+    "down_with_batch",
     "is_batching",
     "is_phase2_message",
     "is_terminal_message",

@@ -40,7 +40,7 @@ GraphReFly is a reactive graph protocol for human + LLM co-operation. This packa
 - `batch(fn)` — runs `fn` in a batch scope; defers DATA/RESOLVED until outermost batch returns
 - `is_batching()` — returns `True` while inside `batch()` or while the drain loop is running
 - `partition_for_batch(messages)` — splits a message list into immediate / deferred / terminal groups
-- `emit_with_batch(emit, messages)` — delivers messages respecting batch semantics and tier ordering
+- `down_with_batch(sink, messages)` — delivers messages downstream respecting batch semantics and tier ordering
 
 ### core — guard (`src/graphrefly/core/`)
 

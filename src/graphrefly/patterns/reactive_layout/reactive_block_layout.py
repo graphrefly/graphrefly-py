@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from graphrefly.core.clock import monotonic_ns
-from graphrefly.core.protocol import MessageType, emit_with_batch
+from graphrefly.core.protocol import MessageType, down_with_batch
 from graphrefly.core.sugar import derived, state
 from graphrefly.graph.graph import Graph
 from graphrefly.patterns.reactive_layout.reactive_layout import (
@@ -349,10 +349,10 @@ def reactive_block_layout(
         if meta:
             bc = meta.get("block-count")
             if bc is not None:
-                emit_with_batch(bc.down, [(MessageType.DATA, len(result))], phase=3)
+                down_with_batch(bc.down, [(MessageType.DATA, len(result))], phase=3)
             lt = meta.get("layout-time-ns")
             if lt is not None:
-                emit_with_batch(lt.down, [(MessageType.DATA, elapsed)], phase=3)
+                down_with_batch(lt.down, [(MessageType.DATA, elapsed)], phase=3)
 
         return result
 

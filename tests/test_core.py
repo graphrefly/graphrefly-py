@@ -11,7 +11,7 @@ from graphrefly.core import (
     NodeActions,
     batch,
     describe_node,
-    emit_with_batch,
+    down_with_batch,
     meta_snapshot,
     node,
 )
@@ -544,7 +544,7 @@ def test_batch_discards_deferred_on_outer_exception() -> None:
             log.append(m[0].value)
 
     with pytest.raises(RuntimeError, match="abort"), batch():
-        emit_with_batch(sink, [(MessageType.DATA, 1)])
+        down_with_batch(sink, [(MessageType.DATA, 1)])
         raise RuntimeError("abort")
 
     assert log == []

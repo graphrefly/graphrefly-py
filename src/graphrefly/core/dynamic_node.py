@@ -22,7 +22,7 @@ from graphrefly.core.node import _SENTINEL
 from graphrefly.core.protocol import (
     Messages,
     MessageType,
-    emit_with_batch,
+    down_with_batch,
     message_tier,
     propagates_to_meta,
 )
@@ -245,7 +245,7 @@ class DynamicNodeImpl[T]:
         # Actions object for on_message handler
         self._actions = _DynamicNodeActions(
             down=lambda msgs: self._down_internal(msgs),
-            emit=lambda v: self._emit_auto_value(v),
+            emit=lambda v: self._down_auto_value(v),
             up=lambda msgs: self.up(msgs, internal=True),
         )
 
@@ -482,7 +482,7 @@ class DynamicNodeImpl[T]:
 
     # --- Private methods ---
 
-    def _emit_to_sinks(self, messages: Messages) -> None:
+    def _down_to_sinks(self, messages: Messages) -> None:
         if self._sinks is None:
             return
         if callable(self._sinks) and not isinstance(self._sinks, set):
@@ -516,10 +516,10 @@ class DynamicNodeImpl[T]:
             if has_phase2:
                 filtered = [m for m in messages if m[0] is not MessageType.DIRTY]
                 if filtered:
-                    emit_with_batch(self._emit_to_sinks, filtered)
+                    down_with_batch(self._down_to_sinks, filtered)
                 return
 
-        emit_with_batch(self._emit_to_sinks, messages)
+        down_with_batch(self._down_to_sinks, messages)
 
     def _handle_local_lifecycle(self, messages: Messages) -> None:
         lock = self._cache_lock
@@ -572,7 +572,7 @@ class DynamicNodeImpl[T]:
             with suppress(Exception):
                 meta_node.down([(t,)], internal=True)
 
-    def _emit_auto_value(self, value: Any) -> None:
+    def _down_auto_value(self, value: Any) -> None:
         was_dirty = self._status == "dirty"
         lock = self._cache_lock
         if lock is not None:
@@ -660,7 +660,7 @@ class DynamicNodeImpl[T]:
 
             if result is None:
                 return
-            self._emit_auto_value(result)
+            self._down_auto_value(result)
         except Exception as err:
             self._down_internal([(MessageType.ERROR, err)])
 
@@ -739,12 +739,12 @@ class DynamicNodeImpl[T]:
                 self._dirty_bits.add(index)
                 self._settled_bits.discard(index)
                 if len(self._dirty_bits) == 1:
-                    emit_with_batch(self._emit_to_sinks, [(MessageType.DIRTY,)])
+                    down_with_batch(self._down_to_sinks, [(MessageType.DIRTY,)])
                 continue
             if t is MessageType.DATA or t is MessageType.RESOLVED:
                 if index not in self._dirty_bits:
                     self._dirty_bits.add(index)
-                    emit_with_batch(self._emit_to_sinks, [(MessageType.DIRTY,)])
+                    down_with_batch(self._down_to_sinks, [(MessageType.DIRTY,)])
                 self._settled_bits.add(index)
                 if self._all_dirty_settled():
                     self._dirty_bits.clear()

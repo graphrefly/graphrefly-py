@@ -10,7 +10,7 @@ from graphrefly.core.protocol import (
     MessageType,
     batch,
     dispatch_messages,
-    emit_with_batch,
+    down_with_batch,
     is_batching,
 )
 
@@ -151,7 +151,7 @@ def test_nested_batch_throw_during_drain_does_not_clear_outer_queue_a4() -> None
     def deferred_from_outer_data0(
         _msgs: list[tuple[MessageType, object] | tuple[MessageType]],
     ) -> None:
-        emit_with_batch(
+        down_with_batch(
             lambda _m: log.append("deferred-from-callback"),
             [(MessageType.DATA, 1)],
         )
@@ -159,7 +159,7 @@ def test_nested_batch_throw_during_drain_does_not_clear_outer_queue_a4() -> None
             raise RuntimeError("inner")
 
     with pytest.raises(RuntimeError, match="inner"), batch():
-        emit_with_batch(deferred_from_outer_data0, [(MessageType.DATA, 0)])
+        down_with_batch(deferred_from_outer_data0, [(MessageType.DATA, 0)])
 
     assert log == ["deferred-from-callback"]
 

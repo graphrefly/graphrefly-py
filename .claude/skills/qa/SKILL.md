@@ -59,7 +59,7 @@ Group:
 1. **Needs Decision** — architecture-affecting or ambiguous
 2. **Auto-applicable** — clear fixes matching existing patterns
 
-**Cross-language decision log:** For **Needs Decision** items that are architectural or affect Python/TypeScript parity, note them in **`docs/optimizations.md`** (e.g. **Open design decisions** or **Cross-language implementation notes**). If **`graphrefly-ts`** is available alongside this repo, add the same bullet to **`graphrefly-ts/docs/optimizations.md`**. If not available, call out mirroring for the user.
+**Cross-language decision log:** For **Needs Decision** items that are architectural or affect Python/TypeScript parity, add them to **`docs/optimizations.md`** under "Active work items". If **`graphrefly-ts`** is available alongside this repo, add the same entry to **`graphrefly-ts/docs/optimizations.md`**. If not available, call out mirroring for the user. When resolved, archive to `archive/optimizations/resolved-decisions.jsonl` per `docs/docs-guidance.md` § "Optimization decision log".
 
 **Wait for user decisions on group 1. Group 2 can be applied when the user approves the batch.**
 
@@ -94,8 +94,8 @@ Update documentation as appropriate:
 
 - **`docs/docs-guidance.md`** — if documentation *conventions* or generator commands change, update this file so `/qa` stays aligned
 - **`~/src/graphrefly/GRAPHREFLY-SPEC.md`** — only if the user-owned spec change is part of this task (usually avoid; spec is shared with graphrefly-ts)
-- **`docs/optimizations.md`** — when this review records **open architectural decisions** or cross-language parity notes; mirror substantive entries to **`graphrefly-ts/docs/optimizations.md`** if that repo is in the workspace
-- **`docs/roadmap.md`** — mark items done, add items if scope changed
+- **`docs/optimizations.md`** — add **new open decisions** under "Active work items"; when **resolved**, archive to `archive/optimizations/resolved-decisions.jsonl` per `docs/docs-guidance.md` § "Optimization decision log"; mirror to **`graphrefly-ts`** if in workspace
+- **`docs/roadmap.md`** — mark items done; when a phase/group is fully done, archive to `archive/roadmap/*.jsonl` per `docs/docs-guidance.md` § "Roadmap archive"
 - **`docs/test-guidance.md`** — if new test patterns or file conventions were established
 - **`archive/docs/`** — session or design notes only when explicitly part of the task
 - **Structured docstrings** (Google-style: summary, Args, Returns, Examples) on exported public APIs — Tier 1 per **`docs/docs-guidance.md`**; keep semantics aligned with graphrefly-ts JSDoc where APIs match

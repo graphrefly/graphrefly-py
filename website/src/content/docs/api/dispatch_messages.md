@@ -1,9 +1,9 @@
 ---
 title: 'dispatch_messages'
-description: 'Backward-compatible alias: ``emit_with_batch(sink, messages)`` with defaults.'
+description: 'Backward-compatible alias: ``down_with_batch(sink, messages)`` with defaults.'
 ---
 
-Backward-compatible alias: ``emit_with_batch(sink, messages)`` with defaults.
+Backward-compatible alias: ``down_with_batch(sink, messages)`` with defaults.
 
 ## Signature
 

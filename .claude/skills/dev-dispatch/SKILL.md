@@ -22,9 +22,9 @@ Load context and plan the implementation in a single pass. **Parallelize all rea
 Read in parallel:
 
 - **`~/src/graphrefly/GRAPHREFLY-SPEC.md`** — primary behavioral authority; read sections relevant to the task
-- **`docs/optimizations.md`** — built-in optimizations, cross-language notes, and **open design decisions** (read when touching protocol, batch, node lifecycle, or parity with graphrefly-ts)
+- `docs/optimizations.md` — **active work items**, anti-patterns, and **deferred follow-ups** (read when touching protocol, batch, node lifecycle, or parity). Resolved decisions are archived in `archive/optimizations/*.jsonl` — search there for historical context (see `docs/docs-guidance.md` § "Optimization decision log")
 - **`docs/test-guidance.md`** — checklists for the layer you touch (protocol, node, graph, operators)
-- **`docs/roadmap.md`** — phase alignment and acceptance criteria (read for new features or scope questions)
+- **`docs/roadmap.md`** — phase alignment and acceptance criteria (active/open items only; completed phases archived to `archive/roadmap/*.jsonl`)
 - **`archive/docs/SESSION-graphrefly-spec-design.md`** — design lineage, simplifications vs callbag-recharge, scenario validation
 - Any files the user referenced in $ARGUMENTS
 - Relevant source under `src/graphrefly/{core,graph,extra}/`
@@ -73,7 +73,7 @@ Prioritize (in order):
 
 Do NOT treat backward compatibility as a primary constraint pre-1.0 unless the user says otherwise.
 
-**Cross-language decision log:** If Phase 1–2 surface an **architectural or product-level** question (protocol semantics, batch/node invariants, parity with TypeScript, or anything that needs a spec/product call), **jot it down** in **`docs/optimizations.md`** — use **Open design decisions** or **Cross-language implementation notes** as appropriate. If the sibling repo **`graphrefly-ts`** is available (e.g. `../graphrefly-ts` next to this checkout), add a **matching** entry to **`graphrefly-ts/docs/optimizations.md`** so both implementations stay visible. If the sibling tree is not in the workspace, tell the user to mirror the note there.
+**Cross-language decision log:** If Phase 1–2 surface an **architectural or product-level** question (protocol semantics, batch/node invariants, parity with TypeScript, or anything that needs a spec/product call), **jot it down** in **`docs/optimizations.md`** under **"Active work items"**. If the sibling repo **`graphrefly-ts`** is available, add a **matching** entry to **`graphrefly-ts/docs/optimizations.md`** so both implementations stay visible. If the sibling tree is not in the workspace, tell the user to mirror the note there. When the decision is **resolved**, move it to `archive/optimizations/resolved-decisions.jsonl` per `docs/docs-guidance.md` § "Optimization decision log".
 
 **Wait for user approval before proceeding.**
 
@@ -113,6 +113,6 @@ After user approves (full mode) or after Phase 1 (light mode, no escalation):
 
 4. Fix any failures
 
-If implementation leaves an **open architectural decision** (deferred behavior, parity caveat, or “needs spec” item), update **`docs/optimizations.md`** here and mirror to **`graphrefly-ts/docs/optimizations.md`** when that repo is available.
+If implementation leaves an **open architectural decision** (deferred behavior, parity caveat, or “needs spec” item), add it to **`docs/optimizations.md`** under “Active work items” and mirror to **`graphrefly-ts/docs/optimizations.md`** when that repo is available. When resolved, archive to `archive/optimizations/resolved-decisions.jsonl` per `docs/docs-guidance.md`.
 
 When done, briefly list files changed and new exports. Suggest running **`/qa`** for adversarial review and final checks.

@@ -21,7 +21,7 @@ from graphrefly.core.guard import (
 from graphrefly.core.protocol import (
     Messages,
     MessageType,
-    emit_with_batch,
+    down_with_batch,
     message_tier,
     propagates_to_meta,
 )
@@ -370,9 +370,9 @@ class NodeImpl[T]:
 
     def _manual_emit(self, value: Any) -> None:
         self._manual_emit_used = True
-        self._emit_auto_value(value)
+        self._down_auto_value(value)
 
-    def _emit_to_sinks(self, msgs: Messages) -> None:
+    def _down_to_sinks(self, msgs: Messages) -> None:
         if self._sinks is None:
             return
         if isinstance(self._sinks, set):
@@ -441,7 +441,7 @@ class NodeImpl[T]:
     def _can_skip_dirty(self) -> bool:
         return self._sink_count == 1 and self._single_dep_sink_count == 1
 
-    def _emit_auto_value(self, value: Any) -> None:
+    def _down_auto_value(self, value: Any) -> None:
         # Note: the read-compare-write on _cached looks like a TOCTOU race, but
         # callers always hold the subgraph RLock (via _run_fn or down), which
         # serializes all writes. _cache_lock only guards get() reads from outside.
@@ -512,7 +512,7 @@ class NodeImpl[T]:
                 if self._manual_emit_used:
                     return
                 if "value" in out:
-                    self._emit_auto_value(out["value"])
+                    self._down_auto_value(out["value"])
                 return
             # Legacy: plain callable return → cleanup (backward compat)
             if _is_cleanup_fn(out):
@@ -522,7 +522,7 @@ class NodeImpl[T]:
                 return
             if out is None:
                 return
-            self._emit_auto_value(out)
+            self._down_auto_value(out)
         except Exception as err:
             wrapped = RuntimeError(f'Node "{self._name}": fn threw: {err}')
             wrapped.__cause__ = err
@@ -864,16 +864,16 @@ class NodeImpl[T]:
             if has_phase2:
                 filtered = [m for m in sink_messages if m[0] is not MessageType.DIRTY]
                 if filtered:
-                    emit_with_batch(
-                        self._emit_to_sinks,
+                    down_with_batch(
+                        self._down_to_sinks,
                         filtered,
                         strategy="partition",
                         defer_when="batching",
                         subgraph_lock=sg_lock,
                     )
                 return
-        emit_with_batch(
-            self._emit_to_sinks,
+        down_with_batch(
+            self._down_to_sinks,
             sink_messages,
             strategy="partition",
             defer_when="batching",
