@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.13.0 (2026-04-07)
+
+### Features
+
+- Fix stratify
+  ([`2dc57ff`](https://github.com/graphrefly/graphrefly-py/commit/2dc57ff6ddbbbfde6c4fc4e3bcdb12375f1eb640))
+
+
 ## v0.12.0 (2026-04-06)
 
 ### Features
