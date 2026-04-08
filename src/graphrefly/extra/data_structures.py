@@ -10,6 +10,7 @@ emit ``RESOLVED`` instead of ``DATA`` when the visible collection is unchanged
 
 from __future__ import annotations
 
+import contextlib
 import threading
 from bisect import bisect_left
 from dataclasses import dataclass
@@ -90,56 +91,14 @@ def _push_two_phase(node: Any, snapshot: Any) -> None:
 # --- reactive_map (KV + TTL + LRU eviction) -----------------------------------
 
 
-@dataclass(frozen=True, slots=True)
-class _MapState:
-    """Internal snapshot: values with optional monotonic expiry; LRU order (oldest first)."""
+class _MutableMapStore:
+    """Internal mutable state for :class:`ReactiveMapBundle` — not a node."""
 
-    entries: dict[Any, tuple[Any, int | None]]
-    lru: tuple[Any, ...]
+    __slots__ = ("entries", "lru")
 
-    @staticmethod
-    def empty() -> _MapState:
-        return _MapState(entries={}, lru=())
-
-
-def _visible_map(ms: _MapState) -> MappingProxyType[Any, Any]:
-    now = _mono_now()
-    out: dict[Any, Any] = {}
-    for k, (v, exp) in ms.entries.items():
-        if exp is not None and exp <= now:
-            continue
-        out[k] = v
-    return MappingProxyType(out)
-
-
-def _purge_stale(ms: _MapState) -> _MapState:
-    now = _mono_now()
-    if not ms.entries:
-        return ms
-    alive: dict[Any, tuple[Any, int | None]] = {}
-    for k, (v, exp) in ms.entries.items():
-        if exp is not None and exp <= now:
-            continue
-        alive[k] = (v, exp)
-    lru = tuple(k for k in ms.lru if k in alive)
-    return _MapState(entries=alive, lru=lru)
-
-
-def _touch_lru(order: tuple[Any, ...], key: Any) -> tuple[Any, ...]:
-    without = tuple(k for k in order if k != key)
-    return (*without, key)
-
-
-def _evict_lru(
-    entries: dict[Any, tuple[Any, int | None]],
-    lru: tuple[Any, ...],
-    max_size: int,
-) -> tuple[dict[Any, tuple[Any, int | None]], tuple[Any, ...]]:
-    while len(entries) > max_size and lru:
-        victim = lru[0]
-        lru = tuple(lru[1:])
-        entries.pop(victim, None)
-    return entries, lru
+    def __init__(self) -> None:
+        self.entries: dict[Any, tuple[Any, int | None]] = {}
+        self.lru: list[Any] = []
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,15 +106,14 @@ class ReactiveMapBundle:
     """Key–value store with optional per-key TTL and LRU eviction at capacity.
 
     Attributes:
-        data: A :func:`~graphrefly.core.sugar.state` node whose value is a
+        entries: A :func:`~graphrefly.core.sugar.state` node whose value is a
             :class:`~types.MappingProxyType` (immutable) of non-expired keys.
-            Uses versioned snapshots for efficient ``RESOLVED`` deduplication.
 
     Notes:
         TTL deadlines use :func:`~graphrefly.core.clock.monotonic_ns`
-        (nanoseconds). Expired keys remain in the internal store until the
-        next mutation or :meth:`prune`. LRU order is updated on
-        ``set``, not on dict reads from ``data``.
+        (nanoseconds). Expired keys are evicted eagerly on ``get``/``has``
+        and lazily on mutations via :meth:`prune_expired`. LRU order is
+        refreshed on ``set``, ``get``, and ``has``.
 
     Example:
         ```python
@@ -168,23 +126,50 @@ class ReactiveMapBundle:
         ```
     """
 
-    _state: Node[_MapState]
-    data: Node[Versioned]
+    _store: _MutableMapStore
+    entries: Node[MappingProxyType[Any, Any]]
     _default_ttl: float | None
     _max_size: int | None
-    _version: list[int]
 
-    def _sync_data(self) -> None:
-        raw = self._state.get()
-        snap = _visible_map(raw if raw is not None else _MapState.empty())
-        cur = self.data.get()
-        next_snap = _bump(
-            cur if isinstance(cur, Versioned) else Versioned(0, snap),
-            snap,
-            _v0_from_node(self.data),
-        )
-        self._version[0] = next_snap.version
-        _push_two_phase(self.data, next_snap)
+    def _push_snapshot(self) -> None:
+        """Build visible MappingProxyType from ``_store.entries``, filter expired, emit."""
+        now = _mono_now()
+        out: dict[Any, Any] = {}
+        for k, (v, exp) in self._store.entries.items():
+            if exp is not None and exp <= now:
+                continue
+            out[k] = v
+        _push_two_phase(self.entries, MappingProxyType(out))
+
+    def _prune_expired_internal(self) -> bool:
+        """Remove expired keys from ``_store``; return whether anything changed."""
+        now = _mono_now()
+        expired = [
+            k
+            for k, (_, exp) in self._store.entries.items()
+            if exp is not None and exp <= now
+        ]
+        if not expired:
+            return False
+        for k in expired:
+            del self._store.entries[k]
+            with contextlib.suppress(ValueError):
+                self._store.lru.remove(k)
+        return True
+
+    def _evict_lru(self) -> None:
+        """Evict oldest from ``_store.lru`` while over ``_max_size``."""
+        if self._max_size is None:
+            return
+        while len(self._store.entries) > self._max_size and self._store.lru:
+            victim = self._store.lru.pop(0)
+            self._store.entries.pop(victim, None)
+
+    def _touch_lru(self, key: Any) -> None:
+        """Move *key* to end of ``_store.lru``."""
+        with contextlib.suppress(ValueError):
+            self._store.lru.remove(key)
+        self._store.lru.append(key)
 
     def set(self, key: Any, value: Any, *, ttl: float | None = None) -> None:
         eff = self._default_ttl if ttl is None else ttl
@@ -195,64 +180,68 @@ class ReactiveMapBundle:
                 raise ValueError(msg)
             exp = _mono_now() + int(eff * 1_000_000_000)
 
-        raw = self._state.get()
-        cur = _purge_stale(raw if raw is not None else _MapState.empty())
-        ent = dict(cur.entries)
-        lru = _touch_lru(cur.lru, key)
-        ent[key] = (value, exp)
-        if self._max_size is not None:
-            ent, lru = _evict_lru(ent, lru, self._max_size)
-        _push_two_phase(self._state, _MapState(entries=ent, lru=lru))
-        self._sync_data()
+        self._prune_expired_internal()
+        self._store.entries[key] = (value, exp)
+        self._touch_lru(key)
+        self._evict_lru()
+        self._push_snapshot()
 
     def delete(self, key: Any) -> None:
-        raw = self._state.get()
-        cur = _purge_stale(raw if raw is not None else _MapState.empty())
-        if key not in cur.entries:
+        if key not in self._store.entries:
             return
-        ent = dict(cur.entries)
-        del ent[key]
-        lru = tuple(k for k in cur.lru if k != key)
-        _push_two_phase(self._state, _MapState(entries=ent, lru=lru))
-        self._sync_data()
+        del self._store.entries[key]
+        with contextlib.suppress(ValueError):
+            self._store.lru.remove(key)
+        self._push_snapshot()
 
     def clear(self) -> None:
-        _push_two_phase(self._state, _MapState.empty())
-        self._sync_data()
+        if not self._store.entries:
+            return
+        self._store.entries.clear()
+        self._store.lru.clear()
+        self._push_snapshot()
 
     def get(self, key: Any, default: Any = None) -> Any:
-        """Synchronous key lookup (matches TS ``ReactiveMapBundle.get(key)``)."""
-        snap = self.data.get()
-        if snap is None:
+        """Synchronous key lookup with LRU refresh and TTL eviction."""
+        entry = self._store.entries.get(key)
+        if entry is None:
             return default
-        mapping = snap.value if isinstance(snap, Versioned) else {}
-        return mapping.get(key, default)
+        value, exp = entry
+        if exp is not None and exp <= _mono_now():
+            del self._store.entries[key]
+            with contextlib.suppress(ValueError):
+                self._store.lru.remove(key)
+            self._push_snapshot()
+            return default
+        self._touch_lru(key)
+        return value
 
     def has(self, key: Any) -> bool:
-        """Check if key exists (matches TS ``ReactiveMapBundle.has(key)``)."""
-        snap = self.data.get()
-        if snap is None:
+        """Check if key exists with LRU refresh and TTL eviction."""
+        entry = self._store.entries.get(key)
+        if entry is None:
             return False
-        mapping = snap.value if isinstance(snap, Versioned) else {}
-        return key in mapping
+        _, exp = entry
+        if exp is not None and exp <= _mono_now():
+            del self._store.entries[key]
+            with contextlib.suppress(ValueError):
+                self._store.lru.remove(key)
+            self._push_snapshot()
+            return False
+        self._touch_lru(key)
+        return True
 
     @property
     def size(self) -> int:
         """Number of non-expired entries (matches TS ``ReactiveMapBundle.size``)."""
-        snap = self.data.get()
-        if snap is None:
-            return 0
-        mapping = snap.value if isinstance(snap, Versioned) else {}
-        return len(mapping)
+        self._prune_expired_internal()
+        return len(self._store.entries)
 
-    def prune(self) -> None:
-        """Drop expired keys (monotonic clock) and emit."""
-        raw = self._state.get()
-        _push_two_phase(
-            self._state,
-            _purge_stale(raw if raw is not None else _MapState.empty()),
-        )
-        self._sync_data()
+    def prune_expired(self) -> None:
+        """Drop expired keys (monotonic clock) and emit if anything changed."""
+        if not self._prune_expired_internal():
+            return
+        self._push_snapshot()
 
 
 def reactive_map(
@@ -271,14 +260,14 @@ def reactive_map(
 
     Returns:
         A :class:`ReactiveMapBundle` with imperative ``set`` / ``delete`` / ``clear`` /
-        ``prune`` and a ``data`` node exposing the live snapshot.
+        ``prune_expired`` and an ``entries`` node exposing the live snapshot.
 
     Example:
         ```python
         from graphrefly.extra import reactive_map
         m = reactive_map(default_ttl=60.0, max_size=100)
         m.set("x", 1)
-        assert m.data.get().value["x"] == 1
+        assert m.entries.get()["x"] == 1
         ```
     """
 
@@ -286,15 +275,18 @@ def reactive_map(
         msg = "max_size must be >= 1 when set"
         raise ValueError(msg)
 
-    inner = state(_MapState.empty(), describe_kind="state", name=name)
-    init_snap = Versioned(version=0, value=MappingProxyType({}))
-    data = state(init_snap, describe_kind="state", equals=_versioned_equals)
+    store = _MutableMapStore()
+    entries_node = state(
+        MappingProxyType({}),
+        describe_kind="state",
+        equals=lambda a, b: a is b,
+        name=name,
+    )
     bundle = ReactiveMapBundle(
-        _state=inner,
-        data=data,
+        _store=store,
+        entries=entries_node,
         _default_ttl=default_ttl,
         _max_size=max_size,
-        _version=[0],
     )
     return bundle
 
@@ -304,23 +296,22 @@ def reactive_map(
 
 @dataclass(frozen=True, slots=True)
 class ReactiveLogBundle:
-    """Append-only log of values stored as an immutable versioned tuple.
+    """Append-only log of values stored as an immutable tuple.
 
     Attributes:
-        entries: Node whose value is a :class:`Versioned` wrapping a ``tuple``
-            of all log entries.
+        entries: Node whose value is a ``tuple`` of all log entries.
 
     Example:
         ```python
         from graphrefly.extra import reactive_log
         lg = reactive_log()
         lg.append("event1")
-        assert lg.entries.get().value == ("event1",)
+        assert lg.entries.get() == ("event1",)
         ```
     """
 
-    _state: Node[Versioned]
-    entries: Node[Versioned]
+    _state: Node[tuple[Any, ...]]
+    entries: Node[tuple[Any, ...]]
     _max_size: int | None
 
     def _trim(self, t: tuple[Any, ...]) -> tuple[Any, ...]:
@@ -329,21 +320,20 @@ class ReactiveLogBundle:
             return t[len(t) - self._max_size :]
         return t
 
-    def _v0(self) -> dict[str, Any] | None:
-        return _v0_from_node(self._state)
-
     def append(self, value: Any) -> None:
         cur = self._state.get()
-        t: tuple[Any, ...] = cur.value if isinstance(cur, Versioned) else (cur or ())
+        t: tuple[Any, ...] = cur if isinstance(cur, tuple) else ()
         t = self._trim((*t, value))
-        _push_two_phase(self._state, _bump(cur, t, self._v0()))
+        _push_two_phase(self._state, t)
 
     def append_many(self, values: Sequence[Any]) -> None:
         """Extend log with all *values*, trim once, emit one snapshot."""
+        if not values:
+            return
         cur = self._state.get()
-        t: tuple[Any, ...] = cur.value if isinstance(cur, Versioned) else (cur or ())
+        t: tuple[Any, ...] = cur if isinstance(cur, tuple) else ()
         t = self._trim((*t, *values))
-        _push_two_phase(self._state, _bump(cur, t, self._v0()))
+        _push_two_phase(self._state, t)
 
     def trim_head(self, n: int) -> None:
         """Remove first *n* entries from the log and emit a snapshot.
@@ -354,17 +344,20 @@ class ReactiveLogBundle:
         if n < 0:
             msg = "n must be >= 0"
             raise ValueError(msg)
+        if n == 0:
+            return
         cur = self._state.get()
-        t: tuple[Any, ...] = cur.value if isinstance(cur, Versioned) else (cur or ())
-        v0 = self._v0()
+        t: tuple[Any, ...] = cur if isinstance(cur, tuple) else ()
         if n >= len(t):
-            _push_two_phase(self._state, _bump(cur, (), v0))
+            _push_two_phase(self._state, ())
         else:
-            _push_two_phase(self._state, _bump(cur, t[n:], v0))
+            _push_two_phase(self._state, t[n:])
 
     def clear(self) -> None:
         cur = self._state.get()
-        _push_two_phase(self._state, _bump(cur, (), self._v0()))
+        if isinstance(cur, tuple) and len(cur) == 0:
+            return
+        _push_two_phase(self._state, ())
 
     def tail(self, n: int) -> Node[tuple[Any, ...]]:
         """Last ``n`` entries (or fewer if shorter); updates when the log changes."""
@@ -375,11 +368,11 @@ class ReactiveLogBundle:
 
         def _tail(deps: list[Any], _a: Any) -> tuple[Any, ...]:
             raw = deps[0]
-            t: tuple[Any, ...] = raw.value if isinstance(raw, Versioned) else (raw or ())
+            t: tuple[Any, ...] = raw if isinstance(raw, tuple) else ()
             return t[-n:] if n else ()
 
         raw = self._state.get()
-        t0: tuple[Any, ...] = raw.value if isinstance(raw, Versioned) else (raw or ())
+        t0: tuple[Any, ...] = raw if isinstance(raw, tuple) else ()
         init_tail = t0[-n:] if n else ()
         out = derived([self._state], _tail, initial=init_tail)
         _keepalive_derived(out)
@@ -409,7 +402,7 @@ def reactive_log(
         from graphrefly.extra import reactive_log
         lg = reactive_log([1, 2])
         lg.append(3)
-        assert lg.entries.get().value == (1, 2, 3)
+        assert lg.entries.get() == (1, 2, 3)
         ```
     """
     if max_size is not None and max_size < 1:
@@ -421,9 +414,9 @@ def reactive_log(
     if max_size is not None and len(init) > max_size:
         init = init[len(init) - max_size :]
     inner = state(
-        Versioned(version=0, value=init),
+        init,
         describe_kind="state",
-        equals=_versioned_equals,
+        equals=lambda a, b: a is b,
         name=name,
     )
     return ReactiveLogBundle(_state=inner, entries=inner, _max_size=max_size)
@@ -460,34 +453,33 @@ class ReactiveIndexBundle[K]:
         ```
     """
 
-    _state: Node[Versioned]
+    _state: Node[tuple[_IndexRow[K], ...]]
     by_primary: Node[dict[K, Any]]
-    ordered: Node[Versioned]
-
-    def _v0(self) -> dict[str, Any] | None:
-        return _v0_from_node(self._state)
+    ordered: Node[tuple[_IndexRow[K], ...]]
 
     def upsert(self, primary: K, secondary: Any, value: Any) -> None:
         cur = self._state.get()
-        prev: tuple[_IndexRow[K], ...] = cur.value if isinstance(cur, Versioned) else (cur or ())
+        prev: tuple[_IndexRow[K], ...] = cur if isinstance(cur, tuple) else ()
         rows = [r for r in prev if r.primary != primary]
         row = _IndexRow(primary=primary, secondary=secondary, value=value)
         keys = [_row_key(r) for r in rows]
         pos = bisect_left(keys, _row_key(row))
         rows.insert(pos, row)
-        _push_two_phase(self._state, _bump(cur, tuple(rows), self._v0()))
+        _push_two_phase(self._state, tuple(rows))
 
     def delete(self, primary: K) -> None:
         cur = self._state.get()
-        prev: tuple[_IndexRow[K], ...] = cur.value if isinstance(cur, Versioned) else (cur or ())
+        prev: tuple[_IndexRow[K], ...] = cur if isinstance(cur, tuple) else ()
         rows = [r for r in prev if r.primary != primary]
         if len(rows) == len(prev):
             return
-        _push_two_phase(self._state, _bump(cur, tuple(rows), self._v0()))
+        _push_two_phase(self._state, tuple(rows))
 
     def clear(self) -> None:
         cur = self._state.get()
-        _push_two_phase(self._state, _bump(cur, (), self._v0()))
+        if isinstance(cur, tuple) and len(cur) == 0:
+            return
+        _push_two_phase(self._state, ())
 
 
 def reactive_index(*, name: str | None = None) -> ReactiveIndexBundle[Any]:
@@ -502,19 +494,19 @@ def reactive_index(*, name: str | None = None) -> ReactiveIndexBundle[Any]:
     """
     empty: tuple[_IndexRow[Any], ...] = ()
     inner = state(
-        Versioned(version=0, value=empty),
+        empty,
         describe_kind="state",
-        equals=_versioned_equals,
+        equals=lambda a, b: a is b,
         name=name,
     )
 
     def _ordered(deps: list[Any], _a: Any) -> tuple[_IndexRow[Any], ...]:
         raw = deps[0]
-        return raw.value if isinstance(raw, Versioned) else (raw or ())
+        return raw if isinstance(raw, tuple) else ()
 
     def _by_p(deps: list[Any], _a: Any) -> Any:
         raw = deps[0]
-        rows = raw.value if isinstance(raw, Versioned) else (raw or ())
+        rows = raw if isinstance(raw, tuple) else ()
         return MappingProxyType({r.primary: r.value for r in rows})
 
     by_p = derived([inner], _by_p, initial=MappingProxyType({}))
@@ -529,46 +521,39 @@ def reactive_index(*, name: str | None = None) -> ReactiveIndexBundle[Any]:
 
 @dataclass(frozen=True, slots=True)
 class ReactiveListBundle:
-    """Positional list backed by an immutable versioned tuple snapshot.
+    """Positional list backed by an immutable tuple snapshot.
 
     Attributes:
-        items: Node whose value is a :class:`Versioned` wrapping the current
-            item tuple.
+        items: Node whose value is the current item ``tuple``.
 
     Example:
         ```python
         from graphrefly.extra import reactive_list
         lst = reactive_list([1, 2])
         lst.append(3)
-        assert lst.items.get().value == (1, 2, 3)
+        assert lst.items.get() == (1, 2, 3)
         ```
     """
 
-    _state: Node[Versioned]
-    items: Node[Versioned]
+    _state: Node[tuple[Any, ...]]
+    items: Node[tuple[Any, ...]]
 
     def _cur_tuple(self) -> tuple[Any, ...]:
         raw = self._state.get()
-        return raw.value if isinstance(raw, Versioned) else (raw or ())
-
-    def _v0(self) -> dict[str, Any] | None:
-        return _v0_from_node(self._state)
+        return raw if isinstance(raw, tuple) else ()
 
     def append(self, value: Any) -> None:
-        cur = self._state.get()
         t = self._cur_tuple()
-        _push_two_phase(self._state, _bump(cur, (*t, value), self._v0()))
+        _push_two_phase(self._state, (*t, value))
 
     def insert(self, index: int, value: Any) -> None:
-        cur = self._state.get()
         t = self._cur_tuple()
         if index < 0 or index > len(t):
             msg = "index out of range"
             raise IndexError(msg)
-        _push_two_phase(self._state, _bump(cur, (*t[:index], value, *t[index:]), self._v0()))
+        _push_two_phase(self._state, (*t[:index], value, *t[index:]))
 
     def pop(self, index: int = -1) -> Any:
-        cur = self._state.get()
         t = self._cur_tuple()
         if not t:
             msg = "pop from empty list"
@@ -578,12 +563,13 @@ class ReactiveListBundle:
             msg = "index out of range"
             raise IndexError(msg)
         v = t[i]
-        _push_two_phase(self._state, _bump(cur, (*t[:i], *t[i + 1 :]), self._v0()))
+        _push_two_phase(self._state, (*t[:i], *t[i + 1 :]))
         return v
 
     def clear(self) -> None:
-        cur = self._state.get()
-        _push_two_phase(self._state, _bump(cur, (), self._v0()))
+        if not self._cur_tuple():
+            return
+        _push_two_phase(self._state, ())
 
 
 def reactive_list(
@@ -591,7 +577,7 @@ def reactive_list(
     *,
     name: str | None = None,
 ) -> ReactiveListBundle:
-    """Creates a reactive list backed by an immutable tuple snapshot (versioned).
+    """Creates a reactive list backed by an immutable tuple snapshot.
 
     Args:
         initial: Optional initial sequence.
@@ -602,9 +588,9 @@ def reactive_list(
     """
     init = tuple(initial) if initial is not None else ()
     inner = state(
-        Versioned(version=0, value=init),
+        init,
         describe_kind="state",
-        equals=_versioned_equals,
+        equals=lambda a, b: a is b,
         name=name,
     )
     return ReactiveListBundle(_state=inner, items=inner)
@@ -705,13 +691,13 @@ def log_slice(
 
     def _slice(deps: list[Any], _a: Any) -> tuple[Any, ...]:
         raw = deps[0]
-        t: tuple[Any, ...] = raw.value if isinstance(raw, Versioned) else (raw or ())
+        t: tuple[Any, ...] = raw if isinstance(raw, tuple) else ()
         if stop is None:
             return t[start:]
         return t[start:stop]
 
     raw = log._state.get()
-    t0: tuple[Any, ...] = raw.value if isinstance(raw, Versioned) else (raw or ())
+    t0: tuple[Any, ...] = raw if isinstance(raw, tuple) else ()
     init = t0[start:stop] if stop is not None else t0[start:]
     out = derived([log._state], _slice, initial=init)
     _keepalive_derived(out)
@@ -724,7 +710,6 @@ __all__ = [
     "ReactiveListBundle",
     "ReactiveLogBundle",
     "ReactiveMapBundle",
-    "Versioned",
     "log_slice",
     "pubsub",
     "reactive_index",

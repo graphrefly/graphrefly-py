@@ -35,5 +35,5 @@ A :class:`ReactiveLogBundle` with ``append`` / ``append_many`` /
 from graphrefly.extra import reactive_log
 lg = reactive_log([1, 2])
 lg.append(3)
-assert lg.entries.get().value == (1, 2, 3)
+assert lg.entries.get() == (1, 2, 3)
 ```

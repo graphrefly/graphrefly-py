@@ -1,9 +1,9 @@
 ---
 title: 'reactive_list'
-description: 'Creates a reactive list backed by an immutable tuple snapshot (versioned).'
+description: 'Creates a reactive list backed by an immutable tuple snapshot.'
 ---
 
-Creates a reactive list backed by an immutable tuple snapshot (versioned).
+Creates a reactive list backed by an immutable tuple snapshot.
 
 ## Signature
 

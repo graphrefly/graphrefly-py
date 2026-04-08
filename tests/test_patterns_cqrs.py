@@ -8,7 +8,6 @@ from typing import Any
 import pytest
 
 from graphrefly.core.guard import GuardDenied
-from graphrefly.extra.data_structures import Versioned
 from graphrefly.patterns.cqrs import (
     CqrsEvent,
     CqrsGraph,
@@ -21,9 +20,9 @@ from graphrefly.patterns.cqrs import (
 
 
 def _snap_entries(node_val: object) -> tuple[CqrsEvent, ...]:
-    """Extract entries from a versioned log snapshot."""
-    if isinstance(node_val, Versioned):
-        return tuple(node_val.value)
+    """Extract entries from a log snapshot (now a plain tuple)."""
+    if isinstance(node_val, tuple):
+        return node_val
     return ()
 
 

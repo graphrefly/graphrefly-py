@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Any
 from graphrefly.core.protocol import MessageType
 from graphrefly.core.sugar import derived, effect, state
 from graphrefly.extra.data_structures import (
-    Versioned,
     reactive_list,
     reactive_log,
     reactive_map,
@@ -35,8 +34,8 @@ def _messaging_meta(kind: str, extra: dict[str, Any] | None = None) -> dict[str,
     return out
 
 
-def _keepalive(n: Any) -> None:
-    n.subscribe(lambda _msgs: None)
+def _keepalive(n: Any) -> Any:
+    return n.subscribe(lambda _msgs: None)
 
 
 def _tuple_snapshot(raw: Any) -> tuple[Any, ...]:
@@ -75,8 +74,7 @@ class TopicGraph(Graph):
         self.add("events", self.events)
 
         def compute_latest(deps: list[Any], _actions: Any) -> Any:
-            raw = deps[0]
-            entries = _tuple_snapshot(raw.value if isinstance(raw, Versioned) else ())
+            entries = _tuple_snapshot(deps[0])
             return entries[-1] if len(entries) > 0 else None
 
         self.latest = derived(
@@ -88,15 +86,13 @@ class TopicGraph(Graph):
         )
         self.add("latest", self.latest)
         self.connect("events", "latest")
-        _keepalive(self.latest)
+        self.add_disposer(_keepalive(self.latest))
 
     def publish(self, value: Any) -> None:
         self._log.append(value)
 
     def retained(self) -> tuple[Any, ...]:
-        snap = self.events.get()
-        entries = _tuple_snapshot(snap.value if isinstance(snap, Versioned) else ())
-        return entries
+        return _tuple_snapshot(self.events.get())
 
 
 class SubscriptionGraph(Graph):
@@ -133,11 +129,8 @@ class SubscriptionGraph(Graph):
         self.add("cursor", self.cursor)
 
         def compute_available(deps: list[Any], _actions: Any) -> tuple[Any, ...]:
-            source_snapshot = deps[0]
             idx = max(0, int(deps[1] if deps[1] is not None else 0))
-            entries = _tuple_snapshot(
-                source_snapshot.value if isinstance(source_snapshot, Versioned) else (),
-            )
+            entries = _tuple_snapshot(deps[0])
             return entries[idx:]
 
         self.available = derived(
@@ -151,8 +144,8 @@ class SubscriptionGraph(Graph):
         self.connect("topic::events", "source")
         self.connect("source", "available")
         self.connect("cursor", "available")
-        _keepalive(self.source)
-        _keepalive(self.available)
+        self.add_disposer(_keepalive(self.source))
+        self.add_disposer(_keepalive(self.available))
 
     def ack(self, count: int | None = None) -> int:
         available = _tuple_snapshot(self.available.get())
@@ -215,24 +208,25 @@ class JobQueueGraph(Graph):
         self._jobs = reactive_map(name="jobs")
         self._seq = 0
         self.pending = self._pending.items
-        self.jobs = self._jobs.data
+        self.jobs = self._jobs.entries
         self.add("pending", self.pending)
         self.add("jobs", self.jobs)
         self.depth = derived(
             [self.pending],
-            lambda deps, _a: len(deps[0].value if isinstance(deps[0], Versioned) else ()),
+            lambda deps, _a: len(_tuple_snapshot(deps[0])),
             initial=0,
             name="depth",
             meta=_messaging_meta("queue_depth"),
         )
         self.add("depth", self.depth)
         self.connect("pending", "depth")
-        _keepalive(self.depth)
+        self.add_disposer(_keepalive(self.depth))
 
     def _job_get(self, job_id: str) -> JobEnvelope | None:
-        snapshot = self._jobs.data.get()
-        rows = snapshot.value if isinstance(snapshot, Versioned) else {}
-        return rows.get(job_id)
+        snapshot = self._jobs.entries.get()
+        if snapshot is None:
+            return None
+        return snapshot.get(job_id) if isinstance(snapshot, MappingProxyType) else None
 
     def enqueue(
         self,
@@ -263,8 +257,7 @@ class JobQueueGraph(Graph):
             return ()
         out: list[JobEnvelope] = []
         while len(out) < max_items:
-            pending_snapshot = self.pending.get()
-            ids = pending_snapshot.value if isinstance(pending_snapshot, Versioned) else ()
+            ids = _tuple_snapshot(self.pending.get())
             if len(ids) == 0:
                 break
             job_id = self._pending.pop(0)
@@ -341,14 +334,14 @@ class JobFlowGraph(Graph):
         self.add("completed", self.completed)
         self.completed_count = derived(
             [self.completed],
-            lambda deps, _a: len(deps[0].value if isinstance(deps[0], Versioned) else ()),
+            lambda deps, _a: len(_tuple_snapshot(deps[0])),
             initial=0,
             name="completed_count",
             meta=_messaging_meta("job_flow_completed_count"),
         )
-        self.add("completed_count", self.completed_count)
-        self.connect("completed", "completed_count")
-        _keepalive(self.completed_count)
+        self.add("completedCount", self.completed_count)
+        self.connect("completed", "completedCount")
+        self.add_disposer(_keepalive(self.completed_count))
 
         raw_max = DEFAULT_MAX_PER_PUMP if max_per_pump is None else max_per_pump
         max_items = max(1, _require_non_negative_int(raw_max, label="job flow max_per_pump"))
@@ -393,7 +386,7 @@ class JobFlowGraph(Graph):
             )
             self.add(f"pump_{stage}", pump)
             self.connect(f"{stage}::pending", f"pump_{stage}")
-            _keepalive(pump)
+            self.add_disposer(_keepalive(pump))
 
     def stages(self) -> tuple[str, ...]:
         return self._stage_names
@@ -415,9 +408,7 @@ class JobFlowGraph(Graph):
         return self.queue(first).enqueue(payload, job_id=job_id, metadata=metadata)
 
     def retained_completed(self) -> tuple[JobEnvelope, ...]:
-        snap = self.completed.get()
-        entries = _tuple_snapshot(snap.value if isinstance(snap, Versioned) else ())
-        return tuple(entries)
+        return tuple(_tuple_snapshot(self.completed.get()))
 
 
 class TopicBridgeGraph(Graph):
@@ -446,7 +437,7 @@ class TopicBridgeGraph(Graph):
             describe_kind="state",
             meta=_messaging_meta("topic_bridge_count"),
         )
-        self.add("bridged_count", self.bridged_count)
+        self.add("bridgedCount", self.bridged_count)
 
         raw_max = DEFAULT_MAX_PER_PUMP if max_per_pump is None else max_per_pump
         max_items = max(1, _require_non_negative_int(raw_max, label="topic bridge max_per_pump"))
@@ -476,7 +467,7 @@ class TopicBridgeGraph(Graph):
         )
         self.add("pump", pump)
         self.connect("subscription::available", "pump")
-        _keepalive(pump)
+        self.add_disposer(_keepalive(pump))
 
 
 def topic(

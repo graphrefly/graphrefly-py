@@ -103,7 +103,7 @@ def test_topic_bridge_relays_source_events_to_target() -> None:
     source.publish(3)
     source.publish(4)
     assert target.retained() == (3, 4)
-    assert bridge.get("bridged_count") == 2
+    assert bridge.get("bridgedCount") == 2
 
 
 def test_topic_bridge_supports_map_and_drop() -> None:
@@ -127,7 +127,7 @@ def test_job_flow_auto_advances_jobs_to_completed() -> None:
     flow.enqueue(10)
     flow.enqueue(20)
     assert tuple(job.payload for job in flow.retained_completed()) == (10, 20)
-    assert flow.get("completed_count") == 2
+    assert flow.get("completedCount") == 2
     assert flow.queue("incoming").get("depth") == 0
     assert flow.queue("work").get("depth") == 0
     assert flow.queue("done").get("depth") == 0

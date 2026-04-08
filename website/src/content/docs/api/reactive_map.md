@@ -27,7 +27,7 @@ def reactive_map(
 ## Returns
 
 A :class:`ReactiveMapBundle` with imperative ``set`` / ``delete`` / ``clear`` /
-``prune`` and a ``data`` node exposing the live snapshot.
+``prune_expired`` and an ``entries`` node exposing the live snapshot.
 
 ## Basic Usage
 
@@ -35,5 +35,5 @@ A :class:`ReactiveMapBundle` with imperative ``set`` / ``delete`` / ``clear`` /
 from graphrefly.extra import reactive_map
 m = reactive_map(default_ttl=60.0, max_size=100)
 m.set("x", 1)
-assert m.data.get().value["x"] == 1
+assert m.entries.get()["x"] == 1
 ```

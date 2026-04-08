@@ -155,7 +155,9 @@ DEFAULT_DECAY_RATE: float = math.log(2) / (7 * 24 * 3600)
 class PrioritySignals:
     """Configurable signals for priority scoring."""
 
-    severity_weights: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_SEVERITY_WEIGHTS))
+    severity_weights: dict[str, float] = field(
+        default_factory=lambda: dict(DEFAULT_SEVERITY_WEIGHTS)
+    )
     decay_rate: float = DEFAULT_DECAY_RATE
     effectiveness_threshold: float = 0.7
     effectiveness_boost: float = 15.0

@@ -976,6 +976,14 @@ def node(
         **kwargs: Any option key accepted by :class:`NodeImpl` (e.g. ``name``,
             ``initial``, ``equals``, ``guard``, ``thread_safe``).
 
+    **Equality (``equals``):** The default ``equals`` uses identity (``is``)
+    for immutable values.  If your node produces *mutable* dep values
+    (dicts, lists) that are modified in place, provide a custom ``equals``
+    function — otherwise downstream nodes may skip updates because the
+    identity check sees the *same* object::
+
+        node([source], compute_fn, equals=lambda a, b: a == b)
+
     Returns:
         A new :class:`NodeImpl` instance.
 

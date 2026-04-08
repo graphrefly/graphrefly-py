@@ -28,10 +28,9 @@ def node(
 
 | Parameter | Description |
 |-----------|-------------|
-| `deps_or_fn` | Either a sequence of upstream :class:`NodeImpl` dependencies, a bare compute function (producer), an options dict, or ``None``. |
-| `fn_or_opts` | Compute function (when ``deps_or_fn`` is a dep list) or an options dict. |
-| `opts_arg` | Additional options dict when both deps and fn are provided positionally. |
-| `kwargs` | Any option key accepted by :class:`NodeImpl` (e.g. ``name``, ``initial``, ``equals``, ``guard``, ``thread_safe``). |
+| `deps_or_fn` | Either a sequence of upstream :class:`NodeImpl` dependencies, a bare compute function (producer), an options dict, or ``None``. fn_or_opts: Compute function (when ``deps_or_fn`` is a dep list) or an options dict. opts_arg: Additional options dict when both deps and fn are provided positionally. **kwargs: Any option key accepted by :class:`NodeImpl` (e.g. ``name``, ``initial``, ``equals``, ``guard``, ``thread_safe``). |
+| `Equality (``equals``)` | ** The default ``equals`` uses identity (``is``) for immutable values.  If your node produces *mutable* dep values (dicts, lists) that are modified in place, provide a custom ``equals`` function — otherwise downstream nodes may skip updates because the |
+| `identity check sees the *same* object` | :  node([source], compute_fn, equals=lambda a, b: a == b) |
 
 ## Returns
 

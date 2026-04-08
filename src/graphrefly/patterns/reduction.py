@@ -350,7 +350,7 @@ def funnel(
         )
         g.add(bridge_name, br)
         g.connect(prev_output_path, bridge_name)
-        br.subscribe(lambda _: None)  # keepalive: activate the bridge
+        g.add_disposer(br.subscribe(lambda _: None))  # keepalive: activate the bridge
 
         prev_output_path = f"{stage.name}::output"
 
@@ -455,7 +455,7 @@ def feedback(
     )
     graph.add(feedback_effect_name, feedback_effect)
     graph.connect(condition, feedback_effect_name)
-    feedback_effect.subscribe(lambda _: None)  # keepalive: activate
+    graph.add_disposer(feedback_effect.subscribe(lambda _: None))  # keepalive: activate
 
     return graph
 

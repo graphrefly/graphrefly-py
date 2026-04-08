@@ -132,7 +132,6 @@ Reference pages for modules listed in `website/scripts/gen_api_docs.py` (`EXTRA_
 - [ReactiveListBundle](./ReactiveListBundle/)
 - [ReactiveLogBundle](./ReactiveLogBundle/)
 - [ReactiveMapBundle](./ReactiveMapBundle/)
-- [Versioned](./Versioned/)
 - [log_slice](./log_slice/)
 - [pubsub](./pubsub/)
 - [reactive_index](./reactive_index/)

@@ -13,6 +13,7 @@ import re as _re
 import threading
 from collections.abc import AsyncIterable, Iterable
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
 from graphrefly.core.cancellation import cancellation_token
@@ -464,7 +465,7 @@ def prompt_node(
 class ChatStreamGraph(Graph):
     """Reactive chat message stream with role tracking."""
 
-    __slots__ = ("_keepalive_subs", "_log", "messages", "latest", "message_count")
+    __slots__ = ("_log", "messages", "latest", "message_count")
 
     def __init__(
         self,
@@ -474,14 +475,12 @@ class ChatStreamGraph(Graph):
         max_messages: int | None = None,
     ) -> None:
         super().__init__(name, opts)
-        self._keepalive_subs: list[Any] = []
         self._log = reactive_log(max_size=max_messages, name="messages")
         self.messages = self._log.entries
         self.add("messages", self.messages)
 
         def compute_latest(deps: list[Any], _actions: Any) -> Any:
-            raw = deps[0]
-            entries = _tuple_snapshot(raw.value if hasattr(raw, "value") else ())
+            entries = _tuple_snapshot(deps[0])
             return entries[-1] if entries else None
 
         self.latest: NodeImpl[ChatMessage | None] = derived(
@@ -493,12 +492,10 @@ class ChatStreamGraph(Graph):
         )
         self.add("latest", self.latest)
         self.connect("messages", "latest")
-        self._keepalive_subs.append(_keepalive(self.latest))
+        self.add_disposer(_keepalive(self.latest))
 
         def compute_count(deps: list[Any], _actions: Any) -> int:
-            raw = deps[0]
-            entries = _tuple_snapshot(raw.value if hasattr(raw, "value") else ())
-            return len(entries)
+            return len(_tuple_snapshot(deps[0]))
 
         self.message_count: NodeImpl[int] = derived(
             [self.messages],
@@ -509,7 +506,7 @@ class ChatStreamGraph(Graph):
         )
         self.add("messageCount", self.message_count)
         self.connect("messages", "messageCount")
-        self._keepalive_subs.append(_keepalive(self.message_count))
+        self.add_disposer(_keepalive(self.message_count))
 
     def append(
         self,
@@ -543,17 +540,7 @@ class ChatStreamGraph(Graph):
 
     def all_messages(self) -> tuple[ChatMessage, ...]:
         """Return all messages as a tuple."""
-        raw = self.messages.get()
-        if raw is None or not hasattr(raw, "value"):
-            return ()
-        return _tuple_snapshot(raw.value)
-
-    def destroy(self) -> None:
-        for unsub in self._keepalive_subs:
-            unsub()
-        self._keepalive_subs.clear()
-        super().destroy()
-
+        return _tuple_snapshot(self.messages.get())
 
 def chat_stream(
     name: str,
@@ -573,7 +560,7 @@ def chat_stream(
 class ToolRegistryGraph(Graph):
     """Tool definition store + dispatch."""
 
-    __slots__ = ("_keepalive_subs", "definitions", "schemas")
+    __slots__ = ("definitions", "schemas")
 
     def __init__(
         self,
@@ -582,7 +569,6 @@ class ToolRegistryGraph(Graph):
         opts: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(name, opts)
-        self._keepalive_subs: list[Any] = []
 
         self.definitions: NodeImpl[Mapping[str, ToolDefinition]] = state(
             {},
@@ -607,7 +593,7 @@ class ToolRegistryGraph(Graph):
         )
         self.add("schemas", self.schemas)
         self.connect("definitions", "schemas")
-        self._keepalive_subs.append(_keepalive(self.schemas))
+        self.add_disposer(_keepalive(self.schemas))
 
     def register(self, tool: ToolDefinition) -> None:
         """Register a tool definition."""
@@ -638,13 +624,6 @@ class ToolRegistryGraph(Graph):
         """Get a tool definition by name."""
         defs = self.definitions.get() or {}
         return defs.get(name)
-
-    def destroy(self) -> None:
-        for unsub in self._keepalive_subs:
-            unsub()
-        self._keepalive_subs.clear()
-        super().destroy()
-
 
 def tool_registry(
     name: str,
@@ -982,7 +961,6 @@ class AgentMemoryGraph(Graph):
     """
 
     __slots__ = (
-        "_keepalive_subs",
         "compact",
         "distill_bundle",
         "kg",
@@ -1021,7 +999,6 @@ class AgentMemoryGraph(Graph):
         opts: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(name, opts)
-        self._keepalive_subs: list[Callable[[], None]] = []
 
         # --- Extract function resolution ---
         raw_extract: Callable[[Any, Mapping[str, Any]], Any]
@@ -1083,7 +1060,7 @@ class AgentMemoryGraph(Graph):
         self.compact = bundle.compact
         self.size_node = bundle.size
 
-        self.add("store", bundle.store.data)
+        self.add("store", bundle.store.entries)
         self.add("compact", bundle.compact)
         self.add("size", bundle.size)
         self.connect("store", "compact")
@@ -1116,7 +1093,7 @@ class AgentMemoryGraph(Graph):
             def _tier_of(key: str) -> str:
                 if key in permanent_keys:
                     return "permanent"
-                snap = bundle.store.data.get()
+                snap = bundle.store.entries.get()
                 store_map = _extract_store_map(snap)
                 return "active" if key in store_map else "archived"
 
@@ -1124,7 +1101,7 @@ class AgentMemoryGraph(Graph):
                 permanent_keys.add(key)
                 permanent.upsert(key, value)
 
-            store_node = bundle.store.data
+            store_node = bundle.store.entries
             ctx_node = from_any(context) if context is not None else state(None)
 
             # Track entry creation times for accurate decay age calculation
@@ -1185,7 +1162,7 @@ class AgentMemoryGraph(Graph):
                             bundle.store.delete(key)
 
             tier_eff = effect([store_node, ctx_node], _classify_tiers)
-            self._keepalive_subs.append(tier_eff.subscribe(lambda _msgs: None))
+            self.add_disposer(tier_eff.subscribe(lambda _msgs: None))
 
             archive_handle = None
             if "archive_adapter" in tiers:
@@ -1207,7 +1184,7 @@ class AgentMemoryGraph(Graph):
             _entity_fn = entity_fn
             _vectors = self.vectors
             _kg = self.kg
-            store_node = bundle.store.data
+            store_node = bundle.store.entries
 
             def _index(deps: list[Any], _actions: Any) -> None:
                 snap = deps[0]
@@ -1228,7 +1205,7 @@ class AgentMemoryGraph(Graph):
                                 )
 
             idx_eff = effect([store_node], _index)
-            self._keepalive_subs.append(idx_eff.subscribe(lambda _msgs: None))
+            self.add_disposer(idx_eff.subscribe(lambda _msgs: None))
 
         # --- Retrieval pipeline (optional) ---
         self.retrieval: Node[Any] | None = None
@@ -1252,7 +1229,7 @@ class AgentMemoryGraph(Graph):
             self.add("retrievalTrace", trace_state)
             self.retrieval_trace = trace_state
 
-            store_node = bundle.store.data
+            store_node = bundle.store.entries
 
             # Last trace captured during retrieval (no side-effect in derived)
             last_trace: list[RetrievalTrace | None] = [None]
@@ -1345,7 +1322,7 @@ class AgentMemoryGraph(Graph):
             self.add("retrieval", retrieval_derived)
             self.connect("retrievalQuery", "retrieval")
             self.connect("store", "retrieval")
-            self._keepalive_subs.append(retrieval_derived.subscribe(lambda _msgs: None))
+            self.add_disposer(retrieval_derived.subscribe(lambda _msgs: None))
             self.retrieval = retrieval_derived
 
             def _do_retrieve(query: RetrievalQuery) -> tuple[RetrievalEntry, ...]:
@@ -1358,22 +1335,12 @@ class AgentMemoryGraph(Graph):
 
             self.retrieve = _do_retrieve
 
-    def destroy(self) -> None:
-        for unsub in self._keepalive_subs:
-            unsub()
-        self._keepalive_subs.clear()
-        super().destroy()
-
-
 def _extract_store_map(snap: Any) -> dict[str, Any]:
     """Extract the key→value mapping from a reactive_map snapshot."""
     if snap is None:
         return {}
-    if hasattr(snap, "value") and hasattr(snap.value, "map"):
-        m = snap.value.map
-        return dict(m) if m is not None else {}
-    if isinstance(snap, dict):
-        return snap
+    if isinstance(snap, MappingProxyType):
+        return dict(snap)
     return {}
 
 

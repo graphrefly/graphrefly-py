@@ -113,11 +113,9 @@ class DistillBundle:
 
 
 def _snapshot_map(store: ReactiveMapBundle) -> Mapping[str, Any]:
-    snap = store.data.get()
+    snap = store.entries.get()
     if snap is None:
         return {}
-    if hasattr(snap, "value"):
-        return cast("Mapping[str, Any]", snap.value)
     return cast("Mapping[str, Any]", snap)
 
 
@@ -218,9 +216,9 @@ def distill(
         )
 
     compact = derived(
-        [store.data, context_node],
+        [store.entries, context_node],
         lambda deps, _a: _pack_compact(
-            deps[0].value if hasattr(deps[0], "value") else deps[0],
+            deps[0],
             deps[1],
             score,
             cost,
@@ -228,8 +226,8 @@ def distill(
         ),
     )
     size = derived(
-        [store.data],
-        lambda deps, _a: len(deps[0].value if hasattr(deps[0], "value") else deps[0]),
+        [store.entries],
+        lambda deps, _a: len(deps[0]) if deps[0] is not None else 0,
         initial=0,
     )
     compact.subscribe(lambda _msgs: None)
@@ -260,8 +258,9 @@ def _compute_evictions(
     evict: Callable[[str, Any], Any],
 ) -> list[str]:
     out: list[str] = []
-    current = get(store.data)
-    snapshot = current.value if hasattr(current, "value") else current
+    snapshot = get(store.entries)
+    if snapshot is None:
+        return out
     for key, mem in snapshot.items():
         verdict = evict(key, mem)
         if isinstance(verdict, Node):

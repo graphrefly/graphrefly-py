@@ -372,6 +372,7 @@ class Graph:
         "_annotations",
         "_auto_checkpoint_disposers",
         "_default_versioning_level",
+        "_disposers",
         "_edges",
         "_lock",
         "_mounts",
@@ -399,11 +400,24 @@ class Graph:
         self._annotations: dict[str, str] = {}
         self._trace_ring: deque[TraceEntry] = deque(maxlen=1000)
         self._auto_checkpoint_disposers: set[Callable[[], None]] = set()
+        self._disposers: set[Callable[[], None]] = set()
         self._default_versioning_level: int | None = None
 
     @property
     def name(self) -> str:
         return self._name
+
+    def add_disposer(self, fn: Callable[[], None]) -> Callable[[], None]:
+        """Register a cleanup function to run on :meth:`destroy`.
+
+        Returns a remover that deregisters the disposer (idempotent).
+        """
+        self._disposers.add(fn)
+
+        def remove() -> None:
+            self._disposers.discard(fn)
+
+        return remove
 
     @classmethod
     def register_factory(
@@ -703,9 +717,10 @@ class Graph:
         _signal_graph(self, messages, set(), normalize_actor(actor), "", internal=internal)
 
     def destroy(self) -> None:
-        """Teardown all nodes and clear every registry in this graph and its mounts.
+        """Drain disposers, teardown all nodes, and clear every registry.
 
-        Sends ``[[TEARDOWN]]`` to every node in the same visitation order as
+        Drains disposers (registered via :meth:`add_disposer`) first, then sends
+        ``[[TEARDOWN]]`` to every node in the same visitation order as
         :meth:`signal` (GRAPHREFLY-SPEC §3.7), then recursively clears mounted subgraphs.
 
         Example:
@@ -716,6 +731,12 @@ class Graph:
             g.destroy()
             ```
         """
+        # Drain disposers (keepalive unsubs etc.) BEFORE TEARDOWN so that
+        # internal effect nodes are disconnected before the cascade fires.
+        for dispose in list(self._disposers):
+            with suppress(Exception):
+                dispose()
+        self._disposers.clear()
         _signal_graph(
             self,
             [(MessageType.TEARDOWN,)],

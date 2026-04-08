@@ -224,7 +224,7 @@ def harness_loop(
             queue_topics[route].publish(item)
 
     _router = effect([triage_node], _route)
-    _router.subscribe(lambda _msgs: None)  # keepalive (COMPOSITION-GUIDE §1)
+    _router_unsub = _router.subscribe(lambda _msgs: None)  # keepalive (COMPOSITION-GUIDE §1)
 
     # --- Stage 4: GATE ---
     gate_graph = Graph("gates")
@@ -236,11 +236,16 @@ def harness_loop(
 
         if config.gated:
             gate_graph.add(f"{route}/source", topic.latest)
+            max_pending = (
+                int(config.max_pending)
+                if config.max_pending != float("inf")
+                else 2**31
+            )
             ctrl = gate(
                 gate_graph,
                 f"{route}/gate",
                 f"{route}/source",
-                max_pending=int(config.max_pending) if config.max_pending != float("inf") else 2**31,
+                max_pending=max_pending,
                 start_open=config.start_open,
             )
             gate_controllers[route] = ctrl
@@ -281,7 +286,11 @@ def harness_loop(
 
     _verify_prompt = verify_prompt or (
         lambda execution, item: DEFAULT_VERIFY_PROMPT.format(
-            execution=json.dumps(execution, default=str) if not isinstance(execution, str) else execution,
+            execution=(
+                json.dumps(execution, default=str)
+                if not isinstance(execution, str)
+                else execution
+            ),
             item=json.dumps(item, default=str) if not isinstance(item, str) else item,
         )
     )
@@ -319,9 +328,21 @@ def harness_loop(
         findings = vo.get("findings", ()) if isinstance(vo, dict) else getattr(vo, "findings", ())
 
         # Assemble full ExecutionResult from LLM output + context
-        rc = item.get("root_cause") if isinstance(item, dict) else getattr(item, "root_cause", None)
-        iv = item.get("intervention") if isinstance(item, dict) else getattr(item, "intervention", None)
-        summary = item.get("summary", str(item)) if isinstance(item, dict) else getattr(item, "summary", str(item))
+        rc = (
+            item.get("root_cause")
+            if isinstance(item, dict)
+            else getattr(item, "root_cause", None)
+        )
+        iv = (
+            item.get("intervention")
+            if isinstance(item, dict)
+            else getattr(item, "intervention", None)
+        )
+        summary = (
+            item.get("summary", str(item))
+            if isinstance(item, dict)
+            else getattr(item, "summary", str(item))
+        )
         key = _base_summary(summary)
 
         if verified:
@@ -331,7 +352,11 @@ def harness_loop(
             return
 
         # Failed verification
-        err_class = vo.get("error_class") if isinstance(vo, dict) else getattr(vo, "error_class", None)
+        err_class = (
+            vo.get("error_class")
+            if isinstance(vo, dict)
+            else getattr(vo, "error_class", None)
+        )
         if not err_class:
             err_class = classify_error(
                 ExecutionResult(
@@ -346,9 +371,12 @@ def harness_loop(
         if err_class == "self-correctable" and retry_count < max_retries:
             retry_tracker[key] = retry_count + 1
             if isinstance(item, TriagedItem):
+                prev_findings = "; ".join(findings)
                 retry_item = replace(
                     item,
-                    summary=f"[RETRY {retry_count + 1}/{max_retries}] {key} — Previous: {'; '.join(findings)}",
+                    summary=(
+                        f"[RETRY {retry_count + 1}/{max_retries}] {key} — Previous: {prev_findings}"
+                    ),
                 )
             else:
                 retry_item = item
@@ -363,8 +391,16 @@ def harness_loop(
             item_reingestions = reingestion_tracker.get(key, 0)
             if item_reingestions < _max_reingestions:
                 reingestion_tracker[key] = item_reingestions + 1
-                areas = item.get("affects_areas", ()) if isinstance(item, dict) else getattr(item, "affects_areas", ())
-                eval_tasks = item.get("affects_eval_tasks") if isinstance(item, dict) else getattr(item, "affects_eval_tasks", None)
+                areas = (
+                    item.get("affects_areas", ())
+                    if isinstance(item, dict)
+                    else getattr(item, "affects_areas", ())
+                )
+                eval_tasks = (
+                    item.get("affects_eval_tasks")
+                    if isinstance(item, dict)
+                    else getattr(item, "affects_eval_tasks", None)
+                )
                 intake.publish(
                     IntakeItem(
                         source="eval",
@@ -378,7 +414,7 @@ def harness_loop(
                 )
 
     _retry_effect = effect([verify_context], _fast_retry)
-    _retry_effect.subscribe(lambda _msgs: None)  # keepalive (COMPOSITION-GUIDE §1)
+    _retry_unsub = _retry_effect.subscribe(lambda _msgs: None)  # keepalive (COMPOSITION-GUIDE §1)
 
     # --- Assemble HarnessGraph ---
     harness = HarnessGraph(
@@ -391,6 +427,11 @@ def harness_loop(
         retry_tracker=retry_tracker,
         reingestion_tracker=reingestion_tracker,
     )
+
+    # Register keepalive disposers
+    harness.add_disposer(_router_unsub)
+    harness.add_disposer(_retry_unsub)
+    harness.add_disposer(strat.dispose)
 
     # Mount subgraphs
     harness.mount("intake", intake)

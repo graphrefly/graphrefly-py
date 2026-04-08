@@ -659,6 +659,7 @@ def gate(
     internal.add("count", count_node)
     internal.connect("pending", "count")
     graph.mount(f"{name}_state", internal)
+    graph.add_disposer(count_node.subscribe(lambda _: None))
 
     # Imperative controls --------------------------------------------------
     def _assert_not_torn(method: str) -> None:

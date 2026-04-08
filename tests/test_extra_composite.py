@@ -85,7 +85,7 @@ def test_distill_extracts_and_compacts() -> None:
         budget=10,
     )
     src.down([(MessageType.DATA, "beta")])
-    assert bundle.store.data.get().value["beta"]["text"] == "beta"
+    assert bundle.store.entries.get()["beta"]["text"] == "beta"
     assert bundle.size.get() >= 1
     assert any(entry.key == "beta" for entry in bundle.compact.get())
 
@@ -102,9 +102,9 @@ def test_distill_reactive_eviction() -> None:
         evict=lambda _key, _mem: evict_toggle,
     )
     src.down([(MessageType.DATA, "keep-me")])
-    assert "keep-me" in bundle.store.data.get().value
+    assert "keep-me" in bundle.store.entries.get()
     evict_toggle.down([(MessageType.DATA, True)])
-    assert "keep-me" not in bundle.store.data.get().value
+    assert "keep-me" not in bundle.store.entries.get()
 
 
 def test_distill_consolidates_from_trigger_and_is_atomic() -> None:
@@ -131,8 +131,8 @@ def test_distill_consolidates_from_trigger_and_is_atomic() -> None:
     consolidate_trigger.down([(MessageType.DATA, True)])
     unsub()
 
-    assert "seed" not in bundle.store.data.get().value
-    assert "merged" in bundle.store.data.get().value
+    assert "seed" not in bundle.store.entries.get()
+    assert "merged" in bundle.store.entries.get()
     assert all(size >= 1 for size in sizes)
 
 
@@ -147,7 +147,7 @@ def test_distill_handles_invalid_evict_type_without_side_effects() -> None:
         evict=lambda _key, _mem: "bad",
     )
     src.down([(MessageType.DATA, "y")])
-    assert "x" in bundle.store.data.get().value
+    assert "x" in bundle.store.entries.get()
 
 
 def test_distill_remove_only_extraction_works() -> None:
@@ -164,7 +164,7 @@ def test_distill_remove_only_extraction_works() -> None:
         budget=10,
     )
     src.down([(MessageType.DATA, "run")])
-    assert "seed" not in bundle.store.data.get().value
+    assert "seed" not in bundle.store.entries.get()
 
 
 def test_distill_accepts_map_options_dict() -> None:
@@ -179,4 +179,4 @@ def test_distill_accepts_map_options_dict() -> None:
     )
     src.down([(MessageType.DATA, "beta")])
     src.down([(MessageType.DATA, "gamma")])
-    assert "alpha" not in bundle.store.data.get().value
+    assert "alpha" not in bundle.store.entries.get()

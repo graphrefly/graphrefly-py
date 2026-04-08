@@ -21,7 +21,7 @@ from graphrefly.core.guard import policy
 from graphrefly.core.node import node
 from graphrefly.core.protocol import MessageType, batch
 from graphrefly.core.sugar import derived, state
-from graphrefly.extra.data_structures import Versioned, reactive_log
+from graphrefly.extra.data_structures import reactive_log
 from graphrefly.graph.graph import Graph
 
 if TYPE_CHECKING:
@@ -388,9 +388,7 @@ class CqrsGraph(Graph):
         def compute(deps: list[Any], _actions: Any) -> Any:
             all_events: list[CqrsEvent] = []
             for dep in deps:
-                snap = dep
-                entries = _tuple_snapshot(snap.value if isinstance(snap, Versioned) else ())
-                all_events.extend(entries)
+                all_events.extend(_tuple_snapshot(dep))
             all_events.sort(key=lambda e: (e.timestamp_ns, e.seq))
             return reducer(captured_initial, all_events)
 
@@ -448,9 +446,8 @@ class CqrsGraph(Graph):
             saga_n = saga_ref[0]
             err_node = saga_n.meta["error"]
             for i, dep in enumerate(deps):
-                snap = dep
                 ename = event_names[i]
-                entries = _tuple_snapshot(snap.value if isinstance(snap, Versioned) else ())
+                entries = _tuple_snapshot(dep)
                 last_count = last_counts.get(ename, 0)
                 if len(entries) > last_count:
                     new_entries = entries[last_count:]

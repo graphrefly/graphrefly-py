@@ -1848,6 +1848,15 @@ def from_redis_stream(
 
     Uses XREAD with BLOCK to reactively consume stream entries.
 
+    **Lifecycle notes:**
+
+    - This source intentionally **never emits** ``COMPLETE``. Long-lived
+      stream consumers are expected to run indefinitely; completion would
+      tear down downstream operators prematurely.
+    - The caller **owns the Redis client lifecycle**. ``from_redis_stream``
+      does not close or disconnect the client on teardown — call
+      ``client.close()`` yourself when the graph is destroyed.
+
     Args:
         client: Redis client instance with ``xread`` method (caller owns connection).
         key: Redis stream key.

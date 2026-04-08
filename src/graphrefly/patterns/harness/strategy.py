@@ -6,11 +6,12 @@ Pure-computation derived nodes — no LLM, no async.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from graphrefly.core.clock import monotonic_ns
 from graphrefly.core.sugar import derived
-from graphrefly.extra.data_structures import Versioned, reactive_map
+from graphrefly.extra.data_structures import reactive_map
 from graphrefly.patterns.memory import decay
 
 from .types import (
@@ -42,7 +43,7 @@ class StrategyModelBundle:
     """Reactive node — current strategy map."""
 
     _map: Any  # ReactiveMapBundle (avoid exposing internal type)
-    _unsub: Any  # subscription handle
+    _unsub: list[Any]  # [unsub_fn] or [] — mutable container so frozen-safe
 
     def _read(self, key: StrategyKey) -> StrategyEntry | None:
         """Read a value from the underlying reactive map."""
@@ -71,6 +72,12 @@ class StrategyModelBundle:
         """Look up effectiveness for a specific pair."""
         return self._read(strategy_key(root_cause, intervention))
 
+    def dispose(self) -> None:
+        """Clean up keepalive subscription (idempotent)."""
+        if self._unsub:
+            self._unsub[0]()
+            self._unsub.clear()
+
 
 def strategy_model() -> StrategyModelBundle:
     """Create a strategy model tracking ``root_cause × intervention → success_rate``.
@@ -81,9 +88,8 @@ def strategy_model() -> StrategyModelBundle:
 
     def _compute(deps: list[Any], _actions: Any) -> StrategySnapshot:
         raw = deps[0]
-        # ReactiveMapBundle.data is a Versioned whose value is a MappingProxyType
-        mapping = raw.value if isinstance(raw, Versioned) else {}
-        return dict(mapping)
+        # ReactiveMapBundle.data is now a MappingProxyType directly
+        return dict(raw) if isinstance(raw, MappingProxyType) else {}
 
     def _strategy_equals(a: StrategySnapshot, b: StrategySnapshot) -> bool:
         if len(a) != len(b):
@@ -94,12 +100,12 @@ def strategy_model() -> StrategyModelBundle:
                 return False
         return True
 
-    snapshot = derived([_map.data], _compute, name="strategy-model", equals=_strategy_equals)
+    snapshot = derived([_map.entries], _compute, name="strategy-model", equals=_strategy_equals)
 
     # Keep alive so get() works without external subscriber
     unsub = snapshot.subscribe(lambda _msgs: None)
 
-    return StrategyModelBundle(node=snapshot, _map=_map, _unsub=unsub)
+    return StrategyModelBundle(node=snapshot, _map=_map, _unsub=[unsub])
 
 
 # ---------------------------------------------------------------------------

@@ -7,6 +7,11 @@ Map each outer value to an inner node; subscribe to every inner concurrently (me
 
 Completes when the outer has completed and every inner subscription has ended.
 
+**ERROR handling:** Inner errors propagate downstream as ``ERROR`` messages
+but do *not* cancel sibling inners. An outer ``ERROR`` cancels all active
+inners immediately. This is intentional for parallel work (e.g. concurrent
+tool calls where one failure should not abort the others).
+
 ## Signature
 
 ```python
