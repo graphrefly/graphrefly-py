@@ -99,9 +99,7 @@ def graph_profile(
 
     total_value_size_bytes = sum(p.value_size_bytes for p in profiles)
 
-    hotspots = tuple(
-        sorted(profiles, key=lambda p: p.value_size_bytes, reverse=True)[:top_n]
-    )
+    hotspots = tuple(sorted(profiles, key=lambda p: p.value_size_bytes, reverse=True)[:top_n])
 
     return GraphProfileResult(
         node_count=len(profiles),

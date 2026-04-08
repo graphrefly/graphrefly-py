@@ -47,7 +47,8 @@ class StrategyModelBundle:
 
     def _read(self, key: StrategyKey) -> StrategyEntry | None:
         """Read a value from the underlying reactive map."""
-        return self._map.get(key)
+        result: StrategyEntry | None = self._map.get(key)
+        return result
 
     def record(self, root_cause: RootCause, intervention: Intervention, success: bool) -> None:
         """Record a completed issue (success or failure)."""
@@ -66,9 +67,7 @@ class StrategyModelBundle:
             ),
         )
 
-    def lookup(
-        self, root_cause: RootCause, intervention: Intervention
-    ) -> StrategyEntry | None:
+    def lookup(self, root_cause: RootCause, intervention: Intervention) -> StrategyEntry | None:
         """Look up effectiveness for a specific pair."""
         return self._read(strategy_key(root_cause, intervention))
 

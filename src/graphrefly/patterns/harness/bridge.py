@@ -52,7 +52,7 @@ class EvalResult:
 
 def eval_intake_bridge(
     eval_source: NodeImpl[Any],
-    intake_topic: TopicGraph[Any],
+    intake_topic: TopicGraph,
     *,
     name: str | None = None,
     default_severity: Severity = "medium",

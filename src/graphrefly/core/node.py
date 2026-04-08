@@ -394,11 +394,11 @@ class NodeImpl[T]:
                     continue
                 if lock is not None:
                     with lock:
-                        self._cached = m[1]  # type: ignore[misc]
+                        self._cached = m[1]
                 else:
-                    self._cached = m[1]  # type: ignore[misc]
+                    self._cached = m[1]
                 if self._versioning is not None:
-                    advance_version(self._versioning, m[1], self._hash_fn)  # type: ignore[misc]
+                    advance_version(self._versioning, m[1], self._hash_fn)
             if t is MessageType.INVALIDATE:
                 # GRAPHREFLY-SPEC §1.2: clear cached state; do not auto-emit from here.
                 if self._cleanup is not None:

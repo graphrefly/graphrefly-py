@@ -39,7 +39,7 @@ class DescribeResult(dict[str, Any]):
 
 @dataclass(frozen=True, slots=True)
 class TraceEntry:
-    """Single entry in the :meth:`Graph.trace_log` ring buffer."""
+    """Single entry in the :meth:`Graph.trace` ring buffer."""
 
     timestamp_ns: int
     path: str
@@ -61,6 +61,7 @@ class ObserveResult:
     completed_cleanly: bool = False
     errored: bool = False
     _dispose_fn: Callable[[], None] | None = field(default=None, repr=False)
+    _on_event: Callable[[dict[str, Any]], None] | None = field(default=None, repr=False)
     _graph: Any = field(default=None, repr=False)
     _path: str | None = field(default=None, repr=False)
     _observe_opts: dict[str, Any] = field(default_factory=dict, repr=False)
@@ -96,7 +97,7 @@ class ObserveResult:
 
 @dataclass(slots=True)
 class SpyHandle:
-    """Handle returned by :meth:`Graph.spy` (TS parity).
+    """Handle returned by ``observe(format=...)``.
 
     Exposes the structured accumulator as ``result`` and a top-level ``dispose()``.
     """
@@ -260,16 +261,14 @@ def _resolve_spy_theme(theme: str | dict[str, str] | None) -> dict[str, str]:
 
 
 def _message_type_label(msg_type: Any) -> str | None:
-    if msg_type is MessageType.DATA:
-        return "data"
-    if msg_type is MessageType.DIRTY:
-        return "dirty"
-    if msg_type is MessageType.RESOLVED:
-        return "resolved"
-    if msg_type is MessageType.COMPLETE:
-        return "complete"
-    if msg_type is MessageType.ERROR:
-        return "error"
+    """Derive a lowercase label from a MessageType enum member.
+
+    Uses the enum's ``name`` attribute rather than hardcoding each variant,
+    so new message types (e.g. PAUSE, RESUME, TEARDOWN) produce labels
+    automatically.
+    """
+    if isinstance(msg_type, MessageType):
+        return msg_type.name.lower()
     return None
 
 
@@ -349,7 +348,7 @@ class Graph:
     Args:
         name: Registry name used in ``describe()`` output and diagnostics.
         opts: Optional dict with keys ``thread_safe`` (bool, default ``True``)
-            and ``trace_size`` (int ring-buffer size for :meth:`annotate`).
+            and ``trace_size`` (int ring-buffer size for :meth:`trace`).
 
     Example:
         ```python
@@ -1217,6 +1216,11 @@ class Graph:
         causal: bool = False,
         derived: bool = False,
         detail: str | None = None,
+        format: str | None = None,
+        include_types: list[str] | tuple[str, ...] | None = None,
+        exclude_types: list[str] | tuple[str, ...] | None = None,
+        theme: str | dict[str, str] | None = "ansi",
+        logger: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> GraphObserveSource | ObserveResult:
         """Live message stream for one node (and its path) or the whole graph (§3.6).
 
@@ -1229,6 +1233,10 @@ class Graph:
         When ``structured=True`` (or ``timeline`` / ``causal`` / ``derived``),
         returns an :class:`ObserveResult` that accumulates
         events, tracks counts, and provides a ``dispose()`` method.
+
+        When ``format`` is set (``"pretty"`` or ``"json"``), auto-enables structured
+        mode, attaches a logger, and returns an :class:`ObserveResult` directly. This
+        replaces the former ``spy()`` method.
 
         Progressive disclosure via ``detail``:
 
@@ -1247,7 +1255,32 @@ class Graph:
             causal: Include trigger dep info (single-path derived/compute nodes).
             derived: Include per-evaluation dep snapshots (single-path derived/compute nodes).
             detail: Progressive disclosure level: ``"minimal"``, ``"standard"``, or ``"full"``.
+            format: ``"pretty"`` or ``"json"`` — enables live logging mode (absorbs spy).
+            include_types: Event type labels to include (``None`` = all).
+            exclude_types: Event type labels to exclude.
+            theme: ANSI color theme for pretty format: ``"ansi"`` (default), ``"none"``,
+                or a custom dict.
+            logger: Callable receiving ``(line, event_dict)`` for each logged event.
         """
+        # --- format mode (absorbs spy): delegate to _observe_formatted ---
+        if format is not None:
+            # Default timeline=True in format mode (matching old spy() behavior)
+            if not timeline:
+                timeline = True
+            return self._observe_formatted(
+                path,
+                actor=actor,
+                timeline=timeline,
+                causal=causal,
+                derived=derived,
+                detail=detail,
+                format=format,
+                include_types=include_types,
+                exclude_types=exclude_types,
+                theme=theme,
+                logger=logger,
+            )
+
         # Apply detail-level defaults (individual flags override)
         _detail_minimal = False
         if detail == "full":
@@ -1282,6 +1315,7 @@ class Graph:
         last_trigger_dep_index: int | None = None
         last_run_dep_values: list[Any] | None = None
         detach_hook: Callable[[], None] | None = None
+        batch_seq = 0
 
         def _base_event(
             evt_type: str, *, data: Any = None, event_path: str | None = None
@@ -1294,7 +1328,13 @@ class Graph:
             if timeline:
                 entry["timestamp_ns"] = monotonic_ns()
                 entry["in_batch"] = is_batching()
+                entry["batch_id"] = batch_seq
             return entry
+
+        def _emit_event(event: dict[str, Any]) -> None:
+            result.events.append(event)
+            if result._on_event is not None:
+                result._on_event(event)
 
         if (causal or derived) and path is not None:
             n = self.node(path)
@@ -1318,13 +1358,15 @@ class Graph:
                         if derived:
                             de = _base_event("derived")
                             de["dep_values"] = dep_vals
-                            result.events.append(de)
+                            _emit_event(de)
 
                 detach_hook = n._set_inspector_hook(_hook)
 
         if path is not None:
 
             def _sink(msgs: Messages) -> None:
+                nonlocal batch_seq
+                batch_seq += 1
                 for m in msgs:
                     t = m[0]
                     if t is MessageType.DATA:
@@ -1347,11 +1389,11 @@ class Graph:
                             if tv is not None:
                                 event["trigger_version"] = {"id": tv.id, "version": tv.version}
                             event["dep_values"] = list(last_run_dep_values)
-                        result.events.append(event)
+                        _emit_event(event)
                     elif t is MessageType.DIRTY:
                         result.dirty_count += 1
                         if not _detail_minimal:
-                            result.events.append(_base_event("dirty"))
+                            _emit_event(_base_event("dirty"))
                     elif t is MessageType.RESOLVED:
                         result.resolved_count += 1
                         if not _detail_minimal:
@@ -1372,46 +1414,46 @@ class Graph:
                                 if tv is not None:
                                     event["trigger_version"] = {"id": tv.id, "version": tv.version}
                                 event["dep_values"] = list(last_run_dep_values)
-                            result.events.append(event)
+                            _emit_event(event)
                     elif t is MessageType.COMPLETE:
                         if not result.errored:
                             result.completed_cleanly = True
                         if not _detail_minimal:
-                            result.events.append(_base_event("complete"))
+                            _emit_event(_base_event("complete"))
                     elif t is MessageType.ERROR:
                         result.errored = True
                         if not _detail_minimal:
-                            result.events.append(
-                                _base_event("error", data=m[1] if len(m) > 1 else None)
-                            )
+                            _emit_event(_base_event("error", data=m[1] if len(m) > 1 else None))
 
             unsub = source.subscribe(_sink)
         else:
 
             def _graph_sink(qpath: str, msgs: Messages) -> None:
+                nonlocal batch_seq
+                batch_seq += 1
                 for m in msgs:
                     t = m[0]
                     if t is MessageType.DATA:
                         val = m[1] if len(m) > 1 else None
                         result.values[qpath] = val
-                        result.events.append(_base_event("data", data=val, event_path=qpath))
+                        _emit_event(_base_event("data", data=val, event_path=qpath))
                     elif t is MessageType.DIRTY:
                         result.dirty_count += 1
                         if not _detail_minimal:
-                            result.events.append(_base_event("dirty", event_path=qpath))
+                            _emit_event(_base_event("dirty", event_path=qpath))
                     elif t is MessageType.RESOLVED:
                         result.resolved_count += 1
                         if not _detail_minimal:
-                            result.events.append(_base_event("resolved", event_path=qpath))
+                            _emit_event(_base_event("resolved", event_path=qpath))
                     elif t is MessageType.COMPLETE:
                         if not result.errored:
                             result.completed_cleanly = True
                         if not _detail_minimal:
-                            result.events.append(_base_event("complete", event_path=qpath))
+                            _emit_event(_base_event("complete", event_path=qpath))
                     elif t is MessageType.ERROR:
                         result.errored = True
                         if not _detail_minimal:
-                            result.events.append(
+                            _emit_event(
                                 _base_event(
                                     "error",
                                     data=m[1] if len(m) > 1 else None,
@@ -1429,48 +1471,31 @@ class Graph:
         result._dispose_fn = _dispose
         return result
 
-    def spy(
+    def _observe_formatted(
         self,
         path: str | None = None,
         *,
         actor: Any | None = None,
-        include_types: list[str] | tuple[str, ...] | None = None,
-        exclude_types: list[str] | tuple[str, ...] | None = None,
-        theme: str | dict[str, str] | None = "ansi",
-        format: str = "pretty",
-        logger: Callable[[str, dict[str, Any]], None] | None = None,
         timeline: bool = True,
         causal: bool = False,
         derived: bool = False,
-    ) -> SpyHandle:
-        """Attach a live debugger that logs protocol events as they arrive.
+        detail: str | None = None,
+        format: str = "pretty",
+        include_types: list[str] | tuple[str, ...] | None = None,
+        exclude_types: list[str] | tuple[str, ...] | None = None,
+        theme: str | dict[str, str] | None = "ansi",
+        logger: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> ObserveResult:
+        """Internal: formatted observe mode (absorbs former spy()).
 
-        Wraps :meth:`observe` and emits each formatted event via ``output``
-        (default ``print``). Supports one-node and graph-wide modes, event
-        filtering, and ANSI color themes. Returns a :class:`SpyHandle` with the
-        accumulated :class:`ObserveResult` and a ``dispose()`` method.
-
-        Args:
-            path: Node path to observe (``None`` = entire graph).
-            output: Callable receiving each formatted log line (default ``print``).
-            theme: ANSI color theme: ``"ansi"`` (default), ``"none"``, or a custom
-                ``dict`` of ANSI codes keyed by event type.
-            filter: Set of message type labels to include (``None`` = all types).
-            actor: Optional actor context for guarded nodes.
-
-        Returns:
-            A :class:`SpyHandle` wrapping the live :class:`ObserveResult`.
-
-        Example:
-            ```python
-            from graphrefly import Graph, state
-            g = Graph("g")
-            g.add("x", state(0))
-            handle = g.spy("x")
-            g.set("x", 1)
-            handle.dispose()
-            ```
+        Returns an :class:`ObserveResult` with live logging attached.
         """
+        # Apply detail-level defaults
+        if detail == "full":
+            if not causal:
+                causal = True
+            if not derived:
+                derived = True
         include = set(include_types) if include_types is not None else None
         exclude = set(exclude_types or [])
         colors = _resolve_spy_theme(theme)
@@ -1545,7 +1570,7 @@ class Graph:
             if path is not None:
                 stream = self.observe(path, actor=actor)
                 if not isinstance(stream, GraphObserveSource):
-                    msg = "spy expected GraphObserveSource in raw mode"
+                    msg = "observe(format=) expected GraphObserveSource in raw mode"
                     raise TypeError(msg)
 
                 def _on_path_msgs(msgs: Any) -> None:
@@ -1556,7 +1581,7 @@ class Graph:
             else:
                 stream = self.observe(actor=actor)
                 if not isinstance(stream, GraphObserveSource):
-                    msg = "spy expected GraphObserveSource in raw mode"
+                    msg = "observe(format=) expected GraphObserveSource in raw mode"
                     raise TypeError(msg)
 
                 def _on_qpath_msgs(qpath: str, msgs: Any) -> None:
@@ -1566,9 +1591,17 @@ class Graph:
                 unsub = stream.subscribe(_on_qpath_msgs)
 
             result._dispose_fn = unsub
-            return SpyHandle(result=result)
+            return result
 
-        # --- Inspector-enabled path: use structured observe + flush loop ---
+        # --- Inspector-enabled path: single structured subscription + inline logging ---
+        # Mirrors TS approach: hook _on_event so logging fires inline from the
+        # existing subscription, eliminating the former double-subscribe.
+
+        def _log_event(event: dict[str, Any]) -> None:
+            event_type = str(event.get("type") or "")
+            if should_log(event_type):
+                sink(render_event(event), event)
+
         structured_candidate = self.observe(
             path,
             actor=actor,
@@ -1576,67 +1609,25 @@ class Graph:
             timeline=timeline,
             causal=causal,
             derived=derived,
+            detail=detail,
         )
         result = (
             structured_candidate
             if isinstance(structured_candidate, ObserveResult)
             else ObserveResult()
         )
-        structured_cleanup = (
-            structured_candidate._dispose_fn
-            if isinstance(structured_candidate, ObserveResult)
-            else None
-        )
+        result._on_event = _log_event
 
-        cursor = 0
-
-        def flush_new_events() -> None:
-            nonlocal cursor
-            next_events = result.events[cursor:]
-            cursor = len(result.events)
-            for event in next_events:
-                event_type = str(event.get("type") or "")
-                if not should_log(event_type):
-                    continue
-                sink(render_event(event), event)
-
-        if path is not None:
-
-            def on_messages(msgs: Messages) -> None:
-                for m in msgs:
-                    flush_new_events()
-                    if isinstance(structured_candidate, ObserveResult):
-                        continue
-                    _push_event(result, path, m)
-
-            stream_raw = self.observe(path, actor=actor)
-            if not isinstance(stream_raw, GraphObserveSource):
-                msg = "spy expected GraphObserveSource in raw mode"
-                raise TypeError(msg)
-            unsub = stream_raw.subscribe(on_messages)
-        else:
-
-            def on_graph_messages(qpath: str, msgs: Messages) -> None:
-                for m in msgs:
-                    flush_new_events()
-                    if isinstance(structured_candidate, ObserveResult):
-                        continue
-                    _push_event(result, qpath, m)
-
-            stream_raw = self.observe(actor=actor)
-            if not isinstance(stream_raw, GraphObserveSource):
-                msg = "spy expected GraphObserveSource in raw mode"
-                raise TypeError(msg)
-            unsub = stream_raw.subscribe(on_graph_messages)
+        # Wrap the existing dispose to also detach the logging callback.
+        _inner_dispose = result._dispose_fn
 
         def _dispose() -> None:
-            unsub()
-            flush_new_events()
-            if structured_cleanup is not None:
-                structured_cleanup()
+            result._on_event = None
+            if _inner_dispose is not None:
+                _inner_dispose()
 
         result._dispose_fn = _dispose
-        return SpyHandle(result=result)
+        return result
 
     def dump_graph(
         self,
@@ -2000,35 +1991,47 @@ class Graph:
                 lines.append(f"{from_id} -> {to_id}")
         return "\n".join(lines)
 
-    def annotate(self, path: str, reason: str) -> None:
-        """Store an annotation for ``path`` and record it in the trace ring buffer.
+    def trace(self, path: str | None = None, reason: str | None = None) -> list[TraceEntry] | None:
+        """Write a trace annotation or read the trace ring buffer.
 
-        Annotations are informational labels attached to node paths for debugging
-        and auditing. Each call also appends a :class:`TraceEntry` to the ring buffer.
+        Dual-purpose method:
+
+        - **Write:** ``graph.trace("path", "reason")`` — stores an annotation and
+          appends a :class:`TraceEntry` to the ring buffer.
+        - **Read:** ``graph.trace()`` — returns a copy of the ring buffer (most
+          recent last).
 
         Args:
-            path: Qualified node path.
-            reason: Human-readable annotation text.
+            path: Qualified node path (write mode). ``None`` for read mode.
+            reason: Human-readable annotation text (write mode).
+
+        Returns:
+            ``list[TraceEntry]`` in read mode; ``None`` in write mode.
+
+        Note:
+            Write mode validates that ``path`` exists (via :meth:`resolve`) before
+            acquiring the lock. This is advisory — not concurrency-safe against
+            concurrent node removal on dynamic graphs.
         """
+        if path is None:
+            # Read mode
+            if not self.inspector_enabled:
+                return []
+            with self._locked():
+                return list(self._trace_ring)
+        # Write mode
+        if reason is None:
+            msg = "trace() write mode requires both path and reason"
+            raise TypeError(msg)
         if not self.inspector_enabled:
-            return
+            return None
         self.resolve(path)
         with self._locked():
             self._annotations[path] = reason
             self._trace_ring.append(
                 TraceEntry(timestamp_ns=monotonic_ns(), path=path, reason=reason)
             )
-
-    def trace_log(self) -> list[TraceEntry]:
-        """Return a copy of the trace ring buffer (most recent last).
-
-        Returns:
-            A list of :class:`TraceEntry` objects.
-        """
-        if not self.inspector_enabled:
-            return []
-        with self._locked():
-            return list(self._trace_ring)
+        return None
 
     @staticmethod
     def diff(a: dict[str, Any], b: dict[str, Any]) -> GraphDiffResult:
@@ -2474,7 +2477,6 @@ __all__ = [
     "META_PATH_SEG",
     "ObserveResult",
     "PATH_SEP",
-    "SpyHandle",
     "TraceEntry",
     "reachable",
 ]

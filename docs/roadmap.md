@@ -47,6 +47,24 @@ TS has this shipped; Python needs parity for production reduction pipelines.
 - [ ] PyPI publish: `graphrefly-py` (7 → 9.3)
 - [ ] Docs site at `py.graphrefly.dev` (7 → 9.3)
 
+### Inspection Tool Consolidation (cross-cutting, TS + PY)
+
+PY consolidation — reduce inspection surface from 14+ tools to 9 with clear, non-overlapping responsibilities.
+
+**Design reference:** `archive/docs/SESSION-inspection-consolidation.md` (in graphrefly-ts)
+
+#### PY consolidation (DONE 2026-04-08)
+
+- [x] Merge `spy()` into `observe(format=)` — `format="pretty"|"json"` on `observe()` replaces `spy()`
+- [x] Add `trace()` (write + read), absorb `annotate()` + `trace_log()`
+- [x] Unexport `describe_node`, `meta_snapshot` from public API (internal to `core.meta`)
+- [x] `harness_trace()` pipeline stage tracer (`patterns/harness/trace.py`)
+- [x] Runner `__repr__` with `_scheduled`/`_completed` counters on `AsyncioRunner` and `TrioRunner`
+
+#### PY parity items already done
+
+- [x] `Graph.diff()` — already implemented
+
 ### Deferred (post-Wave 3)
 
 - §7.2 Showcase demos (Pyodide/WASM lab) — after TS demos prove the pattern

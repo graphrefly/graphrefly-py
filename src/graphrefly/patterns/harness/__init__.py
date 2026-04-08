@@ -19,6 +19,7 @@ from graphrefly.patterns.harness.strategy import (
     priority_score,
     strategy_model,
 )
+from graphrefly.patterns.harness.trace import HarnessTraceHandle, harness_trace
 from graphrefly.patterns.harness.types import (
     DEFAULT_DECAY_RATE,
     DEFAULT_QUEUE_CONFIGS,
@@ -82,4 +83,7 @@ __all__ = [
     # profile
     "HarnessProfileResult",
     "harness_profile",
+    # trace
+    "HarnessTraceHandle",
+    "harness_trace",
 ]

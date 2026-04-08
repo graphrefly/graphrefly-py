@@ -23,6 +23,7 @@ from graphrefly.extra.tier1 import filter, map, scan
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _collect(n: Any) -> list[Messages]:
     """Subscribe and return collected message batches."""
     sink: list[Messages] = []
@@ -83,7 +84,7 @@ class TestMapProtocolMatrix:
     def test_bare_data_skipped(self) -> None:
         s = state(1)
         m = pipe(s, map(lambda x: x * 2))
-        sink = _collect(m)
+        _collect(m)
         assert m.get() == 2
         # Bare [DATA] without payload — should not crash or change value
         s.down([(MessageType.DATA,)])
@@ -137,7 +138,7 @@ class TestFilterProtocolMatrix:
     def test_bare_data_skipped(self) -> None:
         s = state(2)
         f = pipe(s, filter(lambda x: x > 0))
-        sink = _collect(f)
+        _collect(f)
         assert f.get() == 2
         s.down([(MessageType.DATA,)])
         assert f.get() == 2
@@ -191,7 +192,7 @@ class TestScanProtocolMatrix:
     def test_bare_data_skipped(self) -> None:
         s = state(1)
         sc = pipe(s, scan(lambda acc, val: acc + val, 0))
-        sink = _collect(sc)
+        _collect(sc)
         assert sc.get() == 1  # 0 + 1
         s.down([(MessageType.DATA,)])
         assert sc.get() == 1  # unchanged

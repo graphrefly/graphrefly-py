@@ -700,63 +700,71 @@ def test_to_d2_rejects_invalid_direction() -> None:
         g.to_d2(direction="SIDEWAYS")
 
 
-def test_annotate_resolves_existing_path() -> None:
+def test_trace_write_resolves_existing_path() -> None:
     g = Graph("g")
     g.add("a", state(0))
-    g.annotate("a", "human reviewed")
-    entries = g.trace_log()
+    g.trace("a", "human reviewed")
+    entries = g.trace()
     assert entries
     assert entries[-1].path == "a"
     assert entries[-1].reason == "human reviewed"
     with pytest.raises(KeyError):
-        g.annotate("missing", "nope")
+        g.trace("missing", "nope")
 
 
-def test_trace_log_returns_empty_when_inspector_disabled() -> None:
+def test_trace_read_returns_empty_when_inspector_disabled() -> None:
     g = Graph("g")
     g.add("a", state(0))
-    g.annotate("a", "first")
+    g.trace("a", "first")
     original = Graph.inspector_enabled
     try:
         Graph.inspector_enabled = False
-        assert g.trace_log() == []
-        g.annotate("a", "second")
+        assert g.trace() == []
+        g.trace("a", "second")
     finally:
         Graph.inspector_enabled = original
     # Existing entries remain stored and visible once re-enabled.
-    assert any(entry.reason == "first" for entry in g.trace_log())
-    assert not any(entry.reason == "second" for entry in g.trace_log())
+    assert any(entry.reason == "first" for entry in g.trace())
+    assert not any(entry.reason == "second" for entry in g.trace())
 
 
-def test_spy_logs_with_filters_and_dispose() -> None:
+def test_trace_write_requires_reason() -> None:
+    g = Graph("g")
+    g.add("a", state(0))
+    with pytest.raises(TypeError, match="trace.*requires both path and reason"):
+        g.trace("a")
+
+
+def test_observe_format_logs_with_filters_and_dispose() -> None:
     g = Graph("g")
     g.add("a", state(0))
     lines: list[str] = []
-    spy = g.spy(
+    spy = g.observe(
         "a",
+        format="pretty",
         include_types=["data", "dirty", "resolved"],
         exclude_types=["resolved"],
         theme="none",
         logger=lambda line, _event: lines.append(line),
     )
-    assert hasattr(spy, "result")
+    assert hasattr(spy, "events")
     g.set("a", 1)
     spy.dispose()
     assert any("DATA" in line for line in lines)
     assert not any("RESOLVED" in line for line in lines)
 
 
-def test_spy_json_graph_wide() -> None:
+def test_observe_format_json_graph_wide() -> None:
     g = Graph("g")
     g.add("a", state(0))
     g.add("b", state(0))
     lines: list[str] = []
-    spy = g.spy(
+    spy = g.observe(
         format="json",
         theme="none",
         logger=lambda line, _event: lines.append(line),
     )
-    assert hasattr(spy, "result")
+    assert hasattr(spy, "events")
     g.set("a", 2)
     g.set("b", 3)
     spy.dispose()

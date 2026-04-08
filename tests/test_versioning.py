@@ -1,6 +1,7 @@
 """Tests for node versioning (GRAPHREFLY-SPEC §7) — V0 and V1."""
 
-from graphrefly import Graph, batch, derived, describe_node, node, state
+from graphrefly import Graph, batch, derived, node, state
+from graphrefly.core.meta import describe_node
 from graphrefly.core.protocol import MessageType
 from graphrefly.core.versioning import (
     V0,

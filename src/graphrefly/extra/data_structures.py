@@ -145,9 +145,7 @@ class ReactiveMapBundle:
         """Remove expired keys from ``_store``; return whether anything changed."""
         now = _mono_now()
         expired = [
-            k
-            for k, (_, exp) in self._store.entries.items()
-            if exp is not None and exp <= now
+            k for k, (_, exp) in self._store.entries.items() if exp is not None and exp <= now
         ]
         if not expired:
             return False

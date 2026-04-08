@@ -10,11 +10,10 @@ from graphrefly.core import (
     MessageType,
     NodeActions,
     batch,
-    describe_node,
     down_with_batch,
-    meta_snapshot,
     node,
 )
+from graphrefly.core.meta import describe_node, meta_snapshot
 from graphrefly.core.node import NodeImpl
 
 

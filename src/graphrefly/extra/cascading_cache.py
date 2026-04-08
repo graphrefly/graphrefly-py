@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar, cast, runtime_checkable
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -137,8 +137,18 @@ def _tier_has_save(tier: CacheTier) -> bool:
     return callable(getattr(tier, "save", None))
 
 
+def _tier_save(tier: CacheTier, key: str, value: Any) -> None:
+    """Call ``tier.save(key, value)`` — caller must guard with ``_tier_has_save`` first."""
+    cast("Any", tier).save(key, value)
+
+
 def _tier_has_clear(tier: CacheTier) -> bool:
     return callable(getattr(tier, "clear", None))
+
+
+def _tier_clear(tier: CacheTier, key: str) -> None:
+    """Call ``tier.clear(key)`` — caller must guard with ``_tier_has_clear`` first."""
+    cast("Any", tier).clear(key)
 
 
 class CascadingCache(Generic[V]):  # noqa: UP046
@@ -174,7 +184,7 @@ class CascadingCache(Generic[V]):  # noqa: UP046
         for i in range(hit_tier):
             tier = self._tiers[i]
             if _tier_has_save(tier):
-                tier.save(key, value)
+                _tier_save(tier, key, value)
 
     def _cascade(self, key: str, nd: Node[Any]) -> None:
         for tier_index, tier in enumerate(self._tiers):
@@ -202,10 +212,10 @@ class CascadingCache(Generic[V]):  # noqa: UP046
                         # Demote to deepest tier with save before evicting
                         for i in range(len(self._tiers) - 1, -1, -1):
                             if _tier_has_save(self._tiers[i]):
-                                self._tiers[i].save(victim, value)
+                                _tier_save(self._tiers[i], victim, value)
                                 for j in range(i):
                                     if _tier_has_clear(self._tiers[j]):
-                                        self._tiers[j].clear(victim)
+                                        _tier_clear(self._tiers[j], victim)
                                 break
                     nd.down([(MessageType.TEARDOWN,)])
                     del self._entries[victim]
@@ -239,9 +249,9 @@ class CascadingCache(Generic[V]):  # noqa: UP046
         if self._write_through:
             for tier in self._tiers:
                 if _tier_has_save(tier):
-                    tier.save(key, value)
+                    _tier_save(tier, key, value)
         elif self._tiers and _tier_has_save(self._tiers[0]):
-            self._tiers[0].save(key, value)
+            _tier_save(self._tiers[0], key, value)
         if key in self._entries:
             self._entries[key].down([(MessageType.DATA, value)])
             if self._eviction is not None:
@@ -273,7 +283,7 @@ class CascadingCache(Generic[V]):  # noqa: UP046
                 self._eviction.delete(key)
         for tier in self._tiers:
             if _tier_has_clear(tier):
-                tier.clear(key)
+                _tier_clear(tier, key)
 
     def has(self, key: str) -> bool:
         """Check if a key is in the in-memory entries."""

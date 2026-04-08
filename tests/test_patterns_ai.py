@@ -1024,9 +1024,7 @@ def test_prompt_node_re_invokes_on_dep_change() -> None:
 
 def test_prompt_node_format_json_parses_response() -> None:
     """format='json' parses the LLM response content as JSON."""
-    adapter = MockAdapter(
-        [LLMResponse(content='{"key": "value", "n": 42}')]
-    )
+    adapter = MockAdapter([LLMResponse(content='{"key": "value", "n": 42}')])
     dep = state("input")
     pn = prompt_node(adapter, [dep], "parse this", format="json")
     unsub = pn.subscribe(lambda _: None)

@@ -200,9 +200,7 @@ def create_dag_cbor_zstd_codec(
             return result
 
         def decode(self, buffer: bytes) -> dict[str, Any]:
-            result: dict[str, Any] = cbor_module.decode(
-                zstd_module.decompress(buffer)
-            )
+            result: dict[str, Any] = cbor_module.decode(zstd_module.decompress(buffer))
             return result
 
     return _DagCborZstdCodec()
@@ -257,6 +255,7 @@ def replay_wal(entries: list[WALEntry]) -> dict[str, Any]:
 
     # Deep clone so we can mutate.
     import copy
+
     result = copy.deepcopy(first.snapshot)
 
     for entry in entries[1:]:

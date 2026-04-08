@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -29,10 +30,12 @@ class AsyncioRunner:
         asyncio.run(main())
     """
 
-    __slots__ = ("_loop",)
+    __slots__ = ("_loop", "_scheduled", "_completed")
 
     def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
+        self._scheduled = 0
+        self._completed = 0
 
     @classmethod
     def from_running(cls) -> AsyncioRunner:
@@ -50,11 +53,12 @@ class AsyncioRunner:
         on_error: Callable[[BaseException], None],
     ) -> Callable[[], None]:
         task: asyncio.Task[Any] | None = None
-        cancelled = False
+        cancelled = threading.Event()
 
         def _create_task() -> None:
             nonlocal task
-            if cancelled:
+            if cancelled.is_set():
+                self._completed += 1
                 coro.close()
                 return
 
@@ -71,19 +75,34 @@ class AsyncioRunner:
                     on_error(err)
                 else:
                     on_result(result)
+                finally:
+                    self._completed += 1
 
             task = self._loop.create_task(_wrapper())
 
-        # Thread-safe: schedule task creation on the event loop.
-        self._loop.call_soon_threadsafe(_create_task)
+        # Increment eagerly on the calling thread so __repr__ is always consistent.
+        self._scheduled += 1
+        try:
+            self._loop.call_soon_threadsafe(_create_task)
+        except RuntimeError:
+            # Loop closed — cannot schedule; close the coroutine and balance the counter.
+            self._completed += 1
+            coro.close()
 
         def cancel() -> None:
-            nonlocal cancelled
-            cancelled = True
+            cancelled.set()
             if task is not None:
                 task.cancel()
 
         return cancel
+
+    def __repr__(self) -> str:
+        pending = self._scheduled - self._completed
+        running = self._loop.is_running()
+        return (
+            f"AsyncioRunner(scheduled={self._scheduled}, completed={self._completed}, "
+            f"pending={pending}, loop_running={running})"
+        )
 
 
 __all__ = ["AsyncioRunner"]

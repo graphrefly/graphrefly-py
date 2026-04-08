@@ -542,6 +542,7 @@ class ChatStreamGraph(Graph):
         """Return all messages as a tuple."""
         return _tuple_snapshot(self.messages.get())
 
+
 def chat_stream(
     name: str,
     *,
@@ -624,6 +625,7 @@ class ToolRegistryGraph(Graph):
         """Get a tool definition by name."""
         defs = self.definitions.get() or {}
         return defs.get(name)
+
 
 def tool_registry(
     name: str,
@@ -1334,6 +1336,7 @@ class AgentMemoryGraph(Graph):
                 return result
 
             self.retrieve = _do_retrieve
+
 
 def _extract_store_map(snap: Any) -> dict[str, Any]:
     """Extract the key→value mapping from a reactive_map snapshot."""

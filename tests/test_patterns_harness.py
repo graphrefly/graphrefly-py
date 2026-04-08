@@ -32,6 +32,7 @@ def _wait_for(predicate: Any, timeout_s: float = 5.0) -> None:
     while not predicate() and monotonic_ns() < deadline:
         time.sleep(0.02)
 
+
 # ---------------------------------------------------------------------------
 # types
 # ---------------------------------------------------------------------------
@@ -53,14 +54,10 @@ class TestTypes:
             route="auto-fix",
             priority=50,
         )
-        result = ExecutionResult(
-            item=item, outcome="failure", detail="JSON parse error at line 3"
-        )
+        result = ExecutionResult(item=item, outcome="failure", detail="JSON parse error at line 3")
         assert default_error_classifier(result) == "self-correctable"
 
-        result2 = ExecutionResult(
-            item=item, outcome="failure", detail="Config validation failed"
-        )
+        result2 = ExecutionResult(item=item, outcome="failure", detail="Config validation failed")
         assert default_error_classifier(result2) == "self-correctable"
 
     def test_default_error_classifier_structural(self) -> None:
@@ -120,11 +117,7 @@ class TestStrategyModel:
         sm = strategy_model()
         values: list[dict] = []
         sm.node.subscribe(
-            lambda msgs: [
-                values.append(msg[1])
-                for msg in msgs
-                if msg[0] == MessageType.DATA
-            ]
+            lambda msgs: [values.append(msg[1]) for msg in msgs if msg[0] == MessageType.DATA]
         )
 
         sm.record("bad-docs", "docs", True)
@@ -219,26 +212,38 @@ class TestEvalIntakeBridge:
             ]
         )
 
-        eval_source.down([
-            (
-                MessageType.DATA,
-                EvalResult(
-                    run_id="run-1",
-                    model="claude",
-                    tasks=(
-                        EvalTaskResult(
-                            task_id="T1",
-                            valid=True,
-                            judge_scores=(
-                                EvalJudgeScore(claim="correct topology", pass_=True, reasoning="ok"),
-                                EvalJudgeScore(claim="uses feedback edges", pass_=False, reasoning="missing feedback"),
-                                EvalJudgeScore(claim="handles errors", pass_=False, reasoning="no error handling"),
+        eval_source.down(
+            [
+                (
+                    MessageType.DATA,
+                    EvalResult(
+                        run_id="run-1",
+                        model="claude",
+                        tasks=(
+                            EvalTaskResult(
+                                task_id="T1",
+                                valid=True,
+                                judge_scores=(
+                                    EvalJudgeScore(
+                                        claim="correct topology", pass_=True, reasoning="ok"
+                                    ),
+                                    EvalJudgeScore(
+                                        claim="uses feedback edges",
+                                        pass_=False,
+                                        reasoning="missing feedback",
+                                    ),
+                                    EvalJudgeScore(
+                                        claim="handles errors",
+                                        pass_=False,
+                                        reasoning="no error handling",
+                                    ),
+                                ),
                             ),
                         ),
                     ),
-                ),
-            )
-        ])
+                )
+            ]
+        )
 
         assert len(items) == 2
         assert "uses feedback edges" in items[0].summary
@@ -261,16 +266,18 @@ class TestEvalIntakeBridge:
             ]
         )
 
-        eval_source.down([
-            (
-                MessageType.DATA,
-                EvalResult(
-                    run_id="run-2",
-                    model="gemini",
-                    tasks=(EvalTaskResult(task_id="T2", valid=False),),
-                ),
-            )
-        ])
+        eval_source.down(
+            [
+                (
+                    MessageType.DATA,
+                    EvalResult(
+                        run_id="run-2",
+                        model="gemini",
+                        tasks=(EvalTaskResult(task_id="T2", valid=False),),
+                    ),
+                )
+            ]
+        )
 
         assert len(items) == 1
         assert "T2 invalid" in items[0].summary
@@ -290,24 +297,26 @@ class TestEvalIntakeBridge:
             ]
         )
 
-        eval_source.down([
-            (
-                MessageType.DATA,
-                EvalResult(
-                    run_id="run-3",
-                    model="claude",
-                    tasks=(
-                        EvalTaskResult(
-                            task_id="T3",
-                            valid=True,
-                            judge_scores=(
-                                EvalJudgeScore(claim="correct", pass_=True, reasoning="ok"),
+        eval_source.down(
+            [
+                (
+                    MessageType.DATA,
+                    EvalResult(
+                        run_id="run-3",
+                        model="claude",
+                        tasks=(
+                            EvalTaskResult(
+                                task_id="T3",
+                                valid=True,
+                                judge_scores=(
+                                    EvalJudgeScore(claim="correct", pass_=True, reasoning="ok"),
+                                ),
                             ),
                         ),
                     ),
-                ),
-            )
-        ])
+                )
+            ]
+        )
 
         assert len(items) == 0
 
@@ -326,7 +335,16 @@ class TestHarnessLoop:
             def invoke(self, msgs: Any, **kw: Any) -> Any:
                 import json
 
-                return {"content": json.dumps({"root_cause": "unknown", "intervention": "investigate", "route": "backlog", "priority": 10})}
+                return {
+                    "content": json.dumps(
+                        {
+                            "root_cause": "unknown",
+                            "intervention": "investigate",
+                            "route": "backlog",
+                            "priority": 10,
+                        }
+                    )
+                }
 
         return MockAdapter()
 
@@ -393,32 +411,50 @@ class TestHarnessLoop:
 
     def test_gate_modify_overrides_classification(self) -> None:
         """gate.modify() overrides rootCause/intervention before forwarding."""
-        mock = MockLLMAdapter(MockScript(stages={
-            "triage": StageScript(responses=[{
-                "root_cause": "unknown",
-                "intervention": "investigate",
-                "route": "needs-decision",
-                "priority": 60,
-            }]),
-            "execute": StageScript(responses=[{
-                "outcome": "success",
-                "detail": "Fixed with template",
-            }]),
-            "verify": StageScript(responses=[{
-                "verified": True,
-                "findings": ["ok"],
-            }]),
-        }))
+        mock = MockLLMAdapter(
+            MockScript(
+                stages={
+                    "triage": StageScript(
+                        responses=[
+                            {
+                                "root_cause": "unknown",
+                                "intervention": "investigate",
+                                "route": "needs-decision",
+                                "priority": 60,
+                            }
+                        ]
+                    ),
+                    "execute": StageScript(
+                        responses=[
+                            {
+                                "outcome": "success",
+                                "detail": "Fixed with template",
+                            }
+                        ]
+                    ),
+                    "verify": StageScript(
+                        responses=[
+                            {
+                                "verified": True,
+                                "findings": ["ok"],
+                            }
+                        ]
+                    ),
+                }
+            )
+        )
 
         h = harness_loop("mock-gate-modify", adapter=mock, max_reingestions=0)
 
-        h.intake.publish(IntakeItem(
-            source="eval",
-            summary="T5: resilience ordering wrong",
-            evidence="wrong order in retry stack",
-            affects_areas=("graphspec",),
-            severity="high",
-        ))
+        h.intake.publish(
+            IntakeItem(
+                source="eval",
+                summary="T5: resilience ordering wrong",
+                evidence="wrong order in retry stack",
+                affects_areas=("graphspec",),
+                severity="high",
+            )
+        )
 
         # Wait for the item to arrive at the needs-decision queue
         queue = h.queues["needs-decision"]
@@ -447,3 +483,171 @@ class TestHarnessLoop:
 
         # Original classification should NOT appear
         assert h.strategy.lookup("unknown", "investigate") is None
+
+
+# ---------------------------------------------------------------------------
+# harness_trace
+# ---------------------------------------------------------------------------
+
+
+class TestHarnessTrace:
+    @staticmethod
+    def _mock_adapter() -> Any:
+        """Mock LLM adapter that returns predictable JSON."""
+
+        class MockAdapter:
+            def invoke(self, msgs: Any, **kw: Any) -> Any:
+                import json
+
+                return {
+                    "content": json.dumps(
+                        {
+                            "root_cause": "unknown",
+                            "intervention": "investigate",
+                            "route": "backlog",
+                            "priority": 10,
+                        }
+                    )
+                }
+
+        return MockAdapter()
+
+    def test_harness_trace_returns_handle(self) -> None:
+        from graphrefly.patterns.harness.trace import HarnessTraceHandle, harness_trace
+
+        h = harness_loop("trace-test-1", adapter=self._mock_adapter())
+        handle = harness_trace(h)
+
+        assert isinstance(handle, HarnessTraceHandle)
+        handle.dispose()
+
+    def test_harness_trace_captures_intake(self) -> None:
+        from graphrefly.patterns.harness.trace import harness_trace
+
+        h = harness_loop("trace-test-2", adapter=self._mock_adapter())
+        lines: list[str] = []
+        handle = harness_trace(h, logger=lines.append)
+
+        h.intake.publish(
+            IntakeItem(
+                source="human",
+                summary="Test trace capture",
+                evidence="evidence",
+                affects_areas=("core",),
+                severity="medium",
+            )
+        )
+
+        _wait_for(lambda: len(lines) > 0)
+        assert any("INTAKE" in line for line in lines)
+        handle.dispose()
+
+    def test_harness_trace_captures_stage_nodes(self) -> None:
+        from graphrefly.patterns.harness.trace import harness_trace
+
+        h = harness_loop("trace-test-stages", adapter=self._mock_adapter())
+        lines: list[str] = []
+        handle = harness_trace(h, logger=lines.append)
+
+        h.intake.publish(
+            IntakeItem(
+                source="human",
+                summary="Stage node trace test",
+                evidence="evidence",
+                affects_areas=("core",),
+                severity="medium",
+            )
+        )
+
+        _wait_for(lambda: any("TRIAGE" in line for line in lines), timeout_s=5.0)
+        assert any("TRIAGE" in line for line in lines)
+        handle.dispose()
+
+    def test_harness_trace_captures_strategy(self) -> None:
+        """STRATEGY events fire after a full auto-fix pipeline run."""
+        from graphrefly.patterns.harness.trace import harness_trace
+
+        mock = MockLLMAdapter(
+            MockScript(
+                stages={
+                    "triage": StageScript(
+                        responses=[
+                            {
+                                "root_cause": "composition",
+                                "intervention": "template",
+                                "route": "auto-fix",
+                                "priority": 80,
+                            }
+                        ]
+                    ),
+                    "execute": StageScript(
+                        responses=[{"outcome": "success", "detail": "Fixed"}]
+                    ),
+                    "verify": StageScript(
+                        responses=[{"verified": True, "findings": []}]
+                    ),
+                }
+            )
+        )
+        h = harness_loop("trace-test-strategy", adapter=mock, max_reingestions=0)
+        lines: list[str] = []
+        handle = harness_trace(h, logger=lines.append)
+
+        h.intake.publish(
+            IntakeItem(
+                source="eval",
+                summary="Trace strategy test item",
+                evidence="evidence",
+                affects_areas=("core",),
+                severity="high",
+            )
+        )
+
+        _wait_for(lambda: any("STRATEGY" in line for line in lines), timeout_s=10.0)
+        assert any("STRATEGY" in line for line in lines)
+        handle.dispose()
+
+    def test_harness_trace_elapsed_timestamps(self) -> None:
+        """Lines include elapsed-time prefix in [X.XXXs] format."""
+        from graphrefly.patterns.harness.trace import harness_trace
+
+        h = harness_loop("trace-test-elapsed", adapter=self._mock_adapter())
+        lines: list[str] = []
+        handle = harness_trace(h, logger=lines.append)
+
+        h.intake.publish(
+            IntakeItem(
+                source="human",
+                summary="Elapsed timestamp test",
+                evidence="evidence",
+                affects_areas=("core",),
+                severity="low",
+            )
+        )
+
+        _wait_for(lambda: len(lines) > 0)
+        # All lines should start with [X.XXXs]
+        assert all(line.startswith("[") and "s]" in line for line in lines)
+        handle.dispose()
+
+    def test_harness_trace_dispose_stops_capture(self) -> None:
+        from graphrefly.patterns.harness.trace import harness_trace
+
+        h = harness_loop("trace-test-3", adapter=self._mock_adapter())
+        lines: list[str] = []
+        handle = harness_trace(h, logger=lines.append)
+        handle.dispose()
+
+        h.intake.publish(
+            IntakeItem(
+                source="human",
+                summary="After dispose",
+                evidence="evidence",
+                affects_areas=("core",),
+                severity="low",
+            )
+        )
+
+        # Give time for any accidental delivery
+        time.sleep(0.05)
+        assert not any("After dispose" in line for line in lines)

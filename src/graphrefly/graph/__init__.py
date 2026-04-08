@@ -25,7 +25,6 @@ from graphrefly.graph.graph import (
     GraphDiffResult,
     GraphObserveSource,
     ObserveResult,
-    SpyHandle,
     TraceEntry,
     reachable,
 )
@@ -56,7 +55,6 @@ __all__ = [
     "NodeProfile",
     "ObserveResult",
     "PATH_SEP",
-    "SpyHandle",
     "TraceEntry",
     "WALEntry",
     "create_dag_cbor_codec",

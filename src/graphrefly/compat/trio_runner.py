@@ -8,6 +8,7 @@ Usage::
     from graphrefly.compat.trio_runner import TrioRunner
     from graphrefly.core.runner import set_default_runner
 
+
     async def main():
         async with trio.open_nursery() as nursery:
             runner = TrioRunner(nursery)
@@ -19,6 +20,7 @@ Usage::
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -34,10 +36,12 @@ class TrioRunner:
     Cancel scopes provide best-effort cancellation.
     """
 
-    __slots__ = ("_nursery",)
+    __slots__ = ("_nursery", "_scheduled", "_completed")
 
     def __init__(self, nursery: trio.Nursery) -> None:
         self._nursery = nursery
+        self._scheduled = 0
+        self._completed = 0
 
     def schedule(
         self,
@@ -48,11 +52,12 @@ class TrioRunner:
         import trio as _trio
 
         cancel_scope = _trio.CancelScope()
-        cancelled = False
+        cancelled = threading.Event()
 
         async def _wrapper() -> None:
             with cancel_scope:
-                if cancelled:
+                if cancelled.is_set():
+                    self._completed += 1
                     coro.close()
                     return
                 try:
@@ -67,15 +72,24 @@ class TrioRunner:
                     on_error(err)
                 else:
                     on_result(result)
+                finally:
+                    self._completed += 1
 
+        self._scheduled += 1
         self._nursery.start_soon(_wrapper)
 
         def cancel() -> None:
-            nonlocal cancelled
-            cancelled = True
+            cancelled.set()
             cancel_scope.cancel()
 
         return cancel
+
+    def __repr__(self) -> str:
+        pending = self._scheduled - self._completed
+        return (
+            f"TrioRunner(scheduled={self._scheduled}, completed={self._completed}, "
+            f"pending={pending})"
+        )
 
 
 __all__ = ["TrioRunner"]

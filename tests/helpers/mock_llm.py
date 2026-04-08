@@ -105,6 +105,7 @@ class MockLLMAdapter:
     async def stream(self, messages: list[dict[str, str]]) -> Any:
         async def _gen():
             yield "mock stream"
+
         return _gen()
 
     def calls_for(self, stage: str) -> list[MockCall]:

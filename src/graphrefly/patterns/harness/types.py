@@ -15,19 +15,13 @@ from typing import Literal, Required, TypedDict
 # Intake
 # ---------------------------------------------------------------------------
 
-IntakeSource = Literal[
-    "eval", "test", "human", "code-change", "hypothesis", "parity"
-]
+IntakeSource = Literal["eval", "test", "human", "code-change", "hypothesis", "parity"]
 
 Severity = Literal["critical", "high", "medium", "low"]
 
-RootCause = Literal[
-    "composition", "missing-fn", "bad-docs", "schema-gap", "regression", "unknown"
-]
+RootCause = Literal["composition", "missing-fn", "bad-docs", "schema-gap", "regression", "unknown"]
 
-Intervention = Literal[
-    "template", "catalog-fn", "docs", "wrapper", "schema-change", "investigate"
-]
+Intervention = Literal["template", "catalog-fn", "docs", "wrapper", "schema-change", "investigate"]
 
 QueueRoute = Literal["auto-fix", "needs-decision", "investigation", "backlog"]
 
@@ -122,9 +116,7 @@ ErrorClassifier = "Callable[[ExecutionResult], ErrorClass]"
 def default_error_classifier(result: ExecutionResult) -> ErrorClass:
     """Default error classifier: parse/config errors are self-correctable."""
     d = result.detail.lower()
-    if any(
-        kw in d for kw in ("parse", "json", "config", "validation", "syntax")
-    ):
+    if any(kw in d for kw in ("parse", "json", "config", "validation", "syntax")):
         return "self-correctable"
     return "structural"
 

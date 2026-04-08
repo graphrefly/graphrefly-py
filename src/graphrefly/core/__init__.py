@@ -17,7 +17,6 @@ from graphrefly.core.guard import (
     record_mutation,
     system_actor,
 )
-from graphrefly.core.meta import describe_node, meta_snapshot
 from graphrefly.core.node import (
     NO_VALUE,
     Node,
@@ -112,7 +111,6 @@ __all__ = [
     "compose_guards",
     "defer_down",
     "defer_set",
-    "describe_node",
     "dispatch_messages",
     "down_with_batch",
     "ensure_registered",
@@ -121,7 +119,6 @@ __all__ = [
     "is_terminal_message",
     "message_tier",
     "propagates_to_meta",
-    "meta_snapshot",
     "node",
     "normalize_actor",
     "partition_for_batch",

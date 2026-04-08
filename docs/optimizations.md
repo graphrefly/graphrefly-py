@@ -34,6 +34,10 @@ Cross-cutting rules for reactive/async integration (especially `patterns.ai`, LL
 | **`Node` resolution without `get()`** | When blocking until first `DATA`, prefer `node.get()` when it already holds a settled value, then subscribe only if still pending — avoids hangs when the node does not replay `DATA` to new subscribers. | — |
 | **Passing plain strings through `fromAny` (TypeScript)** | `fromAny` treats strings as iterables (one `DATA` per character). For tool handlers that return plain strings, return the string directly; use `fromAny` only for `Node` / `AsyncIterable` / Promise-like after await. | — |
 
+- **`batch_id` in `ObserveEvent` timeline fields (decided 2026-04-08):** Added `batch_id?: number` / `batch_id: int` to `ObserveEvent` in both repos. Increments once per subscribe-callback invocation; all messages in one delivery share the same `batch_id`. Useful for correlating events that arrived together. TS: added to `_createObserveResult`, `_createObserveResultForAll`, and both fallback paths. PY: already present; now documented.
+
+- **`ObserveResult.completedCleanly` ambiguous in graph-wide mode (noted 2026-04-08, carried from TS):** Same issue as TS. In graph-wide observation, `completed_cleanly` and `errored` can both be `True` simultaneously if one node completes cleanly before another errors. Single-node mode is unaffected. Options: (A) rename to `any_completed_cleanly` / `any_errored`; (B) add `all_completed_cleanly`; (C) reset on any ERROR. Pending decision.
+
 ---
 
 ## Deferred follow-ups
