@@ -10,6 +10,8 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from graphrefly.patterns.ai import LLMResponse
+
 # ---------------------------------------------------------------------------
 # Types
 # ---------------------------------------------------------------------------
@@ -20,8 +22,8 @@ class MockCall:
     """A single recorded call to the mock adapter."""
 
     stage: str
-    messages: list[dict[str, str]]
-    response: dict[str, str]
+    messages: list[Any]
+    response: Any
 
 
 @dataclass
@@ -87,13 +89,16 @@ class MockLLMAdapter:
         self._stage_indices[stage] = idx + 1
         return response
 
-    async def invoke(self, messages: list[dict[str, str]]) -> dict[str, str]:
-        text = " ".join(m.get("content", "") for m in messages)
+    async def invoke(self, messages: list[Any], opts: Any = None) -> dict[str, str]:
+        text = " ".join(
+            m.get("content", "") if isinstance(m, dict) else getattr(m, "content", "")
+            for m in messages
+        )
         stage = _detect_stage(text, self._script.stages)
         self.stage_counts[stage] = self.stage_counts.get(stage, 0) + 1
         response_data = self._get_response(stage)
         content = response_data if isinstance(response_data, str) else json.dumps(response_data)
-        response = {"content": content}
+        response = LLMResponse(content=content)
         self.calls.append(MockCall(stage=stage, messages=messages, response=response))
         return response
 

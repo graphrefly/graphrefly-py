@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from graphrefly import state
+from graphrefly.core.clock import monotonic_ns
 from graphrefly.core.protocol import MessageType
 from graphrefly.patterns.harness.bridge import (
     EvalJudgeScore,
@@ -22,6 +24,13 @@ from graphrefly.patterns.harness.types import (
     strategy_key,
 )
 from graphrefly.patterns.messaging import TopicGraph
+from tests.helpers.mock_llm import MockLLMAdapter, MockScript, StageScript
+
+
+def _wait_for(predicate: Any, timeout_s: float = 5.0) -> None:
+    deadline = monotonic_ns() + int(timeout_s * 1_000_000_000)
+    while not predicate() and monotonic_ns() < deadline:
+        time.sleep(0.02)
 
 # ---------------------------------------------------------------------------
 # types
@@ -381,3 +390,60 @@ class TestHarnessLoop:
         entry = h.strategy.lookup("composition", "template")
         assert entry is not None
         assert entry.success_rate == 1.0
+
+    def test_gate_modify_overrides_classification(self) -> None:
+        """gate.modify() overrides rootCause/intervention before forwarding."""
+        mock = MockLLMAdapter(MockScript(stages={
+            "triage": StageScript(responses=[{
+                "root_cause": "unknown",
+                "intervention": "investigate",
+                "route": "needs-decision",
+                "priority": 60,
+            }]),
+            "execute": StageScript(responses=[{
+                "outcome": "success",
+                "detail": "Fixed with template",
+            }]),
+            "verify": StageScript(responses=[{
+                "verified": True,
+                "findings": ["ok"],
+            }]),
+        }))
+
+        h = harness_loop("mock-gate-modify", adapter=mock, max_reingestions=0)
+
+        h.intake.publish(IntakeItem(
+            source="eval",
+            summary="T5: resilience ordering wrong",
+            evidence="wrong order in retry stack",
+            affects_areas=("graphspec",),
+            severity="high",
+        ))
+
+        # Wait for the item to arrive at the needs-decision queue
+        queue = h.queues["needs-decision"]
+        _wait_for(lambda: len(queue.retained()) >= 1)
+        assert len(queue.retained()) >= 1
+
+        gate_ctrl = h.gates["needs-decision"]
+
+        # Human steering: override triage classification
+        gate_ctrl.modify(
+            lambda item, *_args: {
+                **(item if isinstance(item, dict) else {}),
+                "root_cause": "composition",
+                "intervention": "template",
+            },
+            count=1,
+        )
+
+        # Wait for modified item to flow through execute → verify → strategy
+        _wait_for(lambda: len(h.strategy.node.get()) > 0)
+
+        # Strategy should record the OVERRIDDEN classification
+        entry = h.strategy.lookup("composition", "template")
+        assert entry is not None
+        assert entry.successes >= 1
+
+        # Original classification should NOT appear
+        assert h.strategy.lookup("unknown", "investigate") is None
