@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.18.0 (2026-04-08)
+
+### Features
+
+- Address optimizations
+  ([`beddc97`](https://github.com/graphrefly/graphrefly-py/commit/beddc979beda1b8320f4eb94f997c7ee142abed4))
+
+
 ## v0.17.0 (2026-04-07)
 
 ### Features
