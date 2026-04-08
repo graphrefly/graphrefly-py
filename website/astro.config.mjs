@@ -33,6 +33,10 @@ export default defineConfig({
 					tag: "link",
 					attrs: { rel: "preconnect", href: "https://fonts.gstatic.com", crossorigin: "" },
 				},
+				{
+					tag: "script",
+					content: `(function(){var p=location.pathname,l=p.toLowerCase();if(p!==l)location.replace(l+location.search+location.hash)})()`,
+				},
 			],
 			social: [
 				{
@@ -47,6 +51,10 @@ export default defineConfig({
 					items: [{ label: "Specification", link: "/spec" }],
 				},
 				...pyApiSidebar,
+				{
+					label: "Recipes",
+					items: [{ label: "Overview", link: "/recipes" }],
+				},
 				{
 					label: "Labs",
 					items: [{ label: "Python (Pyodide)", link: "/lab/python" }],

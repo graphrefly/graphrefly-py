@@ -12,6 +12,7 @@ from graphrefly.patterns.harness.bridge import (
     eval_intake_bridge,
 )
 from graphrefly.patterns.harness.loop import HarnessGraph, harness_loop
+from graphrefly.patterns.harness.profile import HarnessProfileResult, harness_profile
 from graphrefly.patterns.harness.strategy import (
     StrategyModelBundle,
     StrategySnapshot,
@@ -78,4 +79,7 @@ __all__ = [
     # loop
     "HarnessGraph",
     "harness_loop",
+    # profile
+    "HarnessProfileResult",
+    "harness_profile",
 ]

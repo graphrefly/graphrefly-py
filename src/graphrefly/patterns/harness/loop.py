@@ -8,11 +8,11 @@ insight applied to human+LLM collaboration.
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from graphrefly.core.sugar import effect
+from graphrefly.core.protocol import MessageType
+from graphrefly.core.sugar import effect, state
 from graphrefly.extra.tier1 import merge, with_latest_from
 from graphrefly.graph.graph import Graph
 from graphrefly.patterns.ai import prompt_node
@@ -26,6 +26,7 @@ from .types import (
     ErrorClass,
     ExecutionResult,
     IntakeItem,
+    PrioritySignals,
     QueueConfig,
     TriagedItem,
     default_error_classifier,
@@ -34,12 +35,25 @@ from .types import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-_RETRY_PREFIX_RE = re.compile(r"^\[RETRY \d+/\d+\]\s*")
 
+def _tracking_key(item: Any) -> str:
+    """Stable tracking key for an item.
 
-def _base_summary(summary: str) -> str:
-    """Strip ``[RETRY N/M] `` prefix to get the stable item identity key."""
-    return _RETRY_PREFIX_RE.sub("", summary)
+    Uses ``related_to[0]`` if the item is already a retry or reingestion
+    (carries the original key forward). Falls back to the raw summary.
+    """
+    related = (
+        item.get("related_to") if isinstance(item, dict) else getattr(item, "related_to", None)
+    )
+    if related:
+        first = related[0] if isinstance(related, (list, tuple)) else None
+        if first:
+            return str(first)
+    if isinstance(item, dict):
+        summary = item.get("summary", str(item))
+    else:
+        summary = getattr(item, "summary", str(item))
+    return str(summary)
 
 
 
@@ -109,8 +123,8 @@ class HarnessGraph(Graph):
         "gates",
         "strategy",
         "verify_results",
-        "retry_tracker",
-        "reingestion_tracker",
+        "total_retries",
+        "total_reingestions",
     )
 
     def __init__(
@@ -121,8 +135,8 @@ class HarnessGraph(Graph):
         gates: dict[str, Any],  # GateController
         strategy: StrategyModelBundle,
         verify_results: TopicGraph,
-        retry_tracker: dict[str, int],
-        reingestion_tracker: dict[str, int],
+        total_retries: Any,  # Node[int] — reactive state node
+        total_reingestions: Any,  # Node[int] — reactive state node
     ) -> None:
         super().__init__(name)
         self.intake = intake
@@ -130,8 +144,8 @@ class HarnessGraph(Graph):
         self.gates = gates
         self.strategy = strategy
         self.verify_results = verify_results
-        self.retry_tracker = retry_tracker
-        self.reingestion_tracker = reingestion_tracker
+        self.total_retries = total_retries
+        self.total_reingestions = total_reingestions
 
 
 # ---------------------------------------------------------------------------
@@ -147,9 +161,12 @@ def harness_loop(
     execute_prompt: str | Callable[..., str] | None = None,
     verify_prompt: str | Callable[..., str] | None = None,
     queues: dict[str, QueueConfig] | None = None,
+    priority_signals: PrioritySignals | None = None,
     error_classifier: Callable[..., ErrorClass] | None = None,
     max_retries: int = 2,
+    max_total_retries: int | None = None,
     max_reingestions: int = 1,
+    max_total_reingestions: int | None = None,
     retained_limit: int = 1000,
 ) -> HarnessGraph:
     """Wire the reactive collaboration loop as a static-topology graph.
@@ -212,18 +229,44 @@ def harness_loop(
     for route in QUEUE_NAMES:
         queue_topics[route] = TopicGraph(f"queue/{route}", retained_limit=retained_limit)
 
-    # Router effect
-    def _route(deps: list[Any], _actions: Any) -> None:
-        item = deps[0]
-        if item is None:
-            return
-        route = getattr(item, "route", None)
-        if isinstance(item, dict):
-            route = item.get("route")
-        if route and route in queue_topics:
-            queue_topics[route].publish(item)
+    # Router: merge intake fields into triage classification before routing.
+    # Sample triage_input (not intake.latest) — triage_input holds the
+    # [item, strategy] pair that triggered this specific triage, so we get
+    # the correct item even if a newer intake has arrived since.
+    router_input = triage_node | with_latest_from(triage_input)
 
-    _router = effect([triage_node], _route)
+    def _route(deps: list[Any], _actions: Any) -> None:
+        pair = deps[0]
+        if pair is None:
+            return
+        classification, triage_pair = pair
+        if classification is None:
+            return
+        route = (
+            classification.get("route") if isinstance(classification, dict)
+            else getattr(classification, "route", None)
+        )
+        if not route or route not in queue_topics:
+            return
+        # Merge intake item fields with triage classification
+        intake_item = triage_pair[0] if triage_pair else None
+        intake_dict: dict[str, Any] = {}
+        if intake_item is not None:
+            if isinstance(intake_item, dict):
+                intake_dict = intake_item
+            else:
+                for f in ("source", "summary", "evidence", "affects_areas",
+                          "affects_eval_tasks", "severity", "related_to"):
+                    v = getattr(intake_item, f, None)
+                    if v is not None:
+                        intake_dict[f] = v
+        if isinstance(classification, dict):
+            merged = {**intake_dict, **classification}
+        else:
+            merged = classification
+        queue_topics[route].publish(merged)
+
+    _router = effect([router_input], _route)
     _router_unsub = _router.subscribe(lambda _msgs: None)  # keepalive (COMPOSITION-GUIDE §1)
 
     # --- Stage 4: GATE ---
@@ -313,8 +356,16 @@ def harness_loop(
     verify_context = verify_with_exec | with_latest_from(execute_input)
 
     _max_reingestions = max_reingestions
-    retry_tracker: dict[str, int] = {}
-    reingestion_tracker: dict[str, int] = {}
+    _max_total_retries = (
+        min(max_total_retries, 100) if max_total_retries is not None
+        else min(max_retries * 10, 100)
+    )
+    _max_total_reingestions = (
+        min(max_total_reingestions, 100) if max_total_reingestions is not None
+        else min(max_reingestions * 10, 100)
+    )
+    total_retries = state(0)
+    total_reingestions = state(0)
 
     def _fast_retry(deps: list[Any], _actions: Any) -> None:
         ctx = deps[0]
@@ -327,7 +378,7 @@ def harness_loop(
         verified = vo.get("verified") if isinstance(vo, dict) else getattr(vo, "verified", None)
         findings = vo.get("findings", ()) if isinstance(vo, dict) else getattr(vo, "findings", ())
 
-        # Assemble full ExecutionResult from LLM output + context
+        # Assemble full ExecutionResult + VerifyResult from LLM outputs + context
         rc = (
             item.get("root_cause")
             if isinstance(item, dict)
@@ -338,25 +389,35 @@ def harness_loop(
             if isinstance(item, dict)
             else getattr(item, "intervention", None)
         )
-        summary = (
-            item.get("summary", str(item))
-            if isinstance(item, dict)
-            else getattr(item, "summary", str(item))
-        )
-        key = _base_summary(summary)
-
-        if verified:
-            if rc and iv:
-                strat.record(rc, iv, True)
-            verify_results.publish(vo)
-            return
-
-        # Failed verification
-        err_class = (
+        exec_outcome = (
+            exec_raw.get("outcome", "failure") if isinstance(exec_raw, dict)
+            else getattr(exec_raw, "outcome", "failure")
+        ) if exec_raw else "failure"
+        exec_detail = (
+            exec_raw.get("detail", "unknown") if isinstance(exec_raw, dict)
+            else getattr(exec_raw, "detail", "unknown")
+        ) if exec_raw else "unknown"
+        err_class_raw = (
             vo.get("error_class")
             if isinstance(vo, dict)
             else getattr(vo, "error_class", None)
         )
+        vr = {
+            "item": item,
+            "execution": {"item": item, "outcome": exec_outcome, "detail": exec_detail},
+            "verified": verified,
+            "findings": list(findings) if findings else [],
+            "error_class": err_class_raw,
+        }
+
+        if verified:
+            if rc and iv:
+                strat.record(rc, iv, True)
+            verify_results.publish(vr)
+            return
+
+        # Failed verification
+        err_class = err_class_raw
         if not err_class:
             err_class = classify_error(
                 ExecutionResult(
@@ -366,18 +427,40 @@ def harness_loop(
                 )
             )
 
-        retry_count = retry_tracker.get(key, 0)
+        item_retries = (
+            item.get("_retries", 0) if isinstance(item, dict)
+            else getattr(item, "_retries", 0)
+        )
 
-        if err_class == "self-correctable" and retry_count < max_retries:
-            retry_tracker[key] = retry_count + 1
+        if (
+            err_class == "self-correctable"
+            and item_retries < max_retries
+            and (total_retries.get() or 0) < _max_total_retries
+        ):
+            total_retries.down([(MessageType.DATA, (total_retries.get() or 0) + 1)])
+            key = _tracking_key(item)
+            prev_findings = "; ".join(findings)
+            retry_item: Any
             if isinstance(item, TriagedItem):
-                prev_findings = "; ".join(findings)
                 retry_item = replace(
                     item,
+                    _retries=item_retries + 1,
                     summary=(
-                        f"[RETRY {retry_count + 1}/{max_retries}] {key} — Previous: {prev_findings}"
+                        f"[RETRY {item_retries + 1}/{max_retries}]"
+                        f" {key} — Previous: {prev_findings}"
                     ),
+                    related_to=(key,),
                 )
+            elif isinstance(item, dict):
+                retry_item = {
+                    **item,
+                    "_retries": item_retries + 1,
+                    "summary": (
+                        f"[RETRY {item_retries + 1}/{max_retries}]"
+                        f" {key} — Previous: {prev_findings}"
+                    ),
+                    "related_to": (key,),
+                }
             else:
                 retry_item = item
             retry_topic.publish(retry_item)
@@ -385,12 +468,18 @@ def harness_loop(
             # Structural failure or max retries exceeded → full loop via INTAKE
             if rc and iv:
                 strat.record(rc, iv, False)
-            verify_results.publish(vo)
+            verify_results.publish(vr)
 
-            # Per-item reingestion cap
-            item_reingestions = reingestion_tracker.get(key, 0)
-            if item_reingestions < _max_reingestions:
-                reingestion_tracker[key] = item_reingestions + 1
+            key = _tracking_key(item)
+            item_reingestions = (
+                item.get("_reingestions", 0) if isinstance(item, dict)
+                else getattr(item, "_reingestions", 0)
+            )
+            if (
+                item_reingestions < _max_reingestions
+                and (total_reingestions.get() or 0) < _max_total_reingestions
+            ):
+                total_reingestions.down([(MessageType.DATA, (total_reingestions.get() or 0) + 1)])
                 areas = (
                     item.get("affects_areas", ())
                     if isinstance(item, dict)
@@ -410,6 +499,7 @@ def harness_loop(
                         affects_eval_tasks=tuple(eval_tasks) if eval_tasks else None,
                         severity="high",
                         related_to=(key,),
+                        _reingestions=item_reingestions + 1,
                     )
                 )
 
@@ -424,8 +514,8 @@ def harness_loop(
         gates=gate_controllers,
         strategy=strat,
         verify_results=verify_results,
-        retry_tracker=retry_tracker,
-        reingestion_tracker=reingestion_tracker,
+        total_retries=total_retries,
+        total_reingestions=total_reingestions,
     )
 
     # Register keepalive disposers

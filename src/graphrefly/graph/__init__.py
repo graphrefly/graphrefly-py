@@ -1,5 +1,19 @@
 """Graph container types and composition primitives for graphrefly."""
 
+from graphrefly.graph.codec import (
+    JSON_CODEC,
+    DeltaCheckpoint,
+    EvictedSubgraphInfo,
+    EvictionPolicy,
+    GraphCodec,
+    JsonCodec,
+    LazyGraphCodec,
+    WALEntry,
+    create_dag_cbor_codec,
+    create_dag_cbor_zstd_codec,
+    negotiate_codec,
+    replay_wal,
+)
 from graphrefly.graph.graph import (
     GRAPH_META_SEGMENT,
     GRAPH_SNAPSHOT_VERSION,
@@ -15,19 +29,41 @@ from graphrefly.graph.graph import (
     TraceEntry,
     reachable,
 )
+from graphrefly.graph.profile import (
+    GraphProfileResult,
+    NodeProfile,
+    graph_profile,
+)
+from graphrefly.graph.sizeof import sizeof
 
 __all__ = [
+    "DeltaCheckpoint",
     "DescribeResult",
+    "EvictedSubgraphInfo",
+    "EvictionPolicy",
     "GRAPH_META_SEGMENT",
     "GRAPH_SNAPSHOT_VERSION",
     "GraphAutoCheckpointHandle",
+    "GraphCodec",
     "Graph",
     "GraphDiffResult",
     "GraphObserveSource",
+    "GraphProfileResult",
+    "JSON_CODEC",
+    "JsonCodec",
+    "LazyGraphCodec",
     "META_PATH_SEG",
+    "NodeProfile",
     "ObserveResult",
     "PATH_SEP",
     "SpyHandle",
     "TraceEntry",
+    "WALEntry",
+    "create_dag_cbor_codec",
+    "create_dag_cbor_zstd_codec",
+    "graph_profile",
+    "negotiate_codec",
     "reachable",
+    "replay_wal",
+    "sizeof",
 ]

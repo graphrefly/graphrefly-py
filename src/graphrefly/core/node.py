@@ -471,11 +471,7 @@ class NodeImpl[T]:
             else:
                 self.down([(MessageType.DIRTY,), (MessageType.RESOLVED,)], internal=True)
             return
-        if lock is not None:
-            with lock:
-                self._cached = cast("T", value)
-        else:
-            self._cached = cast("T", value)
+        # _handle_local_lifecycle (called by down(internal=True)) sets _cached from DATA payload.
         if was_dirty:
             self.down([(MessageType.DATA, value)], internal=True)
         else:

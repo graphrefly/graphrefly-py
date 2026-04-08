@@ -448,7 +448,7 @@ def _index_md(names: list[str]) -> str:
         "",
     ]
     for n in names:
-        lines.append(f"- [{n}](./{n}/)")
+        lines.append(f"- [{n}](./{n.lower()}/)")
     lines.append("")
     return "\n".join(lines)
 

@@ -43,6 +43,7 @@ class IntakeItem:
     affects_eval_tasks: tuple[str, ...] | None = None
     severity: Severity | None = None
     related_to: tuple[str, ...] | None = None
+    _reingestions: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +67,8 @@ class TriagedItem:
     severity: Severity | None = None
     related_to: tuple[str, ...] | None = None
     triage_reasoning: str | None = None
+    _retries: int = 0
+    _reingestions: int = 0
 
 
 # ---------------------------------------------------------------------------
