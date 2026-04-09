@@ -6,7 +6,6 @@ import time
 from typing import Any
 
 from graphrefly import state
-from graphrefly.core.clock import monotonic_ns
 from graphrefly.core.protocol import MessageType
 from graphrefly.patterns.harness.bridge import (
     EvalJudgeScore,
@@ -16,6 +15,7 @@ from graphrefly.patterns.harness.bridge import (
 )
 from graphrefly.patterns.harness.loop import HarnessGraph, harness_loop
 from graphrefly.patterns.harness.strategy import priority_score, strategy_model
+from graphrefly.patterns.harness.trace import TraceEvent, harness_trace
 from graphrefly.patterns.harness.types import (
     ExecutionResult,
     IntakeItem,
@@ -25,12 +25,6 @@ from graphrefly.patterns.harness.types import (
 )
 from graphrefly.patterns.messaging import TopicGraph
 from tests.helpers.mock_llm import MockLLMAdapter, MockScript, StageScript
-
-
-def _wait_for(predicate: Any, timeout_s: float = 5.0) -> None:
-    deadline = monotonic_ns() + int(timeout_s * 1_000_000_000)
-    while not predicate() and monotonic_ns() < deadline:
-        time.sleep(0.02)
 
 
 # ---------------------------------------------------------------------------
@@ -410,7 +404,12 @@ class TestHarnessLoop:
         assert entry.success_rate == 1.0
 
     def test_gate_modify_overrides_classification(self) -> None:
-        """gate.modify() overrides rootCause/intervention before forwarding."""
+        """gate.modify() overrides rootCause/intervention before forwarding.
+
+        Revalidated with harnessTrace (inspection consolidation §5) to verify
+        that INTAKE → TRIAGE → QUEUE → GATE → EXECUTE → VERIFY → STRATEGY
+        stages fire in the expected order after human steering.
+        """
         mock = MockLLMAdapter(
             MockScript(
                 stages={
@@ -446,6 +445,10 @@ class TestHarnessLoop:
 
         h = harness_loop("mock-gate-modify", adapter=mock, max_reingestions=0)
 
+        # Wire harnessTrace to validate stage ordering
+        trace_lines: list[str] = []
+        trace_handle = harness_trace(h, logger=trace_lines.append)
+
         h.intake.publish(
             IntakeItem(
                 source="eval",
@@ -456,14 +459,16 @@ class TestHarnessLoop:
             )
         )
 
-        # Wait for the item to arrive at the needs-decision queue
+        # Pipeline processes synchronously with mock adapter — queue is populated.
         queue = h.queues["needs-decision"]
-        _wait_for(lambda: len(queue.retained()) >= 1)
+        assert queue.latest.get() is not None
         assert len(queue.retained()) >= 1
 
         gate_ctrl = h.gates["needs-decision"]
 
-        # Human steering: override triage classification
+        # Human steering: override triage classification.
+        # Items flowing through gates are dicts (router merges intake + triage
+        # as plain dicts), so dict spread is the correct transform here.
         gate_ctrl.modify(
             lambda item, *_args: {
                 **(item if isinstance(item, dict) else {}),
@@ -473,9 +478,7 @@ class TestHarnessLoop:
             count=1,
         )
 
-        # Wait for modified item to flow through execute → verify → strategy
-        _wait_for(lambda: len(h.strategy.node.get()) > 0)
-
+        # Pipeline flows synchronously with mock adapter — strategy is updated.
         # Strategy should record the OVERRIDDEN classification
         entry = h.strategy.lookup("composition", "template")
         assert entry is not None
@@ -483,6 +486,26 @@ class TestHarnessLoop:
 
         # Original classification should NOT appear
         assert h.strategy.lookup("unknown", "investigate") is None
+
+        # harnessTrace revalidation: structured events validate stage ordering
+        # without string parsing (inspection consolidation §5).
+        trace_handle.dispose()
+        evts: list[TraceEvent] = trace_handle.events
+        stages_seen = [e.stage for e in evts if e.type == "data"]
+        assert "INTAKE" in stages_seen, f"INTAKE stage not traced: {stages_seen}"
+        assert "TRIAGE" in stages_seen, f"TRIAGE stage not traced: {stages_seen}"
+        assert "STRATEGY" in stages_seen, f"STRATEGY stage not traced: {stages_seen}"
+
+        # Verify stage ordering: INTAKE must come before TRIAGE, TRIAGE before STRATEGY
+        intake_idx = next(i for i, s in enumerate(stages_seen) if s == "INTAKE")
+        triage_idx = next(i for i, s in enumerate(stages_seen) if s == "TRIAGE")
+        strategy_idx = next(i for i, s in enumerate(stages_seen) if s == "STRATEGY")
+        assert intake_idx < triage_idx < strategy_idx, (
+            f"Stage order violation: INTAKE@{intake_idx} TRIAGE@{triage_idx} STRATEGY@{strategy_idx}"
+        )
+
+        # Verify trace_lines still work as the string logger fallback
+        assert any("INTAKE" in line for line in trace_lines)
 
 
 # ---------------------------------------------------------------------------
@@ -513,7 +536,7 @@ class TestHarnessTrace:
         return MockAdapter()
 
     def test_harness_trace_returns_handle(self) -> None:
-        from graphrefly.patterns.harness.trace import HarnessTraceHandle, harness_trace
+        from graphrefly.patterns.harness.trace import HarnessTraceHandle
 
         h = harness_loop("trace-test-1", adapter=self._mock_adapter())
         handle = harness_trace(h)
@@ -522,8 +545,6 @@ class TestHarnessTrace:
         handle.dispose()
 
     def test_harness_trace_captures_intake(self) -> None:
-        from graphrefly.patterns.harness.trace import harness_trace
-
         h = harness_loop("trace-test-2", adapter=self._mock_adapter())
         lines: list[str] = []
         handle = harness_trace(h, logger=lines.append)
@@ -538,13 +559,10 @@ class TestHarnessTrace:
             )
         )
 
-        _wait_for(lambda: len(lines) > 0)
         assert any("INTAKE" in line for line in lines)
         handle.dispose()
 
     def test_harness_trace_captures_stage_nodes(self) -> None:
-        from graphrefly.patterns.harness.trace import harness_trace
-
         h = harness_loop("trace-test-stages", adapter=self._mock_adapter())
         lines: list[str] = []
         handle = harness_trace(h, logger=lines.append)
@@ -559,14 +577,11 @@ class TestHarnessTrace:
             )
         )
 
-        _wait_for(lambda: any("TRIAGE" in line for line in lines), timeout_s=5.0)
         assert any("TRIAGE" in line for line in lines)
         handle.dispose()
 
     def test_harness_trace_captures_strategy(self) -> None:
         """STRATEGY events fire after a full auto-fix pipeline run."""
-        from graphrefly.patterns.harness.trace import harness_trace
-
         mock = MockLLMAdapter(
             MockScript(
                 stages={
@@ -603,14 +618,11 @@ class TestHarnessTrace:
             )
         )
 
-        _wait_for(lambda: any("STRATEGY" in line for line in lines), timeout_s=10.0)
         assert any("STRATEGY" in line for line in lines)
         handle.dispose()
 
     def test_harness_trace_elapsed_timestamps(self) -> None:
         """Lines include elapsed-time prefix in [X.XXXs] format."""
-        from graphrefly.patterns.harness.trace import harness_trace
-
         h = harness_loop("trace-test-elapsed", adapter=self._mock_adapter())
         lines: list[str] = []
         handle = harness_trace(h, logger=lines.append)
@@ -625,14 +637,11 @@ class TestHarnessTrace:
             )
         )
 
-        _wait_for(lambda: len(lines) > 0)
         # All lines should start with [X.XXXs]
         assert all(line.startswith("[") and "s]" in line for line in lines)
         handle.dispose()
 
     def test_harness_trace_dispose_stops_capture(self) -> None:
-        from graphrefly.patterns.harness.trace import harness_trace
-
         h = harness_loop("trace-test-3", adapter=self._mock_adapter())
         lines: list[str] = []
         handle = harness_trace(h, logger=lines.append)

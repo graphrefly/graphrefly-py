@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from graphrefly.core.runner import is_runner_registered
 from graphrefly.graph.profile import graph_profile
 
 if TYPE_CHECKING:
@@ -36,6 +37,8 @@ class HarnessProfileResult:
     strategy_entries: int
     total_retries: int
     total_reingestions: int
+    # Runner diagnostic (session doc: surfaces registered=False immediately)
+    runner_registered: bool
 
 
 # ---------------------------------------------------------------------------
@@ -77,4 +80,5 @@ def harness_profile(
         strategy_entries=strategy_entries,
         total_retries=harness.total_retries.get() or 0,
         total_reingestions=harness.total_reingestions.get() or 0,
+        runner_registered=is_runner_registered(),
     )

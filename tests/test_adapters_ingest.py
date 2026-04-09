@@ -11,7 +11,6 @@ from typing import Any
 import pytest
 
 from graphrefly.core import MessageType
-from graphrefly.core.clock import monotonic_ns
 from graphrefly.extra.adapters import (
     from_clickhouse_watch,
     from_csv,
@@ -34,15 +33,7 @@ from graphrefly.extra.adapters import (
     to_rabbitmq,
     to_redis_stream,
 )
-from graphrefly.extra.sources import from_iter, to_list
-
-NS_PER_SEC = 1_000_000_000
-
-
-def _wait_for(predicate: Any, timeout_ns: int = 5 * NS_PER_SEC) -> None:
-    deadline = monotonic_ns() + timeout_ns
-    while not predicate() and monotonic_ns() < deadline:
-        time.sleep(0.01)
+from graphrefly.extra.sources import first_value_from, first_where, from_iter, to_list
 
 
 # ——————————————————————————————————————————————————————————————
@@ -307,7 +298,6 @@ class TestFromKafka:
         )
 
         done.wait(timeout=5.0)
-        _wait_for(lambda: len(received) > 0)
         unsub()
 
         assert len(received) >= 1
@@ -327,7 +317,6 @@ class TestToKafka:
         producer = MockProducer()
         handle = to_kafka(source, producer, "output")
 
-        _wait_for(lambda: len(sent) >= 3)
         handle.dispose()
 
         assert len(sent) == 3
@@ -369,7 +358,7 @@ class TestFromRedisStream:
             lambda msgs: [received.append(m[1]) for m in msgs if m[0] is MessageType.DATA]
         )
 
-        _wait_for(lambda: len(received) >= 2)
+        first_where(n, lambda v: v is not None and v["id"] == "2-0", timeout=5.0)
         unsub()
 
         assert len(received) >= 2
@@ -391,7 +380,6 @@ class TestToRedisStream:
         client = MockRedis()
         handle = to_redis_stream(source, client, "mystream")
 
-        _wait_for(lambda: len(added) >= 2)
         handle.dispose()
 
         assert len(added) == 2
@@ -511,8 +499,6 @@ class TestFromSyslog:
 
         parsed = parse_syslog("<34>1 2023-01-01T00:00:00Z host app 1234 ID001 test msg")
         fire["emit"](parsed)
-
-        _wait_for(lambda: len(received) >= 1)
         unsub()
 
         assert received[0].facility == 4
@@ -539,8 +525,6 @@ class TestFromStatsD:
         )
 
         fire["emit"](parse_statsd("req.count:1|c|#env:prod"))
-
-        _wait_for(lambda: len(received) >= 1)
         unsub()
 
         assert received[0].name == "req.count"
@@ -605,7 +589,6 @@ class TestFromPulsar:
         )
 
         done.wait(timeout=5.0)
-        _wait_for(lambda: len(received) > 0)
         unsub()
 
         assert len(received) >= 1
@@ -631,7 +614,8 @@ class TestFromPulsar:
             lambda msgs: [errors.append(m[1]) for m in msgs if m[0] is MessageType.ERROR]
         )
 
-        _wait_for(lambda: len(errors) > 0)
+        with pytest.raises(RuntimeError, match="broker down"):
+            first_value_from(n, timeout=5.0)
         unsub()
 
         assert len(errors) == 1
@@ -696,7 +680,6 @@ class TestToPulsar:
         source = from_iter([1, 2])
         handle = to_pulsar(source, MockProducer())
 
-        _wait_for(lambda: len(sent) >= 2)
         handle.dispose()
 
         assert len(sent) == 2
@@ -737,7 +720,6 @@ class TestFromNATS:
         )
 
         done.wait(timeout=5.0)
-        _wait_for(lambda: len(received) > 0)
         unsub()
 
         assert len(received) >= 1
@@ -760,7 +742,12 @@ class TestFromNATS:
             lambda msgs: [completed.append(True) for m in msgs if m[0] is MessageType.COMPLETE]
         )
 
-        _wait_for(lambda: len(completed) > 0)
+        # Terminal event: COMPLETE without DATA. first_value_from raises
+        # StopIteration, which proves the source completed reactively.
+        from graphrefly.extra.sources import first_value_from
+
+        with pytest.raises(StopIteration):
+            first_value_from(n, timeout=5.0)
         unsub()
 
         assert len(completed) >= 1
@@ -787,7 +774,8 @@ class TestFromNATS:
             lambda msgs: [errors.append(m[1]) for m in msgs if m[0] is MessageType.ERROR]
         )
 
-        _wait_for(lambda: len(errors) > 0)
+        with pytest.raises(RuntimeError, match="connection lost"):
+            first_value_from(n, timeout=5.0)
         unsub()
 
     def test_async_subscription_emits_messages(self) -> None:
@@ -825,7 +813,7 @@ class TestFromNATS:
             lambda msgs: [received.append(m[1]) for m in msgs if m[0] is MessageType.DATA]
         )
 
-        _wait_for(lambda: len(received) > 0)
+        first_where(n, lambda v: v is not None, timeout=5.0)
         unsub()
 
         assert len(received) >= 1
@@ -869,7 +857,7 @@ class TestFromNATS:
             lambda msgs: [received.append(m[1]) for m in msgs if m[0] is MessageType.DATA]
         )
 
-        _wait_for(lambda: len(received) > 0)
+        first_where(n, lambda v: v is not None, timeout=5.0)
         unsub()
 
         assert len(received) >= 1
@@ -898,7 +886,8 @@ class TestFromNATS:
             lambda msgs: [completed.append(True) for m in msgs if m[0] is MessageType.COMPLETE]
         )
 
-        _wait_for(lambda: len(completed) > 0)
+        with pytest.raises(StopIteration):
+            first_value_from(n, timeout=5.0)
         unsub()
 
         assert len(completed) >= 1
@@ -918,7 +907,6 @@ class TestToNATS:
         source = from_iter(["hello"])
         handle = to_nats(source, MockClient(), "events.out")
 
-        _wait_for(lambda: len(published) >= 1)
         handle.dispose()
 
         assert len(published) == 1
@@ -968,7 +956,6 @@ class TestFromRabbitMQ:
         )
 
         done.wait(timeout=5.0)
-        _wait_for(lambda: len(received) > 0)
         unsub()
 
         assert len(received) >= 1
@@ -999,7 +986,8 @@ class TestFromRabbitMQ:
             lambda msgs: [errors.append(m[1]) for m in msgs if m[0] is MessageType.ERROR]
         )
 
-        _wait_for(lambda: len(errors) > 0)
+        with pytest.raises(RuntimeError, match="channel closed"):
+            first_value_from(n, timeout=5.0)
         unsub()
 
         assert len(errors) == 1
@@ -1034,7 +1022,6 @@ class TestFromRabbitMQ:
         )
 
         done.wait(timeout=5.0)
-        _wait_for(lambda: len(errors) > 0)
         unsub()
 
         assert len(errors) == 1
@@ -1052,7 +1039,6 @@ class TestToRabbitMQ:
         source = from_iter(["hello"])
         handle = to_rabbitmq(source, MockChannel(), "my-exchange")
 
-        _wait_for(lambda: len(published) >= 1)
         handle.dispose()
 
         assert len(published) == 1
@@ -1075,7 +1061,6 @@ class TestToRabbitMQ:
             routing_key_extractor=lambda v: v["type"],
         )
 
-        _wait_for(lambda: len(published) >= 1)
         handle.dispose()
 
         assert published[0]["routing_key"] == "click"

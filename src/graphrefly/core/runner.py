@@ -99,9 +99,24 @@ def resolve_runner(runner: Runner | None) -> Runner:
     return get_default_runner()
 
 
+def is_runner_registered() -> bool:
+    """Return ``True`` if a default :class:`Runner` is set for the current thread.
+
+    **Debug / test only** — not part of the public API. Used by
+    ``harnessProfile`` to surface ``runner_registered=False`` in diagnostic
+    output so missing-Runner stalls are immediately visible.
+    """
+    try:
+        r = _runner_tls.runner
+    except AttributeError:
+        return False
+    return r is not None
+
+
 __all__ = [
     "Runner",
     "get_default_runner",
+    "is_runner_registered",
     "resolve_runner",
     "set_default_runner",
 ]

@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import json
-import time
 from typing import Any
 
 import pytest
 
-from graphrefly.core.clock import monotonic_ns
 from graphrefly.core.protocol import MessageType
 from graphrefly.core.sugar import state
 from graphrefly.extra.adapters import (
@@ -35,14 +33,6 @@ from graphrefly.extra.adapters import (
     to_tortoise,
 )
 from graphrefly.extra.sources import from_iter
-
-NS_PER_SEC = 1_000_000_000
-
-
-def _wait_for(predicate: Any, timeout_ns: int = 5 * NS_PER_SEC) -> None:
-    deadline = monotonic_ns() + timeout_ns
-    while not predicate() and monotonic_ns() < deadline:
-        time.sleep(0.01)
 
 
 class MockWriter:

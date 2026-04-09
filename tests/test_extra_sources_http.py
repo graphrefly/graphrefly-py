@@ -1,18 +1,9 @@
+import threading
 import unittest.mock
 
-from graphrefly.core.clock import monotonic_ns
+from graphrefly.core.node import MessageType
 from graphrefly.extra.adapters import from_http
-
-NS_PER_SEC = 1_000_000_000
-
-
-def _wait_for(predicate, timeout_ns=5 * NS_PER_SEC):
-    """Spin until predicate() is truthy, using monotonic_ns for deadline."""
-    import time
-
-    deadline = monotonic_ns() + timeout_ns
-    while not predicate() and monotonic_ns() < deadline:
-        time.sleep(0.05)
+from graphrefly.extra.sources import first_where
 
 
 def test_from_http_get():
@@ -27,7 +18,7 @@ def test_from_http_get():
         bundle = from_http("https://example.com")
         unsub = bundle.node.subscribe(lambda _: None)
 
-        _wait_for(lambda: bundle.status.get() == "completed")
+        first_where(bundle.status, lambda v: v == "completed", timeout=5.0)
 
         assert bundle.fetch_count.get() == 1
         assert bundle.node.get() == {"foo": "bar"}
@@ -53,7 +44,7 @@ def test_from_http_post():
         bundle = from_http("https://example.com/post", method="POST", body=body)
         unsub = bundle.node.subscribe(lambda _: None)
 
-        _wait_for(lambda: bundle.status.get() == "completed")
+        first_where(bundle.status, lambda v: v == "completed", timeout=5.0)
 
         assert bundle.fetch_count.get() == 1
         assert bundle.node.get() == {"success": True}
@@ -70,9 +61,15 @@ def test_from_http_error():
         mock_urlopen.side_effect = Exception("Connection refused")
 
         bundle = from_http("https://example.com/fail")
+        # Wire observer BEFORE the producer starts (subscribe activates the fetch thread).
+        errored = threading.Event()
+        unsub_status = bundle.status.subscribe(
+            lambda msgs: [errored.set() for m in msgs if m[0] is MessageType.DATA and m[1] == "errored"]
+        )
         unsub = bundle.node.subscribe(lambda _: None)
 
-        _wait_for(lambda: bundle.status.get() == "errored")
+        errored.wait(timeout=5.0)
+        unsub_status()
 
         assert bundle.status.get() == "errored"
         assert str(bundle.error.get()) == "Connection refused"
@@ -92,7 +89,7 @@ def test_from_http_completes_after_fetch():
         bundle = from_http("https://example.com")
         unsub = bundle.node.subscribe(lambda _: None)
 
-        _wait_for(lambda: bundle.status.get() == "completed")
+        first_where(bundle.status, lambda v: v == "completed", timeout=5.0)
 
         assert bundle.status.get() == "completed"
         assert bundle.node.get() == {"done": True}
@@ -117,7 +114,7 @@ def test_from_http_transform_receives_raw_bytes():
 
         bundle = from_http("https://example.com", transform=transform)
         unsub = bundle.node.subscribe(lambda _: None)
-        _wait_for(lambda: bundle.status.get() == "completed")
+        first_where(bundle.status, lambda v: v == "completed", timeout=5.0)
 
         assert seen == [mock_response_data]
         assert bundle.node.get() == {"raw_len": len(mock_response_data)}

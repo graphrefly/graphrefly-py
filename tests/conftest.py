@@ -22,9 +22,15 @@ class _ThreadRunner:
     requires a running event loop).
     """
 
-    __slots__ = ()
+    __slots__ = ("_scheduled", "_completed")
+
+    def __init__(self) -> None:
+        self._scheduled = 0
+        self._completed = 0
 
     def schedule(self, coro: Any, on_result: Any, on_error: Any) -> Any:
+        self._scheduled += 1
+
         def _run() -> None:
             try:
                 result = asyncio.run(coro)
@@ -32,10 +38,19 @@ class _ThreadRunner:
                 on_error(err)
             else:
                 on_result(result)
+            finally:
+                self._completed += 1
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
         return lambda: None
+
+    def __repr__(self) -> str:
+        pending = self._scheduled - self._completed
+        return (
+            f"_ThreadRunner(scheduled={self._scheduled}, "
+            f"completed={self._completed}, pending={pending})"
+        )
 
 
 @pytest.fixture(autouse=True)

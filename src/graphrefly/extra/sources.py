@@ -543,6 +543,12 @@ def first_value_from(
     On ``COMPLETE`` without prior ``DATA``, raises :exc:`StopIteration`. With
     *timeout*, raises :exc:`TimeoutError` if no terminal message arrives in time.
 
+    **Important:** This subscribes to *source* and waits for a **future**
+    emission. It does NOT read the cached value — data that has already
+    flowed is gone. You must call this **before** the upstream emits, or
+    use ``source.get()`` / ``source.status`` to read already-cached state.
+    See COMPOSITION-GUIDE §2 (subscription ordering).
+
     Args:
         source: The node to await the first value from.
         timeout: Optional timeout in seconds.
@@ -599,6 +605,75 @@ def first_value_from(
         raise RuntimeError(str(err))
     if complete_without_data[0] and got[0] is None:
         raise StopIteration
+    return got[0]
+
+
+def first_where(
+    source: Node[Any],
+    predicate: Callable[[Any], bool],
+    *,
+    timeout: float | None = None,
+) -> Any:
+    """Block until the first ``DATA`` value satisfying *predicate* arrives.
+
+    Subscribes directly and checks *predicate* on each ``DATA`` emission.
+    No polling. Use in tests and bridging code where you need to wait for
+    a specific value synchronously.
+
+    **Important:** This only captures **future** emissions — data that has
+    already flowed through the node is gone and will not be seen. You must
+    call this **before** the upstream emits. For already-cached values, use
+    ``source.get()`` / ``source.status`` instead. See COMPOSITION-GUIDE §2.
+
+    Args:
+        source: The node to observe.
+        predicate: Called with each DATA value; returns ``True`` to accept.
+        timeout: Optional timeout in seconds.
+
+    Returns:
+        The first DATA payload where ``predicate(value)`` is ``True``.
+
+    Example:
+        ```python
+        val = first_where(strategy.node, lambda snap: len(snap) > 0, timeout=5.0)
+        ```
+    """
+    got: list[Any | None] = [None]
+    err_box: list[BaseException | Any | None] = [None]
+    done = threading.Event()
+
+    def sink(msgs: Messages) -> None:
+        for m in msgs:
+            t = m[0]
+            if t is MessageType.DATA:
+                v = _msg_val(m)
+                if got[0] is None and predicate(v):
+                    got[0] = v
+                    done.set()
+            elif t is MessageType.ERROR:
+                err_box[0] = _msg_val(m)
+                done.set()
+            elif t is MessageType.COMPLETE:
+                done.set()
+
+    unsub = source.subscribe(sink)
+    try:
+        if timeout is None:
+            done.wait()
+        elif not done.wait(timeout):
+            msg = "first_where timed out"
+            raise TimeoutError(msg)
+    finally:
+        unsub()
+
+    err = err_box[0]
+    if err is not None:
+        if isinstance(err, BaseException):
+            raise err
+        raise RuntimeError(str(err))
+    if got[0] is None:
+        msg = "first_where: source completed without a matching value"
+        raise StopIteration(msg)
     return got[0]
 
 
