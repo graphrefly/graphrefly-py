@@ -14,6 +14,16 @@ uv workspace managed by mise. `mise trust && mise install` to set up uv. `uv syn
 - Format: `uv run ruff format src/ tests/`
 - Type check: `uv run mypy src/`
 
+## Documentation workflow (critical)
+
+- Follow cross-language standard in `~/src/graphrefly-ts/docs/docs-guidance.md`.
+- `website/src/content/docs/api/*.md` pages are generated; do not hand-edit.
+- For docs updates in this repo:
+  1. Update source docstrings.
+  2. Run `pnpm --dir website docs:gen`.
+  3. Validate with `pnpm --dir website docs:gen:check` and `pnpm --dir website sync-docs:check`.
+- Keep `llms.txt` concise and source-oriented; avoid long static API inventories that drift.
+
 ## Package naming
 
 - Distribution name: `graphrefly-py`
@@ -35,6 +45,9 @@ uv workspace managed by mise. `mise trust && mise install` to set up uv. `uv syn
 | Behavior spec | `~/src/graphrefly/GRAPHREFLY-SPEC.md` |
 | Composition guide | `~/src/graphrefly/COMPOSITION-GUIDE.md` |
 | Roadmap, optimizations, test/docs guidance, skills, archive | `~/src/graphrefly-ts/` (single source of truth) |
+| Reactive collaboration harness (§9.0) — 7-stage loop, gate, `promptNode`, strategy model | `~/src/graphrefly-ts/archive/docs/SESSION-reactive-collaboration-harness.md` |
+| Harness engineering strategy — 8 requirements, wave plan, MCP priority | `~/src/graphrefly-ts/archive/docs/SESSION-harness-engineering-strategy.md` |
+| Marketing & positioning — pillars, wave plan, reply playbooks, blog plan | `~/src/graphrefly-ts/archive/docs/SESSION-marketing-promotion-strategy.md` |
 | Predecessor (patterns, concurrency) | `~/src/callbag-recharge-py` (reference only, not spec) |
 
 ## Design invariants (spec §5.8–5.12)

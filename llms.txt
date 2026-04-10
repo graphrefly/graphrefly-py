@@ -1,272 +1,114 @@
-# GraphReFly — graphrefly (Python)
+# GraphReFly — Python package (`graphrefly`)
 
-Describe automations in plain language. Review them visually. Run them persistently. Trace every decision back to its source.
+The reactive harness layer for agent workflows. Reactive graph runtime for human + LLM co-operation — causal tracing, persistent checkpoints, policy enforcement, zero runtime dependencies.
 
-GraphReFly is a reactive graph engine for human + LLM co-operation. An LLM composes a reactive graph from a natural-language description (like SQL for data flows). The graph runs persistently, checkpoints state, and traces every decision through a causal chain — enabling explainability ("why was this flagged?"), auditability, and progressive trust accumulation. This package is the Python implementation (`graphrefly`). Zero dependencies.
+Keywords: harness engineering, agent harness, reactive graph, causal trace, explain_path, agent orchestration, LLM co-operation, human-in-the-loop, reactive middleware, universal reduction layer.
 
-## Authoritative behavior
+This file is an AI-oriented index for the Python repo. It points to source-of-truth docs and generated API references instead of maintaining a long, drift-prone inline API catalog.
 
-- Shared normative spec: the `GRAPHREFLY-SPEC.md` file in the **graphrefly** spec repository (sibling to this package in the GraphReFly workspace). Implementations must match that document, not legacy callbag-only behavior.
+## Canonical behavior and docs authority
 
-## Where to read in this repo
+- Behavior spec: `~/src/graphrefly/GRAPHREFLY-SPEC.md`
+- Composition guidance: `~/src/graphrefly/COMPOSITION-GUIDE.md`
+- Docs conventions (cross-language): `~/src/graphrefly-ts/docs/docs-guidance.md`
+- Roadmap/state (cross-language): `~/src/graphrefly-ts/docs/roadmap.md`
+- Testing standard (cross-language): `~/src/graphrefly-ts/docs/test-guidance.md`
 
-- `docs/roadmap.md` — phased implementation status
-- `docs/docs-guidance.md` — how API docs and examples are maintained
-- `docs/test-guidance.md` — how tests are organized
-- `docs/optimizations.md` — performance optimizations
-- `docs/ADAPTER-CONTRACT.md` — checkpoint adapter contract
-- `examples/` — small runnable sketches (verify against current exports before copy-paste)
+## Active strategy docs (cross-language, live in graphrefly-ts)
 
-## Imports
+- `~/src/graphrefly-ts/archive/docs/SESSION-reactive-collaboration-harness.md` — 7-stage reactive collaboration loop, gate port, `prompt_node`, `valve` rename, strategy model, `harness_loop()` factory
+- `~/src/graphrefly-ts/archive/docs/SESSION-harness-engineering-strategy.md` — 8-requirement coverage, three-wave announcement plan, MCP Server priority, eval system design
+- `~/src/graphrefly-ts/archive/docs/SESSION-marketing-promotion-strategy.md` — positioning pillars, wave plan, reply-marketing playbooks, competitive intel, prompt optimization algorithms, blog content plan
 
-- Main entry: `from graphrefly import ...` (re-exports core, extra, graph, patterns)
-- Submodules: `from graphrefly.core import ...`, `from graphrefly.extra import ...`, `from graphrefly.graph import ...`
-- Patterns: `from graphrefly.patterns import ...`
-- Compat: `from graphrefly.compat import ...`
-- Integrations: `from graphrefly.integrations import ...`
+## Primary links
 
-## Public API
+- Python docs: https://graphrefly.dev/py/
+- Python API reference: https://graphrefly.dev/py/api/
+- TypeScript docs: https://graphrefly.dev
 
-### core — node primitive + sugar constructors (`src/graphrefly/core/`)
+## Package entry points
 
-- `node(options)` — low-level reactive node factory; accepts `initial`, `fn`, `guard`, `meta`, `name`, `deps`
-- `state(initial)` — sugar: a writable state node
-- `producer(fn)` — sugar: a push-source node driven by its `fn`
-- `derived(deps, fn)` — sugar: a computed node that re-runs `fn` when deps change
-- `effect(deps, fn)` — sugar: a side-effect node (no value consumers)
-- `pipe(source, *operators)` — sugar: chains operator functions onto a node
-- `dynamic_node(tracking_fn)` — node that tracks its own reactive dependencies at runtime
+- Root: `from graphrefly import ...`
+- Subpackages: `graphrefly.core`, `graphrefly.graph`, `graphrefly.extra`, `graphrefly.patterns`, `graphrefly.compat`, `graphrefly.integrations`
 
-### core — batch (`src/graphrefly/core/`)
+## Public API by subpackage
 
-- `batch(fn)` — runs `fn` in a batch scope; defers DATA/RESOLVED until outermost batch returns
-- `is_batching()` — returns `True` while inside `batch()` or while the drain loop is running
-- `partition_for_batch(messages)` — splits a message list into immediate / deferred / terminal groups
-- `down_with_batch(sink, messages)` — delivers messages downstream respecting batch semantics and tier ordering
-
-### core — guard (`src/graphrefly/core/`)
-
-- `policy(build)` — declarative guard builder; registers `allow()`/`deny()` rules, deny wins on conflict
-- `policy_from_rules(rules)` — builds a guard from a list of rule dicts
-- `compose_guards(*guards)` — composes multiple guard functions into one
-- `GuardDenied` — error class raised when a guard denies an action
-- `access_hint_for_guard(guard)` — probes a guard with standard actor types, returns a human-readable access hint string
-
-### core — meta (`src/graphrefly/core/`)
-
-- `meta_snapshot(node)` — reads current cached values of all meta companion nodes; returns plain `{ key: value }` dict
-- `describe_node(node)` — builds a describe-node output slice (type, status, deps, meta, value) for one node
-
-### core — messages (`src/graphrefly/core/`)
-
-- `MessageType` — enum with message type constants: `DATA`, `DIRTY`, `RESOLVED`, `COMPLETE`, `ERROR`, `TEARDOWN`, `INVALIDATE`, `PAUSE`, `RESUME`
-- `dispatch_messages(messages)` — delivers a list of messages
-- `is_phase2_message(msg)` — returns `True` for messages at tier 2+
-
-### core — actor (`src/graphrefly/core/`)
-
-- `Actor` — `{ type, id }` identity used by guards
-- `system_actor` — the built-in system actor constant
-- `normalize_actor(actor)` — coerces various actor representations to `Actor`
-
-### core — clock (`src/graphrefly/core/`)
-
-- `monotonic_ns()` — monotonic nanosecond timestamp
-- `wall_clock_ns()` — wall-clock nanosecond timestamp
-
-### core — versioning (`src/graphrefly/core/`)
-
-- `create_versioning(level)` — creates a versioning context at the given level
-- `advance_version(versioning)` — advances the version counter
-- `default_hash(value)` — default hash function for value-based versioning
-- `is_v1(node)` — returns `True` if a node uses V1 versioning
-
-### core — runner (`src/graphrefly/core/`)
-
-- `Runner` — protocol for async scheduling backends
-- `get_default_runner()` — returns the current default runner
-- `set_default_runner(runner)` — sets the default runner
-- `resolve_runner(runner)` — resolves a runner argument to a concrete runner
-
-### graph — Graph container (`src/graphrefly/graph/`)
-
-- `Graph` — reactive node registry; methods: `register`, `resolve`, `describe`, `observe`, `snapshot`, `diff`, `diagram`, `spy`, `mount`, `unmount`, `teardown`
-- `reachable(graph, start_path, options=None)` — returns the set of node paths reachable from `start_path` via dependency edges
-
-### extra — tier 1 operators (`src/graphrefly/extra/tier1.py`)
-
-- `map(fn)`, `filter(pred)`, `scan(fn, seed)`, `reduce(fn, seed)` — transform
-- `take(n)`, `skip(n)`, `take_while(pred)`, `take_until(signal)` — limiting
-- `first()`, `last(default=...)`, `find(pred)`, `element_at(i)` — selection
-- `start_with(value)`, `tap(fn)`, `distinct_until_changed(eq=None)` — utility
-- `pairwise()` — emits `[prev, curr]` pairs
-- `combine(*sources)`, `with_latest_from(other)` — combination
-- `merge(*sources)`, `zip(*sources)`, `concat(second)`, `race(*sources)` — merging
-
-### extra — tier 2 operators (`src/graphrefly/extra/tier2.py`)
-
-- `switch_map(fn)`, `concat_map(fn)`, `flat_map(fn)`, `exhaust_map(fn)` — higher-order
-- `debounce(seconds)`, `throttle(seconds)`, `delay(seconds)` — timing
-- `sample(notifier)`, `audit(seconds)`, `timeout(seconds)` — sampling / timeout
-- `buffer(notifier)`, `buffer_count(n)`, `buffer_time(seconds)` — buffering
-- `window(notifier)`, `window_count(n)`, `window_time(seconds)` — windowing
-- `interval(seconds)` — emits incrementing integers on a timer
-- `repeat(times)` — resubscribes on COMPLETE
-- `gate(control)` — passes values only while control node is truthy
-- `pausable()` — gates emission on a pause signal
-- `rescue(recover)` — error recovery
-
-### extra — sources (`src/graphrefly/extra/sources.py`)
-
-- `of(*values)` — emits given values then completes
-- `empty()` — completes immediately
-- `never()` — never emits or completes
-- `throw_error(err)` — emits an error immediately
-- `from_iter(iterable)` — synchronously emits all values from an iterable
-- `from_timer(seconds)` — emits on a recurring timer
-- `from_cron(expr)` — emits on a cron schedule
-- `from_awaitable(awaitable)` — wraps an awaitable as a node
-- `from_async_iter(aiter)` — emits values from an async iterable
-- `from_any(value)` — normalises any source (awaitable, iterable, node, etc.) into a node
-- `from_http(url, **opts)` — wraps an HTTP request as a node
-- `from_event_emitter(emitter, event)` — wraps an event emitter
-- `from_fs_watch(path, **opts)` — watches filesystem for changes
-- `from_webhook(path, **opts)` — creates a webhook-backed source node
-- `from_websocket(url, **opts)` — wraps a WebSocket connection as a source node
-- `from_mcp(transport, **opts)` — wraps an MCP (Model Context Protocol) connection
-- `from_git_hook(hook, **opts)` — wraps a git hook as a source node
-- `share(source)` — multicast operator; shares a single subscription
-- `cached(source)` — memoised producer; shares a single subscription
-- `replay(source, buffer_size=1)` — replays last `n` values to new subscribers
-- `for_each(source, fn)` — subscribes and calls `fn` for each DATA value
-- `to_list(source)` — collects all values into a list
-- `to_array(source)` — alias: collects all values into a list node
-- `first_value_from(source)` — returns the first DATA value (async)
-- `to_sse(source, **opts)` — converts a node to Server-Sent Events frames
-- `to_websocket(source, url, **opts)` — pipes node values to a WebSocket
-
-### extra — data structures (`src/graphrefly/extra/data_structures.py`)
-
-- `reactive_map(initial=None)` — reactive key-value map node
-- `reactive_log(options=None)` — append-only reactive log node
-- `log_slice(log, start, end=None)` — derived slice of a reactive log
-- `reactive_index(name=None)` — reactive inverted index over a reactive map
-- `reactive_list(initial=None)` — reactive ordered list node
-- `pubsub()` — topic-based publish/subscribe primitive
-
-### extra — resilience (`src/graphrefly/extra/resilience.py`)
-
-- `retry(source, options)` — retries a failing source with configurable backoff
-- `circuit_breaker(options)` — circuit-breaker operator; opens after threshold failures
-- `token_bucket(capacity, refill_per_second)` — token-bucket rate-limiter node
-- `token_tracker(capacity, refill_per_second)` — tracks token usage against a budget
-- `rate_limiter(source, max_events, window_ns)` — rate-limiter operator
-- `with_breaker(breaker)` — operator that feeds into a circuit breaker
-- `with_status(status_node)` — operator that writes breaker/limiter status to a node
-
-### extra — backoff (`src/graphrefly/extra/backoff.py`)
-
-- `constant(delay_ns)` — strategy that always returns the same delay
-- `linear(base_ns, step_ns=None)` — linearly increasing delay
-- `exponential(options=None)` — exponentially increasing delay with optional jitter and cap
-- `fibonacci(base_ns=..., max_delay_ns=...)` — Fibonacci-scaled delays
-- `decorrelated_jitter(base_ns=..., max_ns=...)` — AWS decorrelated-jitter strategy
-- `with_max_attempts(strategy, max_attempts)` — caps any strategy at a maximum attempt count
-- `resolve_backoff_preset(name)` — maps a preset name string to a concrete `BackoffStrategy`
-
-### extra — cron (`src/graphrefly/extra/cron.py`)
-
-- `parse_cron(expr)` — parses a 5-field cron expression into a `CronSchedule`
-- `matches_cron(schedule, dt)` — returns `True` if `dt` matches the schedule
-
-### extra — checkpoint (`src/graphrefly/extra/checkpoint.py`)
-
-- `MemoryCheckpointAdapter` — in-memory checkpoint storage
-- `DictCheckpointAdapter` — plain-dict checkpoint storage
-- `FileCheckpointAdapter` — file-system checkpoint storage
-- `SqliteCheckpointAdapter` — SQLite checkpoint storage
-- `save_graph_checkpoint(graph, adapter)` — serialises graph state to an adapter
-- `restore_graph_checkpoint(graph, adapter)` — restores graph state from an adapter
-- `checkpoint_node_value(node)` — checkpoints a single node value
-
-### extra — composite (`src/graphrefly/extra/composite.py`)
-
-- `verifiable(source, options)` — wraps a node with verification tracking (checks, assertions)
-- `distill(raw, extract, options)` — memory-efficient extraction: compacts raw data into a budget-bounded summary
-
-### extra — backpressure (`src/graphrefly/extra/backpressure.py`)
-
-- `create_watermark_controller(send_up, options)` — creates a PAUSE/RESUME watermark controller for flow control
-
-### patterns — orchestration (`src/graphrefly/patterns/orchestration.py`)
-
-- `pipeline(name, opts=None)` — creates an orchestration pipeline Graph
-- `task(name, fn, opts=None)` — adds a processing step to a pipeline
-- `branch(name, condition, opts=None)` — conditional routing in a pipeline
-- `gate(name, signal, opts=None)` — pauses pipeline flow until signal is truthy
-- `approval(name, opts=None)` — human-in-the-loop approval gate
-- `for_each(name, fn)` — iterate over pipeline items
-- `join(name, *sources)` — merge multiple pipeline branches
-- `loop(name, condition, opts=None)` — repeat pipeline steps while condition holds
-- `sub_pipeline(name, parent)` — nest a child pipeline
-- `sensor(name, fn)` — monitoring node in a pipeline
-- `wait(name, fn)` — async wait step
-- `on_failure(name, fn)` — error handler for pipeline failures
-
-### patterns — messaging (`src/graphrefly/patterns/messaging.py`)
-
-- `topic(name, opts=None)` — creates a pub/sub topic Graph
-- `subscription(topic, name, opts=None)` — subscribes to a topic
-- `job_queue(name, opts=None)` — creates a work queue Graph with workers
-- `job_flow(name, opts=None)` — creates a job flow Graph with stages
-- `topic_bridge(from_topic, to_topic, opts=None)` — bridges two topics with optional transform
-
-### patterns — memory (`src/graphrefly/patterns/memory.py`)
-
-- `collection(name, opts=None)` — reactive document collection with CRUD operations
-- `light_collection(opts=None)` — lightweight in-memory collection bundle
-- `vector_index(opts=None)` — reactive vector similarity index
-- `knowledge_graph(opts=None)` — reactive knowledge graph with entities and relations
-- `decay(source, opts)` — time-based value decay
-
-### patterns — AI (`src/graphrefly/patterns/ai.py`)
-
-- `from_llm(opts)` — wraps an LLM API call as a reactive node
-- `chat_stream(name, opts=None)` — creates a chat-style streaming Graph
-- `tool_registry(name, opts=None)` — reactive tool/function registry for agents
-- `system_prompt_builder(opts)` — reactive system prompt composition
-- `llm_extractor(opts)` — LLM-powered extraction pipeline
-- `llm_consolidator(opts)` — LLM-powered consolidation pipeline
-- `admission_filter_3d(opts)` — 3-dimensional admission filter (novelty, salience, relevance)
-- `agent_memory(opts)` — reactive agent memory with retrieval and consolidation
-- `agent_loop(name, opts)` — full agent loop Graph (observe, think, act, memory)
-- `knobs_as_tools(graph, actor=None)` — exposes graph knobs as LLM-callable tools
-- `gauges_as_context(graph, opts=None)` — formats graph gauges as LLM context
-- `validate_graph_def(definition)` — validates a graph definition object
-- `graph_from_spec(spec)` — builds a Graph from a declarative spec dict
-- `suggest_strategy(opts)` — LLM-powered strategy suggestion
-
-### patterns — CQRS (`src/graphrefly/patterns/cqrs.py`)
-
-- `cqrs(name, opts=None)` — creates a CQRS Graph (commands, events, projections, sagas)
-
-### compat — async runners (`src/graphrefly/compat/`)
-
-- `AsyncioRunner` — runner backed by asyncio event loop
-- `TrioRunner` — runner backed by Trio nursery
-
-### integrations — FastAPI (`src/graphrefly/integrations/fastapi.py`)
-
-- `graphrefly_lifespan(app, **opts)` — ASGI lifespan context manager for graph lifecycle
-- `get_graph(name="default")` — FastAPI dependency to retrieve a named Graph
-- `sse_response(source, **opts)` — returns a streaming SSE response from a node
-- `ObserveGateway` — WebSocket gateway for real-time graph observation
-- `graphrefly_router(**opts)` — returns a FastAPI APIRouter with graph REST/SSE/WS endpoints
-
-## Design invariants (spec section 5.8-5.12)
-
-- No polling — use reactive timer sources, never busy-wait on node values
-- No imperative triggers — all coordination via reactive signals and message flow
-- No raw awaits in node functions — async boundaries belong in sources and runner layer
-- Central timer (`core/clock.py`) and `message_tier` utilities — never hardcode type checks
-- Phase 4+ APIs are developer-friendly — protocol internals never surface in primary APIs
+Full export lists live in the generated API pages under `website/src/content/docs/api/`. The descriptions below explain *what lives in each subpackage and why*, so an LLM reading this cold can navigate without consuming the drift-prone catalog. Python uses snake_case (`from_timer`, `switch_map`, `agent_loop`) — the behavior parity with TypeScript holds, the naming does not.
+
+### `graphrefly.core` — `src/graphrefly/core/`
+
+The minimal reactive substrate. One primitive (`node`) plus sugar constructors (`state`, `derived`, `producer`, `effect`, `pipe`, `dynamic_node`). Protocol internals: `MessageType` enum (`DATA`, `DIRTY`, `RESOLVED`, `COMPLETE`, `ERROR`, `TEARDOWN`, `INVALIDATE`, `PAUSE`, `RESUME`), dispatch (`dispatch_messages`, `is_phase2_message`), two-phase batch semantics (`batch`, `is_batching`, `partition_for_batch`, `down_with_batch`), guard / policy (`policy`, `policy_from_rules`, `compose_guards`, `GuardDenied`, `access_hint_for_guard`), actor identity (`Actor`, `system_actor`, `normalize_actor`), meta snapshots (`meta_snapshot`, `describe_node`), versioning (`create_versioning`, `advance_version`, `default_hash`, `is_v1`), and the central clock (`monotonic_ns`, `wall_clock_ns`). **Anything outside this package must not call `time.time_ns()` / `time.monotonic_ns()` directly — use `src/graphrefly/core/clock.py`.** Also holds the `Runner` protocol and default-runner resolution (`get_default_runner`, `set_default_runner`, `resolve_runner`) for asyncio/trio backends. Thread-safety invariants (per-subgraph `RLock`, per-node `_cache_lock`) are enforced here.
+
+### `graphrefly.graph` — `src/graphrefly/graph/`
+
+The `Graph` container: reactive node registry with `register` / `resolve` / `describe` / `observe` / `snapshot` / `diff` / `diagram` / `spy` / `mount` / `unmount` / `teardown`. `reachable(graph, start_path, options=None)` computes the dependency closure from a node path — foundation for `explain_path` (causal walkback) and persistence scope.
+
+### `graphrefly.extra` — `src/graphrefly/extra/`
+
+Everything reactive that isn't the primitive. Organized into focused modules:
+
+- **Tier 1 operators** (`tier1.py`) — transform (`map`, `filter`, `scan`, `reduce`), limiting (`take`, `skip`, `take_while`, `take_until`), selection (`first`, `last`, `find`, `element_at`), utility (`start_with`, `tap`, `distinct_until_changed`, `pairwise`), combination (`combine`, `with_latest_from`), merging (`merge`, `zip`, `concat`, `race`).
+- **Tier 2 operators** (`tier2.py`) — higher-order (`switch_map`, `concat_map`, `flat_map`, `exhaust_map`), timing (`debounce`, `throttle`, `delay`), sampling (`sample`, `audit`, `timeout`), buffering (`buffer`, `buffer_count`, `buffer_time`), windowing (`window`, `window_count`, `window_time`), `interval`, `repeat`, `pausable`, `rescue`. **Note:** the existing `gate(control)` here is a boolean control gate and is being renamed to `valve` per §9.0; the new human-approval `gate` lives under `patterns.orchestration`.
+- **Sources** (`sources.py`) — synchronous (`of`, `empty`, `never`, `throw_error`, `from_iter`, `from_timer`, `from_cron`), async bridges (`from_awaitable`, `from_async_iter`), network / IO (`from_http`, `from_event_emitter`, `from_fs_watch`, `from_webhook`, `from_websocket`, `from_mcp`, `from_git_hook`), multicast / caching (`share`, `cached`, `replay`), collectors (`for_each`, `to_list`, `to_array`, `first_value_from`), sinks (`to_sse`, `to_websocket`). **All async boundaries must enter through sources** — node fns and operators never contain `async def` or raw awaitables.
+- **Data structures** (`data_structures.py` + dedicated files) — `reactive_map`, `reactive_log` + `log_slice`, `reactive_index`, `reactive_list`, `pubsub`.
+- **Resilience** (`resilience.py` + `backoff.py`) — `retry`, `circuit_breaker` + `CircuitOpenError`, `token_bucket`, `token_tracker`, `rate_limiter`, `with_breaker`, `with_status`; backoff strategies (`constant`, `linear`, `exponential`, `fibonacci`, `decorrelated_jitter`, `with_max_attempts`, `resolve_backoff_preset`).
+- **Cron** (`cron.py`) — `parse_cron`, `matches_cron`.
+- **Checkpoint** (`checkpoint.py`) — `Memory` / `Dict` / `File` / `Sqlite` adapters, `save_graph_checkpoint` / `restore_graph_checkpoint`, `checkpoint_node_value`. Auto-checkpoint is gated by `message_tier >= 3`. See `docs/ADAPTER-CONTRACT.md` for the adapter contract.
+- **Composite** (`composite.py`) — `verifiable(source, opts)` wraps a node with verification tracking; `distill(raw, extract, opts)` compacts raw data into a budget-bounded summary (the reactive memory primitive that `agent_memory` plugs into).
+- **Backpressure** (`backpressure.py`) — watermark controller for PAUSE/RESUME flow control.
+
+### `graphrefly.patterns` — `src/graphrefly/patterns/` (Phase 4+ domain APIs)
+
+Developer-facing factories that compose primitives into recognizable patterns. **Protocol internals never surface here** — sensible defaults, minimal boilerplate, clear errors. Python uses `with batch():` context managers instead of TypeScript's callback form, and `Node.__or__` maps to the TS `pipe()`.
+
+- **Orchestration** (`orchestration.py`) — `pipeline`, `task`, `branch`, the boolean control `gate` *(being renamed to `valve`)*, `approval`, `for_each`, `join`, `loop`, `sub_pipeline`, `sensor`, `wait`, `on_failure`. The §9.0 port of the human-approval gate (`pending` / `count` / `is_open` reactive nodes and `approve` / `reject` / `modify(fn, n=1)` / `open` / `close` methods) also lands here.
+- **Messaging** (`messaging.py`) — `topic` (TopicGraph), `subscription` (SubscriptionGraph with cursor / `pull` / `ack`), `job_queue`, `job_flow`, `topic_bridge`. These are the primitives the §9.0 harness loop uses for static-topology sinks and cursor-driven readers.
+- **Memory** (`memory.py`) — `collection`, `light_collection`, `vector_index`, `knowledge_graph`, `decay(source, opts)` (OpenViking exponential decay, 7-day default half-life). `decay` is the priority-scoring primitive for the §9.0 QUEUE stage.
+- **AI** (`ai.py`) — `from_llm`, `streaming_prompt_node`, `stream_extractor`, `chat_stream`, `tool_registry`, `system_prompt_builder`, `llm_extractor`, `llm_consolidator`, `agent_memory` (default: distill + vectors + KG + tiers), `agent_loop` (ReAct inner loop), `knobs_as_tools`, `gauges_as_context`, `validate_graph_def`. The §9.0 `prompt_node` factory (wraps any LLM call in a derived node with retry / cache / structured output) also lives here and is what plugs into `distill` as `extract_fn` / `consolidate_fn`.
+- **CQRS** (`cqrs.py`) — `cqrs(name, opts=None)` creates a commands / events / projections / sagas Graph.
+- **Reactive layout** (`reactive_layout/`) — `reactive_layout`, `reactive_block_layout`, `analyze_and_measure`, `compute_line_breaks`, `compute_char_positions`. DOM-free Knuth-Plass line breaking as a `state → derived` graph.
+
+### `graphrefly.compat` — `src/graphrefly/compat/`
+
+Async runner bindings. `AsyncioRunner` wraps a Graph in an asyncio event loop; `TrioRunner` does the same for trio. These are the only places allowed to orchestrate coroutines — node fns and operators stay synchronous. Runners resolve via `graphrefly.core.resolve_runner` so downstream code can inject a specific backend.
+
+### `graphrefly.integrations` — `src/graphrefly/integrations/`
+
+Framework integrations. `fastapi.GraphReflyRouter(graph)` exposes `GET /describe`, `GET /snapshot`, `WS /observe` over a registered `Graph`. Keep these thin — all logic belongs in `core` / `extra` / `patterns`.
+
+### Design docs that back the above
+
+- Phase 4+ factory authors must read `~/src/graphrefly/COMPOSITION-GUIDE.md` before composing primitives — covers lazy activation, subscription ordering, null guards, feedback cycles, `prompt_node` SENTINEL, wiring order.
+- Backlog / anti-patterns / deferred follow-ups: `~/src/graphrefly-ts/docs/optimizations.md` (cross-language).
+- Historical design decisions and parity notes: `~/src/graphrefly-ts/archive/optimizations/` (cross-language).
+
+## Generated docs workflow
+
+Python API pages are generated from docstrings:
+
+- Generator: `website/scripts/gen_api_docs.py`
+- Output: `website/src/content/docs/api/*.md`
+- Commands:
+  - `pnpm --dir website docs:gen`
+  - `pnpm --dir website docs:gen:check`
+  - `pnpm --dir website sync-docs`
+  - `pnpm --dir website sync-docs:check`
+
+Do not hand-edit generated API pages.
+
+## Core design invariants
+
+- No polling; propagation is reactive.
+- No imperative triggers outside graph/message flow.
+- No raw async primitives inside reactive layer logic.
+- Use `src/graphrefly/core/clock.py` and `message_tier` helpers for timing/tier semantics.
+- Keep Phase 4+ surfaces developer-oriented (hide protocol internals from primary API docs).
+- Thread safety: per-subgraph `RLock`, per-node `_cache_lock`; no `async def` / `Awaitable` in public APIs.
+
+## Harness engineering coverage
+
+GraphReFly covers the 8 requirements of a production agent harness — context/state control, execution boundary, control flow, verification, observability, policy/safety, human governance, continuous improvement. Mapping lives in `README.md` and `~/src/graphrefly-ts/archive/docs/SESSION-harness-engineering-strategy.md`.
+
+## Reactive collaboration loop (§9.0)
+
+`harness_loop()` wires a static topology: INTAKE → TRIAGE → QUEUE → GATE → EXECUTE → VERIFY → REFLECT. Static topology + flowing data (the Kafka insight). Humans steer via `gate.modify(fn, n)`. Strategy model (`root_cause × intervention → success_rate`) feeds TRIAGE routing. Design source: `~/src/graphrefly-ts/archive/docs/SESSION-reactive-collaboration-harness.md`.

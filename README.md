@@ -1,14 +1,14 @@
 # GraphReFly
 
-**Describe what matters. It watches, filters, and explains — persistently.**
+**The reactive harness layer for agent workflows.** Describe in plain language, review visually, run persistently, trace every decision.
 
-You're buried under emails, alerts, feeds, and messages. You can't process it all. GraphReFly lets you describe automations in plain language, review them visually, run them persistently, and trace every decision back to its source.
+GraphReFly makes long-running human + LLM co-operation reactive, resumable, and causally explainable. State pushes downstream on change (no re-reading), nodes have lifecycles (not infinite append), and every decision has a traceable causal chain — the substrate underneath tools, agents, and personal automations.
 
 [![PyPI](https://img.shields.io/pypi/v/graphrefly?color=blue)](https://pypi.org/project/graphrefly/)
 [![license](https://img.shields.io/github/license/graphrefly/graphrefly-py)](./LICENSE)
 [![Python](https://img.shields.io/pypi/pyversions/graphrefly)](https://pypi.org/project/graphrefly/)
 
-[Docs](https://py.graphrefly.dev) | [Spec](https://py.graphrefly.dev/spec/) | [TypeScript](https://graphrefly.dev) | [API Reference](https://py.graphrefly.dev/api/)
+[Docs](https://graphrefly.dev/py/) | [Spec](https://graphrefly.dev/spec/) | [TypeScript](https://graphrefly.dev) | [Python API](https://graphrefly.dev/py/api/)
 
 ---
 
@@ -46,6 +46,23 @@ count.push(3)
 ## How it works
 
 You describe what you need — an LLM composes a reactive graph (like SQL for data flows). The graph runs persistently, checkpoints its state, and traces every decision through a causal chain. Ask "why?" at any point and get a human-readable explanation from source to conclusion.
+
+## Harness engineering coverage
+
+The eight requirements of a production agent harness cluster into a handful of composed blocks that sit on top of the reactive graph primitives:
+
+| Need | GraphReFly |
+|---|---|
+| Context & state | `persistent_state()` — `auto_checkpoint` + `snapshot` / `restore` + incremental diff |
+| Agent memory | `agent_memory()` — `distill` + vectors + knowledge graph + tiers, OpenViking decay |
+| Control flow & resilience | `resilient_pipeline()` — `rate_limiter → breaker → retry → timeout → fallback`, correct ordering built in |
+| Execution & policy | `guarded_execution()` — Actor / Guard ABAC + `policy()` + `budget_gate` + scoped describe |
+| Observability & causality | `graph_lens()` — reactive topology, health, flow, and `why(node)` causal chains as structured data |
+| Human governance | `gate` — reactive `pending` / `is_open` with `approve` / `reject` / `modify(fn, n)` |
+| Verification | Multi-model eval harness with regression gates |
+| Continuous improvement | Strategy model: `root_cause × intervention → success_rate` |
+
+The library computes structured facts reactively; LLMs and UIs render them. Natural language is never the library's job — which keeps the whole stack model-agnostic and testable.
 
 ## Why GraphReFly?
 
