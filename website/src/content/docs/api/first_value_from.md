@@ -8,6 +8,12 @@ Block until the first ``DATA`` value or a terminal ``ERROR`` arrives.
 On ``COMPLETE`` without prior ``DATA``, raises :exc:`StopIteration`. With
 *timeout*, raises :exc:`TimeoutError` if no terminal message arrives in time.
 
+**Important:** This subscribes to *source* and waits for a **future**
+emission. It does NOT read the cached value — data that has already
+flowed is gone. You must call this **before** the upstream emits, or
+use ``source.get()`` / ``source.status`` to read already-cached state.
+See COMPOSITION-GUIDE §2 (subscription ordering).
+
 ## Signature
 
 ```python

@@ -9,7 +9,7 @@ Dispatch rules:
 
 - Existing :class:`~graphrefly.core.node.Node` -&gt; returned as-is.
 - :class:`collections.abc.AsyncIterable` / async iterator -&gt; :func:`from_async_iter`.
-- Awaitable / :class:`asyncio.Future` / coroutine -&gt; :func:`from_awaitable`.
+- :class:`collections.abc.Awaitable` (incl. coroutines, futures) -&gt; :func:`from_awaitable`.
 - Otherwise tries ``iter(value)``; if that fails uses :func:`of`.
 
 ## Signature
