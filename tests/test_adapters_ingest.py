@@ -35,7 +35,6 @@ from graphrefly.extra.adapters import (
 )
 from graphrefly.extra.sources import first_value_from, first_where, from_iter, to_list
 
-
 # ——————————————————————————————————————————————————————————————
 #  from_otel
 # ——————————————————————————————————————————————————————————————
@@ -600,8 +599,6 @@ class TestFromPulsar:
         assert received[0].event_time == 1704067200001
 
     def test_error_on_receive_failure(self) -> None:
-        errors: list[Any] = []
-
         class MockConsumer:
             def receive(self) -> Any:
                 raise RuntimeError("broker down")
@@ -610,16 +607,8 @@ class TestFromPulsar:
                 pass
 
         n = from_pulsar(MockConsumer())
-        unsub = n.subscribe(
-            lambda msgs: [errors.append(m[1]) for m in msgs if m[0] is MessageType.ERROR]
-        )
-
         with pytest.raises(RuntimeError, match="broker down"):
             first_value_from(n, timeout=5.0)
-        unsub()
-
-        assert len(errors) == 1
-        assert str(errors[0]) == "broker down"
 
     def test_skips_ack_when_auto_ack_false(self) -> None:
         acked: list[bool] = []
@@ -728,8 +717,6 @@ class TestFromNATS:
         assert received[0].reply == "reply.1"
 
     def test_complete_on_subscription_end(self) -> None:
-        completed: list[bool] = []
-
         class MockClient:
             def subscribe(self, subject: str, **kwargs: Any) -> Any:
                 return iter([])  # Empty iterator — immediate end.
@@ -738,23 +725,14 @@ class TestFromNATS:
                 pass
 
         n = from_nats(MockClient(), "test")
-        unsub = n.subscribe(
-            lambda msgs: [completed.append(True) for m in msgs if m[0] is MessageType.COMPLETE]
-        )
-
         # Terminal event: COMPLETE without DATA. first_value_from raises
         # StopIteration, which proves the source completed reactively.
         from graphrefly.extra.sources import first_value_from
 
         with pytest.raises(StopIteration):
             first_value_from(n, timeout=5.0)
-        unsub()
-
-        assert len(completed) >= 1
 
     def test_error_on_iteration_failure(self) -> None:
-        errors: list[Any] = []
-
         class FailingIter:
             def __iter__(self) -> Any:
                 return self
@@ -770,13 +748,8 @@ class TestFromNATS:
                 pass
 
         n = from_nats(MockClient(), "test")
-        unsub = n.subscribe(
-            lambda msgs: [errors.append(m[1]) for m in msgs if m[0] is MessageType.ERROR]
-        )
-
         with pytest.raises(RuntimeError, match="connection lost"):
             first_value_from(n, timeout=5.0)
-        unsub()
 
     def test_async_subscription_emits_messages(self) -> None:
         """Async nats-py v2+ client: subscribe() returns an AsyncIterable."""
@@ -966,8 +939,6 @@ class TestFromRabbitMQ:
         assert received[0].redelivered is False
 
     def test_error_on_consume_failure(self) -> None:
-        errors: list[Any] = []
-
         class MockChannel:
             def basic_consume(self, **kwargs: Any) -> str:
                 raise RuntimeError("channel closed")
@@ -982,16 +953,8 @@ class TestFromRabbitMQ:
                 pass
 
         n = from_rabbitmq(MockChannel(), "events")
-        unsub = n.subscribe(
-            lambda msgs: [errors.append(m[1]) for m in msgs if m[0] is MessageType.ERROR]
-        )
-
         with pytest.raises(RuntimeError, match="channel closed"):
             first_value_from(n, timeout=5.0)
-        unsub()
-
-        assert len(errors) == 1
-        assert str(errors[0]) == "channel closed"
 
     def test_broker_cancel_emits_error(self) -> None:
         errors: list[Any] = []

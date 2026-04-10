@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 
 from graphrefly.core.clock import wall_clock_ns
 from graphrefly.core.node import Node, NodeActions, node
-from graphrefly.core.protocol import Messages, MessageType, batch, message_tier
+from graphrefly.core.protocol import Messages, MessageType, batch, is_local_only, message_tier
 from graphrefly.core.sugar import state
 from graphrefly.extra.resilience import WithStatusBundle, with_status
 
@@ -905,6 +905,13 @@ def to_sse(
             return
         for msg in msgs:
             t = msg[0]
+            # Skip graph-local signals (tier < 3: START, DIRTY, INVALIDATE,
+            # PAUSE, RESUME). DIRTY is opt-in for observability.
+            if is_local_only(t):
+                if t is MessageType.DIRTY and include_dirty:
+                    pass  # fall through to write
+                else:
+                    continue
             if t is MessageType.DATA:
                 q.put(sse_frame(data_event, encode(msg[1] if len(msg) > 1 else None)))
                 continue
@@ -918,9 +925,8 @@ def to_sse(
                 done.set()
                 q.put(None)
                 return
-            if t is MessageType.RESOLVED and not include_resolved:
-                continue
-            if t is MessageType.DIRTY and not include_dirty:
+            # RESOLVED (tier 3) is opt-in for observability.
+            if not include_resolved and t is MessageType.RESOLVED:
                 continue
             event = event_name_resolver(t) if event_name_resolver is not None else str(t)
             data = encode(msg[1]) if len(msg) > 1 else None

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from graphrefly.core import Messages, MessageType, derived, state
+from graphrefly.core import Messages, MessageType, derived, node, state
 from graphrefly.core.sugar import pipe
 from graphrefly.extra.tier1 import (
     combine,
@@ -21,7 +21,6 @@ from graphrefly.extra.tier1 import (
     reduce,
     scan,
     skip,
-    start_with,
     take,
     take_until,
     take_while,
@@ -65,28 +64,28 @@ def test_scan_fold() -> None:
 
 
 def test_take_completes() -> None:
-    s = state(1)
+    s = node()
     t = pipe(s, take(2))
     sink: list[Messages] = []
     t.subscribe(sink.append)
-    sink.clear()
+    s.down([(MessageType.DATA, 1)])
     s.down([(MessageType.DATA, 2)])
     s.down([(MessageType.DATA, 3)])
-    assert t.get() == 3
+    assert t.get() == 2
     assert any(m[0] is MessageType.COMPLETE for m in _msgs(sink))
 
 
 def test_skip_drops_first_n() -> None:
-    s = state(0)
+    s = node()
     sk = pipe(s, skip(2))
     sink: list[Messages] = []
     sk.subscribe(sink.append)
-    sink.clear()
+    s.down([(MessageType.DATA, 0)])
     s.down([(MessageType.DATA, 1)])
     s.down([(MessageType.DATA, 2)])
     s.down([(MessageType.DATA, 3)])
     data_vals = [m[1] for m in _msgs(sink) if m[0] is MessageType.DATA]
-    assert data_vals == [3]
+    assert data_vals == [2, 3]
 
 
 def test_take_while_stops() -> None:
@@ -202,15 +201,6 @@ def test_zip_pairs() -> None:
     assert tuples == [(10, 20)]
 
 
-def test_start_with_then_src() -> None:
-    s = state(5)
-    out = pipe(s, start_with(0))
-    sink: list[Messages] = []
-    out.subscribe(sink.append)
-    data = [m[1] for m in _msgs(sink) if m[0] is MessageType.DATA]
-    assert data[0] == 0
-    assert data[1] == 5
-
 
 def test_find_first_match() -> None:
     s = state(1)
@@ -226,25 +216,24 @@ def test_find_first_match() -> None:
 
 
 def test_element_at() -> None:
-    s = state(0)
+    s = node()
     e = pipe(s, element_at(2))
     sink: list[Messages] = []
     e.subscribe(sink.append)
-    sink.clear()
+    s.down([(MessageType.DATA, 0)])
     s.down([(MessageType.DATA, 1)])
     s.down([(MessageType.DATA, 2)])
     s.down([(MessageType.DATA, 99)])
     data_vals = [m[1] for m in _msgs(sink) if m[0] is MessageType.DATA]
-    assert data_vals == [99]
+    assert data_vals == [2]
 
 
 def test_first_is_take_one() -> None:
-    s = state(1)
+    s = node()
     f = pipe(s, first())
     sink: list[Messages] = []
     f.subscribe(sink.append)
-    sink.clear()
-    s.down([(MessageType.DATA, 2)])
+    s.down([(MessageType.DATA, 1)])
     assert any(m[0] is MessageType.COMPLETE for m in _msgs(sink))
 
 
@@ -263,7 +252,7 @@ def test_last_on_complete() -> None:
 
 def test_take_until_notifier() -> None:
     src = state(1)
-    stop = state(False)
+    stop = node()
     out = pipe(src, take_until(stop))
     sink: list[Messages] = []
     out.subscribe(sink.append)
@@ -288,12 +277,11 @@ def test_take_until_with_custom_predicate() -> None:
 
 
 def test_race_first_data_wins() -> None:
-    a = state(1)
-    b = state(2)
+    a = node()
+    b = node()
     r = race(a, b)
     sink: list[Messages] = []
     r.subscribe(sink.append)
-    sink.clear()
     b.down([(MessageType.DATA, 20)])
     a.down([(MessageType.DATA, 10)])
     assert r.get() == 20
@@ -306,6 +294,8 @@ def test_map_diamond_value() -> None:
     c = pipe(a, map(lambda x: x + 10))
     d = derived([b, c], lambda vs, _: vs[0] + vs[1])
     d.subscribe(lambda m: None)
+    # Initial: b=2, c=11 → d=13
+    assert d.get() == 13
     a.down([(MessageType.DATA, 5)])
     assert d.get() == 25
 

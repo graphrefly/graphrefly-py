@@ -12,7 +12,7 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from graphrefly.core.node import Node, NodeActions, node
+from graphrefly.core.node import _SENTINEL, Node, NodeActions, node
 from graphrefly.core.protocol import MessageType
 from graphrefly.core.sugar import derived, state
 from graphrefly.graph.graph import GRAPH_META_SEGMENT, PATH_SEP, Graph
@@ -375,19 +375,23 @@ def sensor(
     graph: Graph,
     name: str,
     *,
-    initial: Any | None = None,
+    initial: Any = _SENTINEL,
     meta: dict[str, Any] | None = None,
     **node_opts: Any,
 ) -> SensorControls[Any]:
     """Register a producer-like sensor source and return imperative controls."""
+    node_kw: dict[str, Any] = {
+        "name": name,
+        "describe_kind": "producer",
+        "meta": _base_meta("sensor", meta),
+        **node_opts,
+    }
+    if initial is not _SENTINEL:
+        node_kw["initial"] = initial
     src = node(
         [],
         lambda _deps, _actions: None,
-        name=name,
-        initial=initial,
-        describe_kind="producer",
-        meta=_base_meta("sensor", meta),
-        **node_opts,
+        **node_kw,
     )
     _register_step(graph, name, src, [])
     return SensorControls(
@@ -413,6 +417,9 @@ def wait(
     lock = threading.Lock()
     terminated = [False]
     completed = [False]
+    # Push-on-subscribe sends the initial cached value during connect.
+    # Skip the first DATA to avoid a redundant timer that races with later ones.
+    initial_skipped = [False]
 
     def clear_all() -> None:
         with lock:
@@ -431,6 +438,9 @@ def wait(
                 terminated[0] = True
             return True
         if msg[0] is MessageType.DATA:
+            if not initial_skipped[0]:
+                initial_skipped[0] = True
+                return True
 
             def fire() -> None:
                 actions.down([msg])

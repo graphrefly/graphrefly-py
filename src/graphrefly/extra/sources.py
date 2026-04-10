@@ -16,8 +16,14 @@ from collections.abc import AsyncIterable, Awaitable, Callable, Iterable
 from datetime import datetime
 from typing import Any
 
-from graphrefly.core.node import Node, NodeActions, node
+from graphrefly.core.node import NO_VALUE, Node, NodeActions, node
 from graphrefly.core.protocol import Messages, MessageType
+
+
+def _source_initial_kwargs(source: Node[Any]) -> dict[str, Any]:
+    """Return ``{"initial": value}`` when *source* has a real cached value, else ``{}``."""
+    raw = getattr(source, "_cached", NO_VALUE)
+    return {"initial": raw} if raw is not NO_VALUE else {}
 
 
 def _msg_val(m: tuple[Any, ...]) -> Any:
@@ -590,6 +596,20 @@ def first_value_from(
 
     unsub = source.subscribe(sink)
     try:
+        # If the source is already terminal (errored/completed) the subscribe
+        # handshake delivers nothing (spec §2.2). Check status immediately so
+        # we don't block on a node that will never emit again.
+        if not done.is_set():
+            status = getattr(source, "status", None)
+            if status == "errored":
+                if err_box[0] is None:
+                    err_box[0] = RuntimeError("source node is in errored state")
+                done.set()
+            elif status == "completed":
+                if got[0] is None:
+                    complete_without_data[0] = True
+                done.set()
+
         if timeout is None:
             done.wait()
         elif not done.wait(timeout):
@@ -702,7 +722,7 @@ def share[T](source: Node[T]) -> Node[T]:
         unsub()
         ```
     """
-    return node([source], describe_kind="share", initial=source.get())
+    return node([source], describe_kind="share", **_source_initial_kwargs(source))
 
 
 def cached[T](source: Node[T]) -> Node[T]:
@@ -712,7 +732,7 @@ def cached[T](source: Node[T]) -> Node[T]:
     :meth:`~graphrefly.core.node.Node.get` after subscribe for the latest cached value on the
     returned node.
     """
-    return node([source], describe_kind="cached", initial=source.get())
+    return node([source], describe_kind="cached", **_source_initial_kwargs(source))
 
 
 class _ReplayNode[T](Node[T]):
@@ -738,6 +758,7 @@ class _ReplayNode[T](Node[T]):
         hints: Any = None,
         *,
         actor: Any = None,
+        **_kw: Any,
     ) -> Callable[[], None]:
         # Replay buffered values before connecting live stream
         for v in list(self._replay_buf):

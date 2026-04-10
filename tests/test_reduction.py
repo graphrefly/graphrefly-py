@@ -9,7 +9,7 @@ import pytest
 
 from graphrefly.core.node import NodeImpl
 from graphrefly.core.protocol import MessageType
-from graphrefly.core.sugar import state
+from graphrefly.core.sugar import node, state
 from graphrefly.graph.graph import Graph
 from graphrefly.patterns.reduction import (
     BudgetConstraint,
@@ -30,7 +30,7 @@ from graphrefly.patterns.reduction import (
 
 class TestStratify:
     def test_routes_values_to_matching_branches(self) -> None:
-        source = state(0)
+        source = node()
         rules = [
             StratifyRule("even", classify=lambda v: v % 2 == 0),
             StratifyRule("odd", classify=lambda v: v % 2 != 0),
@@ -64,7 +64,7 @@ class TestStratify:
         assert odd_seen == [3, 7]
 
     def test_reactive_rules_rewriting(self) -> None:
-        source = state("a")
+        source = node()
         rules = [StratifyRule("match", classify=lambda v: v == "a")]
 
         g = stratify("dynamic", source, rules)
@@ -184,7 +184,7 @@ class TestStratify:
 
     def test_both_settle_source_resolved(self) -> None:
         """Source DIRTY→RESOLVED + rules DATA in same batch → RESOLVED downstream."""
-        source = state("x")
+        source = node()
         rules = [StratifyRule("match", classify=lambda v: v == "x")]
 
         g = stratify("resolved", source, rules)
@@ -218,13 +218,13 @@ class TestStratify:
 
 class TestFunnel:
     def test_merges_sources_and_pipes_through_stages(self) -> None:
-        s1 = state(0)
-        s2 = state(0)
+        s1 = node()
+        s2 = node()
 
         def _build_double(sub: Graph) -> None:
-            inp = state(0)
+            inp = node()
             sub.add("input", inp)
-            out = state(0)
+            out = node()
             sub.add("output", out)
 
             def _wire(msgs: list) -> None:
@@ -351,7 +351,7 @@ class TestFeedback:
 
 class TestBudgetGate:
     def test_passes_data_when_budget_available(self) -> None:
-        source = state(0)
+        source = node()
         budget = state(100)
         gated = budget_gate(source, [BudgetConstraint(budget, check=lambda v: v > 0)])
 
@@ -368,7 +368,7 @@ class TestBudgetGate:
         assert seen == [42]
 
     def test_buffers_data_when_budget_exhausted_flushes_on_replenish(self) -> None:
-        source = state(0)
+        source = node()
         budget = state(0)  # exhausted
         gated = budget_gate(source, [BudgetConstraint(budget, check=lambda v: v > 0)])
 

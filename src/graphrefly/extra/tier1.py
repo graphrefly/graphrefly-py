@@ -201,11 +201,14 @@ def take(n: int) -> PipeOperator:
 
     def _op(src: Node[Any]) -> Node[Any]:
         count = [0]
+        completed = [False]
         holder: list[Node[Any] | None] = [None]
 
         def compute(_deps: list[Any], actions: NodeActions) -> Any:
             if n <= 0:
-                actions.down([(MessageType.COMPLETE,)])
+                if not completed[0]:
+                    completed[0] = True
+                    actions.down([(MessageType.COMPLETE,)])
                 u = holder[0]
                 if u is not None:
                     u.unsubscribe()
@@ -213,6 +216,16 @@ def take(n: int) -> PipeOperator:
 
         def on_message(msg: Any, _index: int, actions: NodeActions) -> bool:
             if n <= 0:
+                # Complete immediately on START handshake — take(0) never
+                # forwards anything from the source.
+                if msg[0] is MessageType.START and not completed[0]:
+                    completed[0] = True
+                    actions.down([(MessageType.COMPLETE,)])
+                    return True
+                if msg[0] is MessageType.COMPLETE and not completed[0]:
+                    completed[0] = True
+                    actions.down([(MessageType.COMPLETE,)])
+                    return True
                 if msg[0] is MessageType.ERROR:
                     actions.down([msg])
                 return True
@@ -493,35 +506,6 @@ def last(*, default: Any = _LAST_NO_DEFAULT) -> PipeOperator:
 
     return _op
 
-
-def start_with(value: Any) -> PipeOperator:
-    """Emit ``value`` as ``DATA`` first, then forward every value from the source.
-
-    Args:
-        value: Prepended emission before upstream values.
-
-    Returns:
-        A :class:`~graphrefly.core.sugar.PipeOperator`.
-
-    Examples:
-        >>> from graphrefly import pipe, state
-        >>> from graphrefly.extra import start_with as grf_sw
-        >>> n = pipe(state(2), grf_sw(0))
-    """
-
-    def _op(src: Node[Any]) -> Node[Any]:
-        prepended = [False]
-
-        def compute(deps: list[Any], actions: NodeActions) -> Any:
-            if not prepended[0]:
-                prepended[0] = True
-                actions.emit(value)
-            actions.emit(deps[0])
-            return None
-
-        return node([src], compute, describe_kind="start_with")
-
-    return _op
 
 
 def tap(fn_or_observer: Callable[[Any], None] | dict[str, Callable[..., None]]) -> PipeOperator:
@@ -1057,7 +1041,6 @@ __all__ = [
     "reduce",
     "scan",
     "skip",
-    "start_with",
     "take",
     "take_until",
     "take_while",

@@ -111,10 +111,14 @@ def observability_graph(
     g.mount("stratify", strat)
 
     # --- Correlate ---
+    # Wrap each branch in a derived with initial=None so every branch has
+    # a seed value at subscribe time — this lets the correlate wave reach its
+    # first-run gate even when the classifier only routes to one branch.
     branch_nodes: list[NodeImpl[Any]] = []
     for b in branches:
         try:
-            branch_nodes.append(g.resolve(f"stratify::branch/{b.name}"))
+            raw = g.resolve(f"stratify::branch/{b.name}")
+            branch_nodes.append(derived([raw], lambda vals, _a: vals[0], initial=None))
         except Exception:  # noqa: BLE001
             branch_nodes.append(state(None))
 

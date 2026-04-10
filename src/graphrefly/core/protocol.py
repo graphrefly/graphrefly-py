@@ -9,18 +9,19 @@ delivery order is determined by **signal tier**:
 ======  ====================  ===================  ====================================
 Tier    Signals               Role                 Batch behavior
 ======  ====================  ===================  ====================================
-0       DIRTY, INVALIDATE     Notification          Immediate (never deferred)
-1       PAUSE, RESUME         Flow control          Immediate (never deferred)
-2       DATA, RESOLVED        Value settlement      Deferred inside ``batch()``
-3       COMPLETE, ERROR       Terminal lifecycle     Deferred to after phase-2
-4       TEARDOWN              Destruction            Immediate (usually sent alone)
+0       START                 Subscribe handshake   Immediate (never deferred)
+1       DIRTY, INVALIDATE     Notification          Immediate (never deferred)
+2       PAUSE, RESUME         Flow control          Immediate (never deferred)
+3       DATA, RESOLVED        Value settlement      Deferred inside ``batch()``
+4       COMPLETE, ERROR       Terminal lifecycle     Deferred to after phase-2
+5       TEARDOWN              Destruction            Immediate (usually sent alone)
 ======  ====================  ===================  ====================================
 
 **Rule:** Within ``down_with_batch(strategy="partition")``, messages are partitioned
 by tier and delivered in tier order. This ensures phase-2 values reach sinks
 before terminal signals mark the node as done.
 
-Unknown message types (forward-compat) are tier 0 (immediate).
+Unknown message types (forward-compat) are tier 1 (immediate).
 
 Meta node bypass rules (centralized — GRAPHREFLY-SPEC §2.3)
 ============================================================
@@ -50,6 +51,7 @@ if TYPE_CHECKING:
 class MessageType(StrEnum):
     """Wire discriminator for node messages (always the first tuple element)."""
 
+    START = "START"
     DATA = "DATA"
     DIRTY = "DIRTY"
     RESOLVED = "RESOLVED"
@@ -247,31 +249,48 @@ def is_phase2_message(msg: Message) -> bool:
 
 
 def is_terminal_message(t: MessageType) -> bool:
-    """True for COMPLETE or ERROR (tier 3 — delivered after phase-2 in the same batch)."""
+    """True for COMPLETE or ERROR (tier 4 — delivered after phase-2 in the same batch)."""
     return t is MessageType.COMPLETE or t is MessageType.ERROR
 
 
 def message_tier(t: MessageType) -> int:
     """Return the signal tier for a message type (see module docstring).
 
-    0: notification (DIRTY, INVALIDATE) — immediate
-    1: flow control (PAUSE, RESUME) — immediate
-    2: value (DATA, RESOLVED) — deferred inside batch()
-    3: terminal (COMPLETE, ERROR) — delivered after phase-2
-    4: destruction (TEARDOWN) — immediate, usually alone
-    0 for unknown types (forward-compat: immediate)
+    0: subscribe handshake (START) — immediate, first in canonical order
+    1: notification (DIRTY, INVALIDATE) — immediate
+    2: flow control (PAUSE, RESUME) — immediate
+    3: value (DATA, RESOLVED) — deferred inside batch()
+    4: terminal (COMPLETE, ERROR) — delivered after phase-3
+    5: destruction (TEARDOWN) — immediate, usually alone
+    1 for unknown types (forward-compat: immediate, after START)
     """
-    if t is MessageType.DIRTY or t is MessageType.INVALIDATE:
+    if t is MessageType.START:
         return 0
-    if t is MessageType.PAUSE or t is MessageType.RESUME:
+    if t is MessageType.DIRTY or t is MessageType.INVALIDATE:
         return 1
-    if t is MessageType.DATA or t is MessageType.RESOLVED:
+    if t is MessageType.PAUSE or t is MessageType.RESUME:
         return 2
-    if t is MessageType.COMPLETE or t is MessageType.ERROR:
+    if t is MessageType.DATA or t is MessageType.RESOLVED:
         return 3
-    if t is MessageType.TEARDOWN:
+    if t is MessageType.COMPLETE or t is MessageType.ERROR:
         return 4
-    return 0
+    if t is MessageType.TEARDOWN:
+        return 5
+    return 1
+
+
+def is_local_only(t: MessageType) -> bool:
+    """Whether ``t`` is a graph-local signal that should NOT cross a wire/transport boundary.
+
+    Local-only signals (tier 0–2): START, DIRTY, INVALIDATE, PAUSE, RESUME.
+    Wire-crossing signals (tier 3+): DATA, RESOLVED, COMPLETE, ERROR, TEARDOWN.
+    Unknown message types (spec §1.3.6 forward-compat) also cross the wire.
+    """
+    try:
+        MessageType(t)
+    except ValueError:
+        return False  # unknown → crosses wire
+    return message_tier(t) < 3
 
 
 def propagates_to_meta(t: MessageType) -> bool:
@@ -285,7 +304,7 @@ def propagates_to_meta(t: MessageType) -> bool:
 def partition_for_batch(messages: Messages) -> tuple[Messages, Messages, Messages]:
     """Split *messages* into three groups by signal tier.
 
-    Returns ``(immediate, deferred, terminal)`` — tier 0-1/4, tier 2, tier 3.
+    Returns ``(immediate, deferred, terminal)`` — tier 0-2/5, tier 3, tier 4.
     Order within each group is preserved.
     """
     immediate: Messages = []
@@ -359,7 +378,7 @@ def _down_partition(
     # skip partition_for_batch allocation entirely.
     if len(messages) == 1:
         t = messages[0][0]
-        if message_tier(t) == 2:
+        if message_tier(t) == 3:
             if _should_defer_phase2(bs, defer_when):
 
                 def _down_single() -> None:
@@ -385,11 +404,11 @@ def _down_partition(
     # Multi-message: three-way partition by tier (see module docstring).
     immediate, deferred, terminal = partition_for_batch(messages)
 
-    # 1. Immediate signals (tier 0-1, 4) — deliver synchronously now.
+    # 1. Immediate signals (tier 0-2, 5) — deliver synchronously now.
     if immediate:
         sink(immediate)
 
-    # 2. Deferred (tier 2) + Terminal (tier 3) — canonical order preserved.
+    # 2. Deferred (tier 3) + Terminal (tier 4) — canonical order preserved.
     if _should_defer_phase2(bs, defer_when):
         if deferred:
 
@@ -427,14 +446,19 @@ def _down_sequential(
                 s([m])
 
             queue.append(_wrap_deferred_subgraph(_down_msg, subgraph_lock))
-        elif kind in _TERMINAL_TYPES and _should_defer_phase2(bs, defer_when):
-            # Terminal: always route to phase-3 queue regardless of the caller's
-            # `phase` param — terminals must drain after all phase-2 work.
+        elif (kind in _TERMINAL_TYPES or kind is MessageType.TEARDOWN) and _should_defer_phase2(
+            bs, defer_when
+        ):
+            # Terminal + destruction (COMPLETE/ERROR/TEARDOWN): always route to
+            # phase-3 queue — terminals and teardown must drain after all phase-2
+            # work to prevent premature termination or early resource release.
             def _down_term(m: Message = msg, s: Callable[[Messages], None] = sink) -> None:
                 s([m])
 
             bs.pending_phase3.append(_wrap_deferred_subgraph(_down_term, subgraph_lock))
         else:
+            # Immediate (START, DIRTY, INVALIDATE, PAUSE, RESUME):
+            # deliver synchronously.
             sink([msg])
 
 
@@ -453,6 +477,7 @@ __all__ = [
     "dispatch_messages",
     "down_with_batch",
     "is_batching",
+    "is_local_only",
     "is_phase2_message",
     "is_terminal_message",
     "message_tier",

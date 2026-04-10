@@ -199,23 +199,23 @@ def test_concat_map_coerces_iterable_project_return() -> None:
 
 
 def test_flat_map_concurrent() -> None:
-    outer = state(0)
+    outer, ho = _make_deferred_producer()
+    p_init, _h_init = _make_deferred_producer()  # absorbs initial compute
     p1, h1 = _make_deferred_producer()
     p2, h2 = _make_deferred_producer()
-    p3, h3 = _make_deferred_producer()
     counter = [0]
 
     def make_inner(_v: int) -> Any:
         counter[0] += 1
-        # counter 1 = initial dep value, 2 = DATA 1, 3 = DATA 2
-        return [p1, p2, p3][counter[0] - 1]
+        # counter 1 = initial compute (absorbed), 2 = DATA 1, 3 = DATA 2
+        return [p_init, p1, p2][counter[0] - 1]
 
     sink: list[Messages] = []
     out = pipe(outer, flat_map(make_inner))
     out.subscribe(sink.append)
 
-    outer.down([(MessageType.DATA, 1)])
-    outer.down([(MessageType.DATA, 2)])
+    ho[0].down([(MessageType.DATA, 1)])
+    ho[0].down([(MessageType.DATA, 2)])
     h1[0].down([(MessageType.DATA, "from-1")])
     h2[0].down([(MessageType.DATA, "from-2")])
     vals = _values(sink)
@@ -283,7 +283,7 @@ def test_debounce_basic() -> None:
 
 
 def test_throttle_leading_edge() -> None:
-    s = state(0)
+    s = node()
     sink: list[Messages] = []
     t = pipe(s, throttle(0.1, trailing=False))
     t.subscribe(sink.append)
@@ -297,8 +297,8 @@ def test_throttle_leading_edge() -> None:
 
 
 def test_sample_on_notifier() -> None:
-    inp = state(0)
-    tick = state(0)
+    inp = node()
+    tick = node()
     sink: list[Messages] = []
     sampled = pipe(inp, sample(tick))
     sampled.subscribe(sink.append)
@@ -309,8 +309,8 @@ def test_sample_on_notifier() -> None:
 
 
 def test_buffer_notifer() -> None:
-    src = state(0)
-    gate = state(0)
+    src = node()
+    gate = node()
     sink: list[Messages] = []
     b = pipe(src, buffer(gate))
     b.subscribe(sink.append)
@@ -321,7 +321,7 @@ def test_buffer_notifer() -> None:
 
 
 def test_buffer_count() -> None:
-    s = state(0)
+    s = node()
     sink: list[Messages] = []
     b = pipe(s, buffer_count(2))
     b.subscribe(sink.append)
@@ -528,22 +528,29 @@ def test_concat_map_reconnect_fresh_queue() -> None:
     reconnect does not cause a crash and that values flow correctly from existing queue
     state through the new subscription.
     """
-    outer = state(0)
+    outer, ho = _make_deferred_producer()
     results: list[tuple[int, list[Any]]] = []
 
-    def make_inner(v: int) -> Any:
+    def make_inner(v: Any) -> Any:
         _p, holder = _make_deferred_producer()
         results.append((v, holder))
         return _p
 
     out = pipe(outer, concat_map(make_inner))
 
-    # First subscription: subscribe and let inner for 0 activate
+    # First subscription: initial compute spawns an inner for None (SENTINEL dep).
+    # Then we send DATA(0) which queues behind that initial inner.
     sink1: list[Messages] = []
     unsub1 = out.subscribe(sink1.append)
-    # Complete the initial inner (value 0) so queue drains cleanly
+    # Complete the initial inner (spawned by compute with None dep value)
     assert len(results) >= 1
-    _, h0 = results[0]
+    _, h_init = results[0]
+    h_init[0].down([(MessageType.COMPLETE,)])
+    # Now send DATA(0) — it was buffered, now drains
+    ho[0].down([(MessageType.DATA, 0)])
+    inners_0 = [(v, h) for v, h in results if v == 0]
+    assert inners_0, "inner for value 0 should be created"
+    _, h0 = inners_0[-1]
     h0[0].down([(MessageType.DATA, "zero")])
     h0[0].down([(MessageType.COMPLETE,)])
     unsub1()
@@ -552,7 +559,12 @@ def test_concat_map_reconnect_fresh_queue() -> None:
     # Second subscription — reconnect then push a new value
     sink2: list[Messages] = []
     unsub2 = out.subscribe(sink2.append)
-    outer.down([(MessageType.DATA, 42)])
+    # Reconnect triggers another initial compute inner — complete it
+    init_inners = [(v, h) for v, h in results if v is None]
+    if len(init_inners) > 1:
+        _, h_init2 = init_inners[-1]
+        h_init2[0].down([(MessageType.COMPLETE,)])
+    ho[0].down([(MessageType.DATA, 42)])
     # After reconnect + new DATA, a new inner should be created for value 42
     inners_42 = [(v, h) for v, h in results if v == 42]
     assert inners_42, "concat_map should create a new inner for value 42 after reconnect"
@@ -564,15 +576,27 @@ def test_concat_map_reconnect_fresh_queue() -> None:
 
 
 def test_switch_map_derived_inner_initial_data_not_duplicated() -> None:
-    """Regression: session parity fix #4 (_forward_inner emitted flag)."""
-    outer = state(0)
+    """Regression: session parity fix #4 (_forward_inner emitted flag).
+
+    With push-on-subscribe, each attach (subscribe to inner) emits exactly once.
+    The deferred-producer outer triggers an initial compute (attach with None),
+    then the explicit DATA triggers a second attach. Each attach subscribes to
+    the derived inner which pushes its value once — verifying _forward_inner's
+    emitted flag prevents double-emission per attach.
+    """
+    outer, ho = _make_deferred_producer()
     base = state(10)
-    derived = node([base], lambda d, _m: d[0] + 1)
+    derived_inner = node([base], lambda d, _m: d[0] + 1)
     sink: list[Messages] = []
-    out = pipe(outer, switch_map(lambda _v: derived))
+    out = pipe(outer, switch_map(lambda _v: derived_inner))
     out.subscribe(sink.append)
-    vals = _values(sink)
-    assert vals.count(11) == 1
+    # Initial compute attaches with None → derived_inner emits 11 once
+    vals_before = _values(sink)
+    assert vals_before.count(11) == 1, f"initial attach should emit 11 once, got {vals_before}"
+    ho[0].down([(MessageType.DATA, 0)])
+    # Second attach re-subscribes → derived_inner emits 11 once more
+    vals_after = _values(sink)
+    assert vals_after.count(11) == 2, f"after explicit DATA, expect 2 total, got {vals_after}"
 
 
 def test_switch_map_global_dirty_before_phase2() -> None:

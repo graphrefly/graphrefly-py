@@ -27,6 +27,7 @@ def test_messages_is_list_of_tuples_not_shorthand() -> None:
 def test_message_type_enum_matches_spec_appendix() -> None:
     """Roadmap 0.2 — full vocabulary; values are stable StrEnum strings."""
     expected = {
+        "START",
         "DATA",
         "DIRTY",
         "RESOLVED",

@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
 from graphrefly.core.dynamic_node import DynamicNodeImpl
 from graphrefly.core.guard import access_hint_for_guard
-from graphrefly.core.node import NodeImpl  # noqa: TC001 — runtime type for describe_node
+from graphrefly.core.node import NO_VALUE, NodeImpl  # noqa: TC001 — runtime type for describe_node
 from graphrefly.core.versioning import is_v1
 
 __all__ = [
@@ -188,6 +188,8 @@ def describe_node(
         if n.name is not None:
             out["name"] = n.name
         if _wants_field(include_fields, "value"):
+            if n._cached is NO_VALUE:
+                out["sentinel"] = True
             with suppress(Exception):
                 out["value"] = n.get()
         # Guard access hint (standalone opt-in field)
@@ -221,6 +223,8 @@ def describe_node(
     if n.name is not None:
         out["name"] = n.name
     if _wants_field(include_fields, "value"):
+        if n._cached is NO_VALUE:
+            out["sentinel"] = True
         with suppress(Exception):
             out["value"] = n.get()
     # Guard access hint (standalone opt-in field)

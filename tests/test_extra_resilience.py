@@ -152,7 +152,7 @@ def test_retry_exhausted() -> None:
 
 
 def test_rate_limiter_queues_then_drains() -> None:
-    s = state(0)
+    s = node()  # SENTINEL: no push on subscribe
     sink: list[Messages] = []
     out = rate_limiter(s, 2, 60_000_000)
     out.subscribe(sink.append)
@@ -250,7 +250,8 @@ def test_with_status_error_and_active() -> None:
     w = with_status(s, initial_status="pending")
     sink: list[Messages] = []
     w.node.subscribe(sink.append)
-    assert w.status.get() == "pending"
+    # Push-model: state(1) pushes DATA(1) on subscribe, transitioning status to "active".
+    assert w.status.get() == "active"
     s.down([(MessageType.DATA, 2)])
     assert w.status.get() == "active"
     assert w.node.get() == 2
@@ -535,7 +536,7 @@ def test_cache_stores_and_replays() -> None:
 
 
 def test_cache_forwards_live_data() -> None:
-    s = state(0)
+    s = node()  # SENTINEL: no push on subscribe
     n = cache(s, 1_000_000_000)
     sink: list[Messages] = []
     n.subscribe(sink.append)
