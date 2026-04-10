@@ -34,6 +34,8 @@ from graphrefly.patterns.memory import (
     light_collection,
     vector_index,
 )
+from graphrefly.patterns.messaging import TopicGraph, topic
+from graphrefly.patterns.orchestration import GateController, gate
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -119,12 +121,48 @@ class LLMAdapter(Protocol):
         self,
         messages: Sequence[ChatMessage],
         opts: LLMInvokeOptions | None = None,
-    ) -> Iterable[str]:
-        """Stream token chunks from the LLM (synchronous iterator for thread-based consumption)."""
+    ) -> Iterable[str] | AsyncIterable[str]:
+        """Stream token chunks from the LLM.
+
+        May return a synchronous ``Iterable[str]`` (e.g. blocking HTTP stream)
+        or an ``AsyncIterable[str]`` (e.g. ``openai.AsyncClient``, Anthropic
+        async SDK).  ``streaming_prompt_node`` handles both: sync iterables are
+        drained in the calling thread; async iterables are scheduled via the
+        active runner for non-blocking consumption.
+        """
         ...
 
 
 AgentLoopStatus = str  # "idle" | "thinking" | "acting" | "done" | "error"
+
+
+@dataclass(frozen=True, slots=True)
+class StreamChunk:
+    """A single chunk from any streaming source (LLM tokens, WebSocket, SSE, file tail).
+
+    Generic enough for any streaming source, not just LLM.
+    """
+
+    source: str
+    """Identifier for the stream source (adapter name, URL, etc.)."""
+    token: str
+    """This chunk's content."""
+    accumulated: str
+    """Full accumulated text so far."""
+    index: int
+    """0-based chunk counter."""
+
+
+@dataclass(frozen=True, slots=True)
+class StreamingPromptNodeHandle:
+    """Bundle returned by :func:`streaming_prompt_node`."""
+
+    output: Node[Any]
+    """Final parsed result (emits once per invocation, after stream completes)."""
+    stream: TopicGraph
+    """Live stream topic — subscribe to ``stream.latest`` or ``stream.events`` for chunks."""
+    dispose: Callable[[], None]
+    """Tear down the keepalive subscription and release resources."""
 
 
 @dataclass(slots=True)
@@ -369,7 +407,13 @@ def from_llm_stream(
 
         def _bg() -> None:
             try:
-                for chunk in adapter.stream(chat_msgs, invoke_opts):
+                raw = adapter.stream(chat_msgs, invoke_opts)
+                if isinstance(raw, AsyncIterable):
+                    msg = (
+                        "from_llm_stream does not support async adapters; use streaming_prompt_node"
+                    )
+                    raise TypeError(msg)
+                for chunk in raw:
                     if cancel_ref[0].is_cancelled:
                         break
                     log.append(chunk)
@@ -393,6 +437,587 @@ def from_llm_stream(
         eff.down([(MessageType.TEARDOWN,)])
 
     return LLMStreamHandle(node=log.entries, dispose=_dispose)
+
+
+# ---------------------------------------------------------------------------
+# streaming_prompt_node
+# ---------------------------------------------------------------------------
+
+
+def streaming_prompt_node(
+    adapter: LLMAdapter,
+    deps: list[Node[Any]],
+    prompt: str | Callable[..., str],
+    *,
+    name: str | None = None,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    format: str = "text",  # "text" | "json"
+    system_prompt: str | None = None,
+) -> StreamingPromptNodeHandle:
+    """Streaming LLM transform: wraps a prompt template + adapter into a reactive
+    streaming pipeline. Re-invokes the LLM whenever any dep changes; the
+    previous in-flight stream is canceled automatically via ``switch_map``.
+
+    Each token chunk is published to a :class:`~graphrefly.patterns.messaging.TopicGraph`
+    as a :class:`StreamChunk`. Extractors can mount on the topic independently
+    (see :func:`stream_extractor`). Zero overhead if nobody subscribes to the
+    stream topic.
+
+    The ``output`` node emits the final parsed result (like :func:`prompt_node`).
+    """
+    source_name = name or "llm"
+    invoke_opts = LLMInvokeOptions(
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        system_prompt=system_prompt,
+    )
+    stream_topic: TopicGraph = topic(f"{source_name}/stream")
+
+    def _build_messages(dep_values: list[Any]) -> list[ChatMessage]:
+        if any(v is None for v in dep_values):
+            return []
+        if callable(prompt) and not isinstance(prompt, str):
+            prompt_text = prompt(*dep_values)
+        else:
+            prompt_text = str(prompt)
+        if not prompt_text:
+            return []
+        msgs: list[ChatMessage] = []
+        if system_prompt:
+            msgs.append(ChatMessage(role="system", content=system_prompt))
+        msgs.append(ChatMessage(role="user", content=prompt_text))
+        return msgs
+
+    messages_node = derived(
+        deps,
+        lambda dep_values, _a: _build_messages(dep_values),
+        name=f"{source_name}::messages",
+        meta=_ai_meta("streaming_prompt_node"),
+    )
+
+    def _publish_chunk(tok: str, accumulated: str, index: int) -> None:
+        stream_topic.publish(
+            StreamChunk(
+                source=source_name,
+                token=tok,
+                accumulated=accumulated,
+                index=index,
+            )
+        )
+
+    def _on_messages(msgs: list[ChatMessage]) -> Any:
+        if not msgs:
+            return state(None)
+
+        try:
+            raw_stream = adapter.stream(msgs, invoke_opts)
+        except Exception:  # noqa: BLE001
+            return state(None)
+
+        # Async iterable (e.g. openai.AsyncClient, Anthropic async SDK)
+        # → async generator → from_any → from_async_iter → runner-scheduled,
+        #   non-blocking, cancellable via cleanup on unsubscribe.
+        if isinstance(raw_stream, AsyncIterable):
+
+            async def _async_pump() -> AsyncIterable[Any]:
+                accumulated = ""
+                index = 0
+                try:
+                    async for tok in raw_stream:
+                        accumulated += tok
+                        _publish_chunk(tok, accumulated, index)
+                        index += 1
+                except Exception:  # noqa: BLE001
+                    pass  # stream errors → output settles to partial/None
+                yield _parse_final(accumulated)
+
+            return _async_pump()
+
+        # Sync iterable (e.g. blocking HTTP stream)
+        # → sync generator → from_any → from_iter → drains in calling thread.
+        def _sync_pump() -> Iterable[Any]:
+            accumulated = ""
+            try:
+                for index, tok in enumerate(raw_stream):
+                    accumulated += tok
+                    _publish_chunk(tok, accumulated, index)
+            except Exception:  # noqa: BLE001
+                pass  # stream errors → output settles to partial/None
+            yield _parse_final(accumulated)
+
+        return _sync_pump()
+
+    def _parse_final(accumulated: str) -> Any:
+        if format == "json":
+            try:
+                return json.loads(_strip_fences(accumulated))
+            except (json.JSONDecodeError, ValueError):
+                return None
+        return accumulated
+
+    output = switch_map(_on_messages)(messages_node)
+    unsub = _keepalive(output)
+
+    def _dispose() -> None:
+        unsub()
+        stream_topic.destroy()
+
+    return StreamingPromptNodeHandle(
+        output=output,
+        stream=stream_topic,
+        dispose=_dispose,
+    )
+
+
+# ---------------------------------------------------------------------------
+# stream_extractor
+# ---------------------------------------------------------------------------
+
+
+def stream_extractor(
+    stream_topic: TopicGraph,
+    extract_fn: Callable[[str], Any],
+    *,
+    name: str | None = None,
+) -> Node[Any]:
+    """Mount an extractor function on a streaming topic.
+
+    Returns a derived node that emits extracted values as chunks arrive.
+    ``extract_fn`` receives the accumulated text from the latest chunk and
+    returns the extracted value, or ``None`` if nothing detected yet.
+
+    Args:
+        stream_topic: The stream topic to extract from.
+        extract_fn: ``(accumulated: str) -> T | None``.
+        name: Optional node name.
+
+    Returns:
+        Derived node emitting extracted values.
+    """
+
+    def _compute(dep_values: list[Any], _actions: Any) -> Any:
+        chunk = dep_values[0]
+        if chunk is None:
+            return None
+        return extract_fn(chunk.accumulated if isinstance(chunk, StreamChunk) else str(chunk))
+
+    return derived(
+        [stream_topic.latest],
+        _compute,
+        name=name or "extractor",
+        initial=None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# keyword_flag_extractor
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class KeywordFlag:
+    """A keyword match detected in the stream."""
+
+    label: str
+    pattern: str  # regex source string
+    match: str
+    position: int
+
+
+def keyword_flag_extractor(
+    stream_topic: TopicGraph,
+    *,
+    patterns: Sequence[tuple[str, str]],
+    name: str | None = None,
+) -> Node[tuple[KeywordFlag, ...]]:
+    """Mount a keyword-flag extractor on a streaming topic.
+
+    Scans accumulated text for all configured patterns and emits a tuple of
+    matches.
+
+    Use cases: design invariant violations (``setTimeout``, ``EventEmitter``),
+    PII detection (SSN, email, phone), toxicity keywords, off-track reasoning.
+
+    Args:
+        stream_topic: The stream topic to extract from.
+        patterns: Sequence of ``(regex_pattern, label)`` pairs.
+        name: Optional node name.
+
+    Returns:
+        Derived node emitting a tuple of :class:`KeywordFlag`.
+    """
+    compiled = [(_re.compile(pat), label) for pat, label in patterns]
+
+    def _compute(dep_values: list[Any], _actions: Any) -> tuple[KeywordFlag, ...]:
+        chunk = dep_values[0]
+        if chunk is None:
+            return ()
+        accumulated = chunk.accumulated if isinstance(chunk, StreamChunk) else str(chunk)
+        flags: list[KeywordFlag] = []
+        for regex, label in compiled:
+            for m in regex.finditer(accumulated):
+                flags.append(
+                    KeywordFlag(
+                        label=label,
+                        pattern=regex.pattern,
+                        match=m.group(0),
+                        position=m.start(),
+                    )
+                )
+        return tuple(flags)
+
+    return derived(
+        [stream_topic.latest],
+        _compute,
+        name=name or "keyword-flag-extractor",
+        initial=(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# tool_call_extractor
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractedToolCall:
+    """A tool call detected in the stream."""
+
+    name: str
+    arguments: dict[str, Any]
+    raw: str
+    start_index: int
+
+
+def tool_call_extractor(
+    stream_topic: TopicGraph,
+    *,
+    name: str | None = None,
+) -> Node[tuple[ExtractedToolCall, ...]]:
+    """Mount a tool-call extractor on a streaming topic.
+
+    Scans accumulated text for complete JSON objects containing ``"name"`` and
+    ``"arguments"`` keys (the standard tool_call shape). Partial JSON is ignored
+    until the closing brace.
+
+    Feeds into the tool interception chain for reactive tool gating mid-stream.
+
+    Args:
+        stream_topic: The stream topic to extract from.
+        name: Optional node name.
+
+    Returns:
+        Derived node emitting a tuple of :class:`ExtractedToolCall`.
+    """
+
+    def _compute(dep_values: list[Any], _actions: Any) -> tuple[ExtractedToolCall, ...]:
+        chunk = dep_values[0]
+        if chunk is None:
+            return ()
+        accumulated = chunk.accumulated if isinstance(chunk, StreamChunk) else str(chunk)
+        calls: list[ExtractedToolCall] = []
+        i = 0
+        while i < len(accumulated):
+            start = accumulated.find("{", i)
+            if start == -1:
+                break
+            depth = 0
+            end = -1
+            in_string = False
+            j = start
+            while j < len(accumulated):
+                ch = accumulated[j]
+                if in_string:
+                    if ch == "\\" and j + 1 < len(accumulated):
+                        j += 2
+                        continue
+                    if ch == '"':
+                        in_string = False
+                elif ch == '"':
+                    in_string = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = j
+                        break
+                j += 1
+            if end == -1:
+                break  # incomplete JSON — wait for more chunks
+            raw = accumulated[start : end + 1]
+            try:
+                parsed = json.loads(raw)
+                if (
+                    isinstance(parsed, dict)
+                    and isinstance(parsed.get("name"), str)
+                    and parsed.get("arguments") is not None
+                    and isinstance(parsed["arguments"], dict)
+                ):
+                    calls.append(
+                        ExtractedToolCall(
+                            name=parsed["name"],
+                            arguments=parsed["arguments"],
+                            raw=raw,
+                            start_index=start,
+                        )
+                    )
+            except (json.JSONDecodeError, ValueError):
+                pass  # Not valid JSON — skip
+            i = end + 1
+        return tuple(calls)
+
+    return derived(
+        [stream_topic.latest],
+        _compute,
+        name=name or "tool-call-extractor",
+        initial=(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# cost_meter_extractor
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CostMeterReading:
+    """A cost meter reading from the stream."""
+
+    chunk_count: int
+    char_count: int
+    estimated_tokens: int
+
+
+_ZERO_READING = CostMeterReading(chunk_count=0, char_count=0, estimated_tokens=0)
+
+
+def cost_meter_extractor(
+    stream_topic: TopicGraph,
+    *,
+    chars_per_token: int = 4,
+    name: str | None = None,
+) -> Node[CostMeterReading]:
+    """Mount a cost meter on a streaming topic.
+
+    Counts chunks, characters, and estimates token count. Compose with
+    ``budget_gate`` for hard-stop when LLM output exceeds budget mid-generation.
+
+    Args:
+        stream_topic: The stream topic to extract from.
+        chars_per_token: Characters per token approximation. Default: 4 (GPT-family).
+        name: Optional node name.
+
+    Returns:
+        Derived node emitting :class:`CostMeterReading`.
+    """
+
+    def _compute(dep_values: list[Any], _actions: Any) -> CostMeterReading:
+        chunk = dep_values[0]
+        if chunk is None:
+            return _ZERO_READING
+        c = chunk if isinstance(chunk, StreamChunk) else None
+        if c is None:
+            return _ZERO_READING
+        char_count = len(c.accumulated)
+        return CostMeterReading(
+            chunk_count=c.index + 1,
+            char_count=char_count,
+            estimated_tokens=math.ceil(char_count / chars_per_token),
+        )
+
+    return derived(
+        [stream_topic.latest],
+        _compute,
+        name=name or "cost-meter",
+        initial=_ZERO_READING,
+    )
+
+
+# ---------------------------------------------------------------------------
+# gated_stream
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class GatedStreamHandle:
+    """Bundle returned by :func:`gated_stream`."""
+
+    output: Node[Any]
+    """Final parsed result (after gate approval)."""
+    stream: TopicGraph
+    """Live stream topic — subscribe to ``stream.latest`` for chunks."""
+    gate: GateController
+    """Gate controller — approve, reject (aborts in-flight stream), modify."""
+    dispose: Callable[[], None]
+    """Tear down everything."""
+
+
+def gated_stream(
+    graph: Graph,
+    name: str,
+    adapter: LLMAdapter,
+    deps: list[Node[Any]],
+    prompt: str | Callable[..., str],
+    *,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    format: str = "text",
+    system_prompt: str | None = None,
+    max_pending: int | float = float("inf"),
+    start_open: bool = False,
+) -> GatedStreamHandle:
+    """Streaming LLM transform with human-in-the-loop gate integration.
+
+    Composes :func:`streaming_prompt_node` with :func:`gate` so that:
+
+    - ``gate.reject()`` discards the pending value **and** aborts the in-flight
+      stream (cancels via cancel signal → switchMap restart).
+    - ``gate.modify()`` transforms the pending value before forwarding.
+    - ``gate.approve()`` forwards the final result as normal.
+
+    Args:
+        graph: The orchestration graph to register nodes in.
+        name: Base name for gate and stream nodes.
+        adapter: LLM adapter (provider-agnostic).
+        deps: Input nodes whose values feed the prompt.
+        prompt: Static string or template function receiving dep values.
+        model: Model identifier.
+        temperature: Sampling temperature.
+        max_tokens: Maximum tokens.
+        format: Output format — ``"json"`` attempts ``json.loads``.
+        system_prompt: Optional system prompt.
+        max_pending: Maximum gate queue size.
+        start_open: If ``True`` the gate starts in auto-forward mode.
+    """
+    source_name = name
+    invoke_opts = LLMInvokeOptions(
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        system_prompt=system_prompt,
+    )
+    stream_topic: TopicGraph = topic(f"{source_name}/stream")
+
+    def _build_messages(dep_values: list[Any]) -> list[ChatMessage]:
+        if any(v is None for v in dep_values):
+            return []
+        if callable(prompt) and not isinstance(prompt, str):
+            prompt_text = prompt(*dep_values)
+        else:
+            prompt_text = str(prompt)
+        if not prompt_text:
+            return []
+        msgs: list[ChatMessage] = []
+        if system_prompt:
+            msgs.append(ChatMessage(role="system", content=system_prompt))
+        msgs.append(ChatMessage(role="user", content=prompt_text))
+        return msgs
+
+    messages_node = derived(
+        deps,
+        lambda dep_values, _a: _build_messages(dep_values),
+        name=f"{source_name}::messages",
+        meta=_ai_meta("gated_stream"),
+    )
+
+    def _publish_chunk(tok: str, accumulated: str, index: int) -> None:
+        stream_topic.publish(
+            StreamChunk(
+                source=source_name,
+                token=tok,
+                accumulated=accumulated,
+                index=index,
+            )
+        )
+
+    def _parse_final(accumulated: str) -> Any:
+        if format == "json":
+            try:
+                return json.loads(_strip_fences(accumulated))
+            except (json.JSONDecodeError, ValueError):
+                return None
+        return accumulated
+
+    def _on_messages(msgs: list[ChatMessage]) -> Any:
+        if not msgs:
+            return state(None)
+
+        try:
+            raw_stream = adapter.stream(msgs, invoke_opts)
+        except Exception:  # noqa: BLE001
+            return state(None)
+
+        if isinstance(raw_stream, AsyncIterable):
+
+            async def _async_pump() -> AsyncIterable[Any]:
+                accumulated = ""
+                index = 0
+                try:
+                    async for tok in raw_stream:
+                        accumulated += tok
+                        _publish_chunk(tok, accumulated, index)
+                        index += 1
+                except Exception:  # noqa: BLE001
+                    pass
+                yield _parse_final(accumulated)
+
+            return _async_pump()
+
+        def _sync_pump() -> Iterable[Any]:
+            accumulated = ""
+            try:
+                for index, tok in enumerate(raw_stream):
+                    accumulated += tok
+                    _publish_chunk(tok, accumulated, index)
+            except Exception:  # noqa: BLE001
+                pass
+            yield _parse_final(accumulated)
+
+        return _sync_pump()
+
+    output = switch_map(_on_messages)(messages_node)
+    unsub = _keepalive(output)
+
+    # Filter: only forward non-null results to the gate. None is the
+    # switch_map initial/cancel state. Returning None from a derived fn
+    # means "no auto-emit" (spec §2.4), so None values are suppressed.
+    non_null_output = derived(
+        [output],
+        lambda dep_values, _a: dep_values[0] if dep_values[0] is not None else None,
+        name=f"{name}/filter",
+    )
+
+    # Register so gate() can find it as a dep
+    graph.add(f"{name}/raw", non_null_output)
+
+    gate_ctrl = gate(
+        graph,
+        f"{name}/gate",
+        f"{name}/raw",
+        max_pending=max_pending,
+        start_open=start_open,
+    )
+
+    # In PY, sync streams complete before reject() can fire, so no abort
+    # signal is needed. For async streams, switch_map's cleanup of
+    # from_async_iter handles cancellation on the next dep change.
+    # The gate's reject() simply discards the pending value.
+
+    def _dispose() -> None:
+        unsub()
+        stream_topic.destroy()
+
+    return GatedStreamHandle(
+        output=gate_ctrl.node,
+        stream=stream_topic,
+        gate=gate_ctrl,
+        dispose=_dispose,
+    )
 
 
 # ---------------------------------------------------------------------------
