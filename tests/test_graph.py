@@ -364,6 +364,9 @@ def test_signal_visits_mounts_before_local_nodes() -> None:
     root.mount("c", child)
     child_node.subscribe(lambda _msgs: order.append("child"))
     root_node.subscribe(lambda _msgs: order.append("root"))
+    # Push-model: nodes with initial=0 push DATA on subscribe, populating order.
+    # Clear before the signal call being tested.
+    order.clear()
     root.signal([(MessageType.PAUSE,)])
     assert order == ["child", "root"]
 
@@ -981,12 +984,15 @@ def test_auto_checkpoint_triggers_only_for_message_tier_gte_2() -> None:
     g.add("a", state(0))
     ad = Adapter()
     handle = g.auto_checkpoint(ad, debounce_ms=10, compact_every=2)
+    # Push-model: state(0) initial push triggers a checkpoint save on subscribe.
+    time.sleep(0.03)
+    initial_saves = len(ad.saved)
     g.signal([(MessageType.PAUSE, "lock")])
     time.sleep(0.03)
-    assert len(ad.saved) == 0
+    assert len(ad.saved) == initial_saves  # PAUSE (tier 1) should not trigger save
     g.set("a", 1)
     time.sleep(0.03)
-    assert len(ad.saved) == 1
+    assert len(ad.saved) == initial_saves + 1
     handle.dispose()
 
 
@@ -1161,12 +1167,12 @@ def test_observe_derived_sees_dirty_before_data() -> None:
     seq: list[MessageType] = []
     unsub = g.observe("b").subscribe(lambda msgs: seq.extend(m[0] for m in msgs))
     g.set("a", 5)
-    unsub()
     i_dirty = next((i for i, t in enumerate(seq) if t is MessageType.DIRTY), -1)
     i_data = next((i for i, t in enumerate(seq) if t is MessageType.DATA), -1)
     assert i_dirty >= 0, "expected DIRTY in observe stream"
     assert i_data > i_dirty, "expected DATA after DIRTY"
     assert g.get("b") == 6
+    unsub()
 
 
 def test_snapshot_json_wire_round_trip_with_mount() -> None:

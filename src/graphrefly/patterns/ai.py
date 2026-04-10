@@ -428,11 +428,15 @@ def prompt_node(
         return content
 
     node_name = name or "prompt_node"
+    # Seed with initial=[] so switch_map fires with [] during the initial
+    # activation pass and emits None (composition guide §8 — promptNode
+    # gates on nullish deps). Dep-level null guarding done inside _build_messages.
     messages_node = derived(
         deps,
         lambda dep_values, _a: _build_messages(dep_values),
         name=f"{node_name}::messages",
         meta=_ai_meta("prompt_node", meta),
+        initial=[],
     )
 
     def _on_messages(msgs: list[ChatMessage]) -> Any:

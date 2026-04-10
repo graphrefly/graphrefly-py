@@ -121,6 +121,8 @@ def test_pubsub_lazy_topic() -> None:
                 seen.append(m[1])
 
     unsub = t.subscribe(sink)
+    # Push-model: topic state(None) pushes DATA(None) on subscribe; clear before publish.
+    seen.clear()
     hub.publish("x", 42)
     assert seen == [42]
     unsub()

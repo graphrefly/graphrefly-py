@@ -50,9 +50,10 @@ def test_producer_runs_on_subscribe_and_can_emit() -> None:
                 seen.append(m[1])
 
     unsub = p.subscribe(sink)
-    unsub()
     assert p.get() == 1
+    # Producer emits 1 during connect; START handshake delivers cached value.
     assert seen == [1]
+    unsub()
 
 
 def test_derived_deps_and_value_returning_fn() -> None:
@@ -66,9 +67,9 @@ def test_derived_deps_and_value_returning_fn() -> None:
 
     unsub = d.subscribe(sink)
     src.down([(MessageType.DATA, 3)])
-    unsub()
     assert d.get() == 9
     assert MessageType.DATA in seen
+    unsub()
 
 
 def test_effect_and_producer_set_describe_kind() -> None:

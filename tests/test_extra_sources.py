@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 import pytest
 
 from graphrefly.core import MessageType
-from graphrefly.core.node import NodeImpl
+from graphrefly.core.node import NodeImpl, node
 from graphrefly.core.sugar import producer, state
 from graphrefly.extra.adapters import (
     from_event_emitter,
@@ -185,7 +185,7 @@ def test_for_each_error_with_handler() -> None:
 
 def test_share_multicast_wires_one_upstream() -> None:
     """``share`` is a no-fn dep wire: one subscription to the source, fan-out to many sinks."""
-    root = state(0)
+    root = node()  # SENTINEL: no push on subscribe
     src = share(root)
     a: list[Any] = []
     b: list[Any] = []
@@ -304,7 +304,10 @@ def test_replay_rejects_zero_buffer() -> None:
 def test_share_initial_value() -> None:
     s = state(42)
     shared = share(s)
+    # Push-model: value flows on subscribe, not at construction time.
+    unsub = shared.subscribe(lambda _m: None)
     assert shared.get() == 42
+    unsub()
 
 
 def test_from_cron_builtin_parser() -> None:

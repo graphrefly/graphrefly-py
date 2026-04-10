@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from graphrefly import Graph, state
+from graphrefly import Graph, node, state
 from graphrefly.core.protocol import MessageType
 from graphrefly.patterns import orchestration
 from graphrefly.patterns.orchestration import GateController, gate
@@ -104,7 +104,7 @@ def test_valve_and_approval_hold_value_when_closed() -> None:
 
 def test_for_each_runs_side_effects_and_forwards() -> None:
     g = orchestration.pipeline("wf")
-    source = state(1)
+    source = node()
     g.add("input", source)
     seen: list[int] = []
     sink = orchestration.for_each(g, "sink", "input", lambda value, _a: seen.append(int(value)))
@@ -204,7 +204,7 @@ def test_on_failure_recovers_from_errors() -> None:
 
 def test_for_each_stops_user_callback_after_terminal_error() -> None:
     g = orchestration.pipeline("wf")
-    src = state(0)
+    src = node()
     g.add("src", src)
     seen: list[int] = []
 
@@ -225,11 +225,15 @@ def test_wait_cancels_pending_timers_on_teardown() -> None:
     src = state(1)
     g.add("input", src)
     delayed = orchestration.wait(g, "delayed", "input", 0.02)
-    delayed.subscribe(lambda _msgs: None)
+    values: list[Any] = []
+    delayed.subscribe(lambda msgs: values.extend(m[1] for m in msgs if m[0] is MessageType.DATA))
+    assert g.get("delayed") == 1
     g.set("input", 2)
     delayed.down([(MessageType.TEARDOWN,)])
     time.sleep(0.05)
-    assert g.get("delayed") == 1
+    # After TEARDOWN, pending timer for value 2 must not fire.
+    # RAM semantics clear cache on disconnect, so verify via collected values.
+    assert values == [1]
 
 
 def test_on_failure_stops_recovery_after_terminal_error() -> None:
@@ -284,7 +288,7 @@ def test_loop_uses_permissive_parse_plus_truncate_for_iteration_dep_values() -> 
 
 def test_gate_queues_values_and_approve_forwards_them() -> None:
     g = orchestration.pipeline("wf")
-    src = state(0)
+    src = node()
     g.add("input", src)
     ctrl = gate(g, "g", "input")
     assert isinstance(ctrl, GateController)
@@ -318,7 +322,7 @@ def test_gate_queues_values_and_approve_forwards_them() -> None:
 
 def test_gate_reject_discards_pending_values() -> None:
     g = orchestration.pipeline("wf")
-    src = state(0)
+    src = node()
     g.add("input", src)
     ctrl = gate(g, "g", "input")
     ctrl.node.subscribe(lambda _: None)
@@ -335,7 +339,7 @@ def test_gate_reject_discards_pending_values() -> None:
 
 def test_gate_modify_transforms_and_forwards() -> None:
     g = orchestration.pipeline("wf")
-    src = state(0)
+    src = node()
     g.add("input", src)
     ctrl = gate(g, "g", "input")
     forwarded: list[Any] = []
@@ -355,7 +359,7 @@ def test_gate_modify_transforms_and_forwards() -> None:
 
 def test_gate_open_flushes_pending_and_auto_approves_future() -> None:
     g = orchestration.pipeline("wf")
-    src = state(0)
+    src = node()
     g.add("input", src)
     ctrl = gate(g, "g", "input")
     forwarded: list[Any] = []
@@ -426,7 +430,7 @@ def test_gate_max_pending_drops_when_full() -> None:
 
 def test_gate_approve_multiple() -> None:
     g = orchestration.pipeline("wf")
-    src = state(0)
+    src = node()
     g.add("input", src)
     ctrl = gate(g, "g", "input")
     forwarded: list[Any] = []

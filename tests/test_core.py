@@ -70,6 +70,10 @@ def test_two_sinks_both_receive() -> None:
 
     ua = s.subscribe(sink_a)
     ub = s.subscribe(sink_b)
+    # Push-on-subscribe: each subscriber receives DATA(1) on attach.
+    # Clear those before testing manual down propagation.
+    a.clear()
+    b.clear()
     s.down([(MessageType.DIRTY,), (MessageType.DATA, 2)])
     ua()
     ub()
@@ -92,9 +96,12 @@ def test_two_phase_dirty_before_data_on_derived() -> None:
     unsub()
 
     flat = [t for batch in batches for t in batch]
-    assert flat[0] == MessageType.DIRTY
-    assert MessageType.DATA in flat
-    assert flat.index(MessageType.DIRTY) < flat.index(MessageType.DATA)
+    # START is delivered first as part of the subscribe handshake
+    assert flat[0] == MessageType.START
+    non_start = [t for t in flat if t != MessageType.START]
+    assert non_start[0] == MessageType.DIRTY
+    assert MessageType.DATA in non_start
+    assert non_start.index(MessageType.DIRTY) < non_start.index(MessageType.DATA)
 
 
 def test_node_unsubscribe_disconnects_upstream() -> None:
@@ -186,10 +193,10 @@ def test_invalidate_clears_dep_memo_so_identical_data_triggers_recompute() -> No
     assert d.get() == 8
     src.down([(MessageType.INVALIDATE,)])
     src.down([(MessageType.DIRTY,), (MessageType.DATA, 7)])
-    unsub()
 
     assert runs == 2
     assert d.get() == 8
+    unsub()
 
 
 def test_invalidate_after_complete_reaches_sinks_and_clears_cache() -> None:
@@ -275,6 +282,8 @@ def test_source_node_emits_to_subscribers() -> None:
         seen.append([m[0] for m in msgs])
 
     unsub = s.subscribe(sink)
+    # Push-on-subscribe emits DATA(0); clear before testing manual down.
+    seen.clear()
     s.down([(MessageType.DIRTY,), (MessageType.DATA, 1)])
     unsub()
 
@@ -297,10 +306,10 @@ def test_derived_emits_resolved_when_equals_unchanged() -> None:
 
     unsub = derived.subscribe(sink)
     source.down([(MessageType.DATA, 2)])
-    unsub()
 
     assert derived.get() == "positive"
     assert MessageType.RESOLVED in [t for batch in seen for t in batch]
+    unsub()
 
 
 def test_diamond_settles_once() -> None:
@@ -316,13 +325,13 @@ def test_diamond_settles_once() -> None:
 
     d = node([b, c], fn)
     unsub = d.subscribe(lambda _m: None)
-    before = d_runs
+    before = d_runs  # capture AFTER subscribe (push-on-subscribe triggers initial compute)
     a.down([(MessageType.DIRTY,), (MessageType.DATA, 5)])
     after = d_runs
-    unsub()
 
     assert after - before == 1
     assert d.get() == 13
+    unsub()
 
 
 def test_fn_throw_error_downstream() -> None:
@@ -471,6 +480,7 @@ def test_producer_form() -> None:
     unsub()
 
     assert p.name == "producer-like"
+    # Producer emits 42 during connect; START handshake delivers cached value.
     assert values == [42]
 
 
@@ -491,6 +501,8 @@ def test_meta_snapshot_and_subscribe() -> None:
         seen.append([m[0] for m in msgs])
 
     unsub = n.meta["err"].subscribe(sink)
+    # Push-on-subscribe emits DATA(None); clear before testing manual down.
+    seen.clear()
     n.meta["err"].down([(MessageType.DIRTY,), (MessageType.DATA, "bad")])
     unsub()
 

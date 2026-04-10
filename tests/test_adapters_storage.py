@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
+from graphrefly.core.node import node
 from graphrefly.core.protocol import MessageType
-from graphrefly.core.sugar import state
 from graphrefly.extra.adapters import (
     BufferedSinkHandle,
     SinkHandle,
@@ -587,9 +587,11 @@ class TestFromSqlite:
 
         source.subscribe(sink)
         # Pre-map: error before batch, no partial DATA
-        assert len(msgs) == 1
-        assert msgs[0][0] is MessageType.ERROR
-        assert str(msgs[0][1]) == "bad row"
+        # Filter START from the subscribe handshake
+        non_start = [m for m in msgs if m[0] is not MessageType.START]
+        assert len(non_start) == 1
+        assert non_start[0][0] is MessageType.ERROR
+        assert str(non_start[0][1]) == "bad row"
 
 
 # ——————————————————————————————————————————————————————————————
@@ -713,7 +715,7 @@ class TestToSqlite:
 
     def test_batch_insert_flushes_on_dispose(self) -> None:
         db = MockSqliteDb()
-        s = state(0)
+        s = node()  # SENTINEL: no push on subscribe
         handle = to_sqlite(s, db, "t", batch_insert=True)
         s.down([(MessageType.DATA, 1)])
         s.down([(MessageType.DATA, 2)])
@@ -929,7 +931,7 @@ class TestToSqlAlchemy:
 
     def test_batch_insert_dispose_flushes(self) -> None:
         session = MockSqlAlchemySession()
-        s = state(0)
+        s = node()  # SENTINEL: no push on subscribe
         handle = to_sqlalchemy(s, session, batch_insert=True)
         s.down([(MessageType.DATA, "a")])
         s.down([(MessageType.DATA, "b")])

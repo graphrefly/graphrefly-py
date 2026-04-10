@@ -26,7 +26,6 @@ from graphrefly.patterns.harness.types import (
 from graphrefly.patterns.messaging import TopicGraph
 from tests.helpers.mock_llm import MockLLMAdapter, MockScript, StageScript
 
-
 # ---------------------------------------------------------------------------
 # types
 # ---------------------------------------------------------------------------
@@ -469,18 +468,27 @@ class TestHarnessLoop:
         # Human steering: override triage classification.
         # Items flowing through gates are dicts (router merges intake + triage
         # as plain dicts), so dict spread is the correct transform here.
+        # Approve ALL pending items (START handshake may have buffered the
+        # initial None value from topic.latest, matching the TS test).
+        pending_count = gate_ctrl.count.get() or 1
         gate_ctrl.modify(
             lambda item, *_args: {
                 **(item if isinstance(item, dict) else {}),
                 "root_cause": "composition",
                 "intervention": "template",
             },
-            count=1,
+            count=pending_count,
         )
 
-        # Pipeline flows synchronously with mock adapter — strategy is updated.
-        # Strategy should record the OVERRIDDEN classification
-        entry = h.strategy.lookup("composition", "template")
+        # Pipeline flows through execute → verify → strategy (may be async
+        # due to the mock adapter returning awaitables). Poll for convergence.
+        deadline = time.monotonic() + 5.0
+        entry = None
+        while time.monotonic() < deadline:
+            entry = h.strategy.lookup("composition", "template")
+            if entry is not None:
+                break
+            time.sleep(0.05)
         assert entry is not None
         assert entry.successes >= 1
 
@@ -501,7 +509,8 @@ class TestHarnessLoop:
         triage_idx = next(i for i, s in enumerate(stages_seen) if s == "TRIAGE")
         strategy_idx = next(i for i, s in enumerate(stages_seen) if s == "STRATEGY")
         assert intake_idx < triage_idx < strategy_idx, (
-            f"Stage order violation: INTAKE@{intake_idx} TRIAGE@{triage_idx} STRATEGY@{strategy_idx}"
+            f"Stage order violation: INTAKE@{intake_idx} "
+            f"TRIAGE@{triage_idx} STRATEGY@{strategy_idx}"
         )
 
         # Verify trace_lines still work as the string logger fallback

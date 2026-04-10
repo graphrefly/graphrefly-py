@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, WebSocket
 from starlette.testclient import TestClient
 
-from graphrefly import Graph, derived, state
+from graphrefly import Graph, derived, node, state
 from graphrefly.core.protocol import MessageType
 from graphrefly.integrations.fastapi import (
     get_graph,
@@ -275,7 +275,7 @@ def test_sse_response_from_node() -> None:
 def test_ws_handler_source_to_client() -> None:
     """ws_handler sends source DATA to the WebSocket client."""
     g = Graph("test")
-    s = state(0)
+    s = node()  # SENTINEL: no push on subscribe
     g.add("out", s)
 
     app = FastAPI(lifespan=graphrefly_lifespan(g, destroy_on_shutdown=False))

@@ -5,6 +5,7 @@ Mirrors graphrefly-ts/src/__tests__/patterns/domain-templates.test.ts.
 
 from __future__ import annotations
 
+from graphrefly.core import node
 from graphrefly.core.protocol import MessageType
 from graphrefly.core.sugar import state
 from graphrefly.patterns.domain_templates import (
@@ -69,7 +70,7 @@ class TestObservabilityGraph:
         assert "stratify::branch/logs" in desc["nodes"]
 
     def test_slo_check_defaults_to_pass(self) -> None:
-        source = state(None)
+        source = node()
         g = observability_graph("obs", ObservabilityGraphOptions(source=source))
 
         slo = g.node("slo_verified")
@@ -325,7 +326,7 @@ class TestDataQualityGraph:
         assert result.score == 0.9
 
     def test_output_combines_all_quality_checks(self) -> None:
-        source = state(None)
+        source = node()  # SENTINEL: no push on subscribe
         g = data_quality_graph("dq", DataQualityGraphOptions(source=source))
 
         output = g.node("output")

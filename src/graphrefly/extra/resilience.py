@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from graphrefly.core.clock import monotonic_ns
-from graphrefly.core.node import Node, NodeActions, node
+from graphrefly.core.node import NO_VALUE, Node, NodeActions, node
 from graphrefly.core.protocol import Messages, MessageType, batch
 from graphrefly.core.timer import ResettableTimer
 from graphrefly.extra.backoff import (
@@ -23,6 +23,13 @@ from graphrefly.extra.backoff import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+
+def _source_initial_kwargs(source: Node[Any]) -> dict[str, Any]:
+    """Return ``{"initial": value}`` when *source* has a real cached value, else ``{}``."""
+    raw = getattr(source, "_cached", NO_VALUE)
+    return {"initial": raw} if raw is not NO_VALUE else {}
+
 
 __all__ = [
     "CircuitBreaker",
@@ -187,7 +194,7 @@ def retry(
         start,
         describe_kind="operator",
         complete_when_deps_complete=False,
-        initial=source.get(),
+        **_source_initial_kwargs(source),
     )
 
 
@@ -628,7 +635,7 @@ def rate_limiter(source: Node[Any], max_events: int, window_ns: int) -> Node[Any
         start,
         describe_kind="operator",
         complete_when_deps_complete=False,
-        initial=source.get(),
+        **_source_initial_kwargs(source),
     )
 
 
@@ -809,7 +816,7 @@ def fallback(source: Node[Any], fb: Any) -> Node[Any]:
         start,
         describe_kind="operator",
         complete_when_deps_complete=False,
-        initial=source.get(),
+        **_source_initial_kwargs(source),
     )
 
 
@@ -905,7 +912,7 @@ def timeout(source: Node[Any], timeout_ns: int) -> Node[Any]:
         start,
         describe_kind="operator",
         complete_when_deps_complete=False,
-        initial=source.get(),
+        **_source_initial_kwargs(source),
     )
 
 
@@ -970,5 +977,5 @@ def cache(source: Node[Any], ttl_ns: int) -> Node[Any]:
         describe_kind="operator",
         complete_when_deps_complete=False,
         resubscribable=True,
-        initial=source.get(),
+        **_source_initial_kwargs(source),
     )

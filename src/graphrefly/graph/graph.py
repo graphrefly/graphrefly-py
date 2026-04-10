@@ -836,7 +836,7 @@ class Graph:
         """Arm debounced reactive persistence via graph-wide observe stream.
 
         Trigger gate uses :func:`message_tier`: only message batches containing
-        tier >= 2 tuples schedule a checkpoint.
+        tier >= 3 tuples schedule a checkpoint.
         """
 
         lock = threading.Lock()
@@ -888,7 +888,7 @@ class Graph:
                 timer.start()
 
         def on_msgs(path: str, msgs: Messages) -> None:
-            if not any(message_tier(m[0]) >= 2 for m in msgs):
+            if not any(message_tier(m[0]) >= 3 for m in msgs):
                 return
             if filter is not None:
                 nd = self.resolve(path)

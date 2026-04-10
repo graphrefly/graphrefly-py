@@ -13,7 +13,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
 from graphrefly.core.node import Node, NodeActions, node
-from graphrefly.core.protocol import Messages, MessageType
+from graphrefly.core.protocol import Messages, MessageType, message_tier
 from graphrefly.extra.sources import from_any
 
 if TYPE_CHECKING:
@@ -70,6 +70,10 @@ def _forward_inner(
         saw_error = False
         out: Messages = []
         for m in msgs:
+            # Filter START from inner subscriptions — each node's own
+            # subscribe handshake handles START for its direct sinks.
+            if message_tier(m[0]) < 1:
+                continue
             if m[0] is MessageType.COMPLETE:
                 saw_complete = True
             else:
@@ -717,15 +721,28 @@ def sample(notifier: Node[Any]) -> PipeOperator:
     """
 
     def _op(src: Node[Any]) -> Node[Any]:
+        terminated = [False]
+
         def compute(_deps: list[Any], _a: NodeActions) -> Any:
             return None
 
         def on_message(msg: Any, index: int, a: NodeActions) -> bool:
             t = msg[0]
-            if t is MessageType.ERROR:
-                a.down([msg])
-                return True
-            if t is MessageType.COMPLETE:
+            tier = message_tier(t)
+            # Terminal from either dep — latch so at most one terminal goes downstream.
+            if tier >= 4:
+                if t is MessageType.ERROR:
+                    terminated[0] = True
+                    a.down([msg])
+                    return True
+                if t is MessageType.COMPLETE:
+                    if terminated[0]:
+                        return True
+                    terminated[0] = True
+                    a.down([msg])
+                    return True
+                # TEARDOWN — forward, latch to prevent further processing.
+                terminated[0] = True
                 a.down([msg])
                 return True
             if index == 1 and t is MessageType.DATA:

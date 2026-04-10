@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from graphrefly import Graph, state
+from graphrefly import Graph, node, state
 from graphrefly.core.protocol import MessageType
 from graphrefly.patterns.reduction import (
     BudgetConstraint,
@@ -22,7 +22,7 @@ from graphrefly.patterns.reduction import (
 
 
 def test_stratify_routes_values_to_matching_branches() -> None:
-    source = state(0)
+    source = node()
     rules = [
         StratifyRule("even", lambda v: v % 2 == 0),
         StratifyRule("odd", lambda v: v % 2 != 0),
@@ -56,7 +56,7 @@ def test_stratify_routes_values_to_matching_branches() -> None:
 
 
 def test_stratify_reactive_rules() -> None:
-    source = state("a")
+    source = node()
     rules = [StratifyRule("match", lambda v: v == "a")]
     g = stratify("dynamic", source, rules)
 
@@ -108,13 +108,13 @@ def test_stratify_propagates_complete() -> None:
 
 
 def test_funnel_merges_and_pipes_through_stages() -> None:
-    s1 = state(0)
-    s2 = state(0)
+    s1 = node()
+    s2 = node()
 
     def build_double(sub: Graph) -> None:
-        inp = state(0)
+        inp = node()
         sub.add("input", inp)
-        out = state(0)
+        out = node()
         sub.add("output", out)
 
         def bridge(msgs: list) -> None:
@@ -249,7 +249,7 @@ def test_feedback_respects_max_iterations() -> None:
 
 
 def test_budget_gate_passes_when_available() -> None:
-    source = state(0)
+    source = node()
     budget = state(100)
     gated = budget_gate(source, [BudgetConstraint(budget, lambda v: v > 0)])
 
@@ -266,7 +266,7 @@ def test_budget_gate_passes_when_available() -> None:
 
 
 def test_budget_gate_buffers_then_flushes() -> None:
-    source = state(0)
+    source = node()
     budget = state(0)  # exhausted
     gated = budget_gate(source, [BudgetConstraint(budget, lambda v: v > 0)])
 

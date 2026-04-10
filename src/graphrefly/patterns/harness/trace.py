@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import contextlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from graphrefly.core.clock import monotonic_ns
