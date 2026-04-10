@@ -1727,10 +1727,12 @@ def test_cost_meter_extractor_zero_reading() -> None:
 
 def _collect_non_null(target: list[Any]) -> Any:
     """Subscriber that collects non-null DATA values."""
+
     def _sub(msgs: Any) -> None:
         for m in msgs:
             if m[0] is MessageType.DATA and m[1] is not None:
                 target.append(m[1])
+
     return _sub
 
 
@@ -1809,9 +1811,7 @@ def test_gated_stream_start_open_auto_approves() -> None:
     graph = Graph("test")
     dep = state("go")
 
-    handle = gated_stream(
-        graph, "review", adapter, [dep], lambda v: str(v), start_open=True
-    )
+    handle = gated_stream(graph, "review", adapter, [dep], lambda v: str(v), start_open=True)
     result = _wait_for_result(handle.output)
     assert result == "auto"
     handle.dispose()

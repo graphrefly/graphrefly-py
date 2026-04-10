@@ -17,6 +17,7 @@ from typing import Any
 
 from graphrefly.core.node import NO_VALUE, Node, NodeActions, node
 from graphrefly.core.protocol import Messages, MessageType
+from graphrefly.core.sugar import state
 
 
 def _source_initial_kwargs(source: Node[Any]) -> dict[str, Any]:
@@ -850,8 +851,11 @@ __all__ = [
     "from_cron",
     "from_iter",
     "from_timer",
+    "keepalive",
     "never",
     "of",
+    "ReactiveCounterBundle",
+    "reactive_counter",
     "replay",
     "share",
     "share_replay",
@@ -859,3 +863,80 @@ __all__ = [
     "to_array",
     "to_list",
 ]
+
+
+# ---------------------------------------------------------------------------
+# keepalive
+# ---------------------------------------------------------------------------
+
+
+def keepalive(n: Node[Any]) -> Any:
+    """Activate a compute node's upstream wiring without a real sink.
+
+    Derived/effect nodes are lazy — they don't compute until at least one
+    subscriber exists (COMPOSITION-GUIDE §5). ``keepalive`` subscribes with
+    an empty sink so the node stays wired for ``.get()`` and upstream
+    propagation.
+
+    Returns the unsubscribe handle.  Common usage::
+
+        graph.add_disposer(keepalive(node))
+    """
+    return n.subscribe(lambda _msgs: None)
+
+
+# ---------------------------------------------------------------------------
+# reactive_counter
+# ---------------------------------------------------------------------------
+
+
+class ReactiveCounterBundle:
+    """Typed bundle returned by :func:`reactive_counter`.
+
+    Attributes mirror the TS ``ReactiveCounterBundle`` type for cross-language parity.
+    """
+
+    __slots__ = ("_node", "_cap")
+
+    def __init__(self, counter: Node[Any], cap: int) -> None:
+        self._node = counter
+        self._cap = cap
+
+    @property
+    def node(self) -> Node[Any]:
+        """Reactive node holding the current count."""
+        return self._node
+
+    def increment(self) -> bool:
+        """Increment by 1. Returns ``False`` if cap would be exceeded."""
+        current = self._node.get()
+        if current is None:
+            current = 0
+        if current >= self._cap:
+            return False
+        self._node.down([(MessageType.DIRTY,), (MessageType.DATA, current + 1)])
+        return True
+
+    def get(self) -> int:
+        """Current count (synchronous read)."""
+        v = self._node.get()
+        return v if v is not None else 0
+
+    def at_cap(self) -> bool:
+        """Whether the counter has reached its cap."""
+        v = self._node.get()
+        return (v if v is not None else 0) >= self._cap
+
+
+def reactive_counter(cap: int) -> ReactiveCounterBundle:
+    """Reactive counter with a cap — the building block for circuit breakers.
+
+    Wraps a ``state(0)`` node with ``increment()`` that respects a maximum.
+    The ``node`` is subscribable and composable like any reactive node. When
+    the cap is reached, ``increment()`` returns ``False``.
+
+    Returns a :class:`ReactiveCounterBundle` with ``node``, ``increment``,
+    ``get``, and ``at_cap`` members.
+    """
+    counter = state(0)
+    return ReactiveCounterBundle(counter, cap)

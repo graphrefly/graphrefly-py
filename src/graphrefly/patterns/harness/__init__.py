@@ -9,6 +9,7 @@ from graphrefly.patterns.harness.bridge import (
     EvalJudgeScore,
     EvalResult,
     EvalTaskResult,
+    create_intake_bridge,
     eval_intake_bridge,
 )
 from graphrefly.patterns.harness.loop import HarnessGraph, harness_loop
@@ -76,6 +77,7 @@ __all__ = [
     "EvalJudgeScore",
     "EvalResult",
     "EvalTaskResult",
+    "create_intake_bridge",
     "eval_intake_bridge",
     # loop
     "HarnessGraph",

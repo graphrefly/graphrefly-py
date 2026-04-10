@@ -15,6 +15,7 @@ from graphrefly.core.protocol import MessageType
 from graphrefly.core.sugar import effect, state
 from graphrefly.extra.tier1 import merge, with_latest_from
 from graphrefly.graph.graph import Graph
+from graphrefly.patterns._internal import tracking_key as _tracking_key
 from graphrefly.patterns.ai import prompt_node
 from graphrefly.patterns.messaging import TopicGraph
 from graphrefly.patterns.orchestration import gate
@@ -34,26 +35,6 @@ from .types import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-
-def _tracking_key(item: Any) -> str:
-    """Stable tracking key for an item.
-
-    Uses ``related_to[0]`` if the item is already a retry or reingestion
-    (carries the original key forward). Falls back to the raw summary.
-    """
-    related = (
-        item.get("related_to") if isinstance(item, dict) else getattr(item, "related_to", None)
-    )
-    if related:
-        first = related[0] if isinstance(related, (list, tuple)) else None
-        if first:
-            return str(first)
-    if isinstance(item, dict):
-        summary = item.get("summary", str(item))
-    else:
-        summary = getattr(item, "summary", str(item))
-    return str(summary)
 
 
 # ---------------------------------------------------------------------------

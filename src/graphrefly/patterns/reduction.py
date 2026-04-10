@@ -8,6 +8,7 @@ factory or a Node factory, built on top of core + extra primitives.
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -17,8 +18,10 @@ from graphrefly.core.bridge import DEFAULT_DOWN, bridge
 from graphrefly.core.node import NodeImpl, node
 from graphrefly.core.protocol import MessageType, batch
 from graphrefly.core.sugar import derived, state
+from graphrefly.extra.data_structures import reactive_map
 from graphrefly.extra.tier1 import merge
 from graphrefly.graph.graph import GRAPH_META_SEGMENT, Graph
+from graphrefly.patterns._internal import domain_meta, keepalive
 
 # ---------------------------------------------------------------------------
 # Shared helpers (mirrors orchestration.py)
@@ -72,10 +75,7 @@ def _register_step(
 
 def _base_meta(kind: str, meta: dict[str, Any] | None = None) -> dict[str, Any]:
     """Merge reduction metadata."""
-    out: dict[str, Any] = {"reduction": True, "reduction_type": kind}
-    if meta:
-        out.update(meta)
-    return out
+    return domain_meta("reduction", kind, meta)
 
 
 # ---------------------------------------------------------------------------
@@ -692,12 +692,116 @@ def scorer(
     )
 
 
+# ---------------------------------------------------------------------------
+# effectiveness_tracker
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class EffectivenessEntry:
+    """A single effectiveness record for an action×context pair."""
+
+    key: str
+    attempts: int
+    successes: int
+    success_rate: float
+
+
+class EffectivenessTrackerBundle:
+    """Bundle returned by :func:`effectiveness_tracker`."""
+
+    __slots__ = ("_map", "_snapshot", "_unsub")
+
+    def __init__(self, name: str | None = None) -> None:
+        label = name or "effectiveness-entries"
+        self._map = reactive_map(name=label)
+
+        def _project(deps: list[Any], _actions: Any = None) -> dict[str, EffectivenessEntry]:
+            raw = deps[0]
+            if not isinstance(raw, dict):
+                return {}
+            return dict(raw)
+
+        self._snapshot = derived(
+            [self._map.entries],
+            _project,
+            name=f"{label}-snapshot",
+            equals=_effectiveness_equals,
+        )
+        self._unsub = keepalive(self._snapshot)
+
+    @property
+    def node(self) -> NodeImpl[Any]:
+        """Reactive node — current effectiveness map snapshot."""
+        return self._snapshot
+
+    def record(self, key: str, success: bool) -> None:
+        """Record a completed action (success or failure)."""
+        existing = self._map.get(key)
+        attempts = (existing.attempts if existing else 0) + 1
+        successes = (existing.successes if existing else 0) + (1 if success else 0)
+        self._map.set(
+            key,
+            EffectivenessEntry(
+                key=key,
+                attempts=attempts,
+                successes=successes,
+                success_rate=successes / attempts,
+            ),
+        )
+
+    def lookup(self, key: str) -> EffectivenessEntry | None:
+        """Look up effectiveness for a specific key."""
+        result: EffectivenessEntry | None = self._map.get(key)
+        return result
+
+    def dispose(self) -> None:
+        """Tear down internal keepalive subscriptions."""
+        self._unsub()
+
+
+def _effectiveness_equals(a: Any, b: Any) -> bool:
+    if not isinstance(a, dict) or not isinstance(b, dict):
+        return a is b
+    if len(a) != len(b):
+        return False
+    for k, v in a.items():
+        bv = b.get(k)
+        if bv is None or v.attempts != bv.attempts or v.successes != bv.successes:
+            return False
+    return True
+
+
+def effectiveness_tracker(
+    name: str | None = None,
+) -> EffectivenessTrackerBundle:
+    """Generic action×context → success rate tracker.
+
+    Generalized from the harness ``strategy_model`` pattern. Tracks attempts
+    and successes per string key, exposes a reactive snapshot node, and
+    provides ``record()`` / ``lookup()`` methods.
+
+    Use cases: A/B testing, routing optimization, cache policy tuning, retry
+    strategy selection — any domain that tracks effectiveness per action.
+
+    Args:
+        name: Optional name for the reactive map.
+
+    Returns:
+        Bundle with reactive node, record(), lookup(), dispose().
+    """
+    return EffectivenessTrackerBundle(name)
+
+
 __all__ = [
     "BudgetConstraint",
+    "EffectivenessEntry",
+    "EffectivenessTrackerBundle",
     "FunnelStage",
     "ScoredItem",
     "StratifyRule",
     "budget_gate",
+    "effectiveness_tracker",
     "feedback",
     "funnel",
     "scorer",

@@ -24,6 +24,7 @@ from graphrefly.core.protocol import MessageType, batch
 from graphrefly.core.sugar import derived, effect, state
 from graphrefly.extra.data_structures import reactive_log
 from graphrefly.graph.graph import Graph
+from graphrefly.patterns._internal import domain_meta
 from graphrefly.patterns.reduction import (
     StratifyRule,
     feedback,
@@ -37,10 +38,7 @@ from graphrefly.patterns.reduction import (
 
 
 def _base_meta(kind: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    out: dict[str, Any] = {"domain_template": True, "template_type": kind}
-    if extra:
-        out.update(extra)
-    return out
+    return domain_meta("domain_template", kind, extra)
 
 
 def _is_tagged(value: Any, tag: str) -> bool:
@@ -48,10 +46,6 @@ def _is_tagged(value: Any, tag: str) -> bool:
     if not isinstance(value, dict):
         return False
     return value.get("type") == tag or value.get("kind") == tag
-
-
-def _keepalive(n: NodeImpl[Any]) -> Any:
-    return n.subscribe(lambda _msgs: None)
 
 
 # ---------------------------------------------------------------------------

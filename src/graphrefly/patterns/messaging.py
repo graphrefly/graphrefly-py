@@ -20,6 +20,8 @@ from graphrefly.extra.data_structures import (
     reactive_map,
 )
 from graphrefly.graph.graph import Graph
+from graphrefly.patterns._internal import domain_meta
+from graphrefly.patterns._internal import keepalive as _keepalive
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -28,14 +30,7 @@ DEFAULT_MAX_PER_PUMP = 2_147_483_647
 
 
 def _messaging_meta(kind: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    out: dict[str, Any] = {"messaging": True, "messaging_type": kind}
-    if extra:
-        out.update(extra)
-    return out
-
-
-def _keepalive(n: Any) -> Any:
-    return n.subscribe(lambda _msgs: None)
+    return domain_meta("messaging", kind, extra)
 
 
 def _tuple_snapshot(raw: Any) -> tuple[Any, ...]:

@@ -16,6 +16,7 @@ from graphrefly.core.node import _SENTINEL, Node, NodeActions, node
 from graphrefly.core.protocol import MessageType
 from graphrefly.core.sugar import derived, state
 from graphrefly.graph.graph import GRAPH_META_SEGMENT, PATH_SEP, Graph
+from graphrefly.patterns._internal import domain_meta
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -80,10 +81,7 @@ def _register_step(
 
 
 def _base_meta(kind: str, meta: dict[str, Any] | None) -> dict[str, Any]:
-    out: dict[str, Any] = {"orchestration": True, "orchestration_type": kind}
-    if meta:
-        out.update(meta)
-    return out
+    return domain_meta("orchestration", kind, meta)
 
 
 def _coerce_loop_iterations(raw: Any) -> int:

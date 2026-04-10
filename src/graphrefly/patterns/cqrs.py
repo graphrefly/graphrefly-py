@@ -23,6 +23,8 @@ from graphrefly.core.protocol import MessageType, batch
 from graphrefly.core.sugar import derived, state
 from graphrefly.extra.data_structures import reactive_log
 from graphrefly.graph.graph import Graph
+from graphrefly.patterns._internal import domain_meta
+from graphrefly.patterns._internal import keepalive as _keepalive_raw
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -67,10 +69,7 @@ EVENT_GUARD: GuardFn = policy(_build_event_guard)
 
 
 def _cqrs_meta(kind: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    out: dict[str, Any] = {"cqrs": True, "cqrs_type": kind}
-    if extra:
-        out.update(extra)
-    return out
+    return domain_meta("cqrs", kind, extra)
 
 
 @dataclass(slots=True)
@@ -83,7 +82,7 @@ class _EventLogEntry:
 
 def _keepalive(n: Any) -> Callable[[], None]:
     """Keep dep wiring alive; returns unsubscribe handle for cleanup."""
-    return cast("Callable[[], None]", n.subscribe(lambda _msgs: None))
+    return cast("Callable[[], None]", _keepalive_raw(n))
 
 
 def _tuple_snapshot(raw: Any) -> tuple[Any, ...]:

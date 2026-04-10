@@ -26,6 +26,8 @@ from graphrefly.extra.data_structures import reactive_log
 from graphrefly.extra.sources import first_value_from, from_any, from_timer
 from graphrefly.extra.tier2 import switch_map
 from graphrefly.graph.graph import Graph
+from graphrefly.patterns._internal import domain_meta
+from graphrefly.patterns._internal import keepalive as _keepalive
 from graphrefly.patterns.memory import (
     KnowledgeGraph,
     VectorIndex,
@@ -181,15 +183,7 @@ class MemoryTiers:
 
 
 def _ai_meta(kind: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    out: dict[str, Any] = {"ai": True, "ai_type": kind}
-    if extra:
-        out.update(extra)
-    return out
-
-
-def _keepalive(n: Any) -> Any:
-    """Subscribe to keep derived node wired; returns unsubscribe handle."""
-    return n.subscribe(lambda _msgs: None)
+    return domain_meta("ai", kind, extra)
 
 
 _DEFAULT_TIMEOUT = 30.0  # seconds

@@ -18,6 +18,49 @@ if TYPE_CHECKING:
 from .types import IntakeItem, Severity
 
 # ---------------------------------------------------------------------------
+# Generic intake bridge
+# ---------------------------------------------------------------------------
+
+
+def create_intake_bridge(
+    source: NodeImpl[Any],
+    intake_topic: TopicGraph,
+    parser: Any,
+    *,
+    name: str | None = None,
+) -> NodeImpl[Any]:
+    """Generic source→intake bridge factory.
+
+    Watches a source node for new values, passes each through a user-supplied
+    ``parser`` that produces zero or more ``IntakeItem`` instances, and publishes
+    them to the given intake topic.
+
+    This is the generalized pattern behind :func:`eval_intake_bridge`. Use it
+    for CI results, test failures, Slack messages, monitoring alerts, or any
+    domain where structured results should flow into a harness loop.
+
+    Args:
+        source: Reactive node emitting domain-specific data.
+        intake_topic: TopicGraph to publish IntakeItem entries to.
+        parser: ``(value: T) -> list[IntakeItem]``. Return empty list to skip.
+        name: Optional name for the effect node.
+
+    Returns:
+        The effect node (for lifecycle management).
+    """
+
+    def _bridge(deps: list[Any], _actions: Any) -> None:
+        value = deps[0]
+        if value is None:
+            return
+        items = parser(value)
+        for item in items:
+            intake_topic.publish(item)
+
+    return effect([source], _bridge, name=name or "intake-bridge")
+
+
+# ---------------------------------------------------------------------------
 # Generic eval result shape
 # ---------------------------------------------------------------------------
 
