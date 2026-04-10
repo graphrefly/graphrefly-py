@@ -56,6 +56,10 @@ export default defineConfig({
 					items: [{ label: "Overview", link: "/recipes" }],
 				},
 				{
+					label: "Integrations",
+					items: [{ label: "Overview (TS site)", link: "https://graphrefly.dev/integrations/" }],
+				},
+				{
 					label: "Labs",
 					items: [{ label: "Python (Pyodide)", link: "/lab/python" }],
 				},
