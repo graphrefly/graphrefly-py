@@ -2,6 +2,40 @@
 
 <!-- version list -->
 
+## v0.19.0 (2026-04-10)
+
+### Chores
+
+- 9.0 initial test (needs revisit)
+  ([`f47a8b4`](https://github.com/graphrefly/graphrefly-py/commit/f47a8b4d32e999d4f867465f678d576184fc111d))
+
+### Features
+
+- Add start
+  ([`4a008dc`](https://github.com/graphrefly/graphrefly-py/commit/4a008dcda7704e14be12a7111b1d0b9188c736b3))
+
+- Address optimization items
+  ([`371f9e2`](https://github.com/graphrefly/graphrefly-py/commit/371f9e25e590ded4150fd6aed7e0de3933b8f0f3))
+
+- Consolidate inspection tools
+  ([`94aa9af`](https://github.com/graphrefly/graphrefly-py/commit/94aa9af3e3d793103496bfcc71a0a4bbb38f5ea3))
+
+- Fix
+  ([`222e66f`](https://github.com/graphrefly/graphrefly-py/commit/222e66f4d8954aa772534c9fc796eea3ba30a304))
+
+- Fix async pytest
+  ([`f25ae08`](https://github.com/graphrefly/graphrefly-py/commit/f25ae0885fd824320b498fd2d923f6e4f6ebb0f5))
+
+- Fix inspection tool
+  ([`09c90f2`](https://github.com/graphrefly/graphrefly-py/commit/09c90f273613fbae1fd7987397d85d4b6fabec8d))
+
+- Fix retries and reingestions
+  ([`55d1a3d`](https://github.com/graphrefly/graphrefly-py/commit/55d1a3d0beff848a6ecefb054e42d194050d5c37))
+
+- Reusable harness patterns
+  ([`84bafbb`](https://github.com/graphrefly/graphrefly-py/commit/84bafbb8476c1d00ae373bbc757d4bf813ce16c8))
+
+
 ## v0.18.0 (2026-04-08)
 
 ### Features
