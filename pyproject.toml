@@ -90,6 +90,7 @@ quote-style = "double"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tests"]
 asyncio_mode = "auto"
 addopts = "-m 'not benchmark'"
 markers = [

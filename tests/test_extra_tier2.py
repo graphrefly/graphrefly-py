@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from conftest import collect
+
 from graphrefly.core import Messages, MessageType, node, state
 from graphrefly.core.protocol import batch
 from graphrefly.core.sugar import pipe
@@ -84,9 +86,8 @@ def test_switch_map_switches_inner() -> None:
     inner1 = state("x")
     inner2 = state("y")
     inners = {0: state("_"), 1: inner1, 2: inner2}
-    sink: list[Messages] = []
     out = pipe(outer, switch_map(lambda v: inners[v]))
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
 
     outer.down([(MessageType.DATA, 1)])
     inner1.down([(MessageType.DATA, "x1")])
@@ -101,9 +102,8 @@ def test_switch_map_switches_inner() -> None:
 
 def test_switch_map_outer_error() -> None:
     p, holder = _make_deferred_producer()
-    sink: list[Messages] = []
     out = pipe(p, switch_map(lambda _v: state(0)))
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     holder[0].down([(MessageType.ERROR, ValueError("err"))])
     assert _has_error(sink)
 
@@ -116,22 +116,20 @@ def test_switch_map_initial() -> None:
 
 def test_switch_map_coerces_scalar_project_return() -> None:
     outer, ho = _make_deferred_producer()
-    sink: list[Messages] = []
     out = pipe(outer, switch_map(lambda v: (0 if v is None else v) + 100))
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     ho[0].down([(MessageType.DATA, 2)])
     assert 102 in _values(sink)
 
 
 def test_switch_map_coerces_awaitable_project_return() -> None:
     outer, ho = _make_deferred_producer()
-    sink: list[Messages] = []
 
     async def plus5(v: int) -> int:
         return v + 5
 
     out = pipe(outer, switch_map(lambda v: plus5(v)))
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     ho[0].down([(MessageType.DATA, 3)])
     time.sleep(0.1)
     assert 8 in _values(sink)
@@ -146,9 +144,8 @@ def test_concat_map_sequential() -> None:
         results.append((v, holder))
         return _p
 
-    sink: list[Messages] = []
     out = pipe(outer, concat_map(make_inner))
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
 
     # Initial value 0 is processed as a dep → results[0] = (0, ...)
     assert len(results) == 1
@@ -190,9 +187,8 @@ def test_concat_map_max_buffer() -> None:
 
 def test_concat_map_coerces_iterable_project_return() -> None:
     outer = state(4)
-    sink: list[Messages] = []
     out = pipe(outer, concat_map(lambda v: [v * 2, v * 3]))
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     vals = _values(sink)
     assert 8 in vals
     assert 12 in vals
@@ -210,9 +206,8 @@ def test_flat_map_concurrent() -> None:
         # counter 1 = initial compute (absorbed), 2 = DATA 1, 3 = DATA 2
         return [p_init, p1, p2][counter[0] - 1]
 
-    sink: list[Messages] = []
     out = pipe(outer, flat_map(make_inner))
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
 
     ho[0].down([(MessageType.DATA, 1)])
     ho[0].down([(MessageType.DATA, 2)])
@@ -226,9 +221,8 @@ def test_flat_map_concurrent() -> None:
 def test_flat_map_completes_when_all_done() -> None:
     op, ho = _make_deferred_producer()
     ip, hi = _make_deferred_producer()
-    sink: list[Messages] = []
     out = pipe(op, flat_map(lambda _v: ip))
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     ho[0].down([(MessageType.DATA, 1)])
     ho[0].down([(MessageType.COMPLETE,)])
     assert not _has_complete(sink)
@@ -238,14 +232,13 @@ def test_flat_map_completes_when_all_done() -> None:
 
 def test_flat_map_coerces_async_iterable_project_return() -> None:
     outer = state(10)
-    sink: list[Messages] = []
 
     async def gen(v: int) -> object:
         yield v + 1
         yield v + 2
 
     out = pipe(outer, flat_map(lambda v: gen(v)))
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     time.sleep(0.1)
     vals = _values(sink)
     assert 11 in vals
@@ -255,10 +248,9 @@ def test_flat_map_coerces_async_iterable_project_return() -> None:
 def test_exhaust_map_drops_while_busy() -> None:
     outer = state(0)
     p, h = _make_deferred_producer()
-    sink: list[Messages] = []
     # v==0 (initial) and v==1 use deferred producer p; others use state("late")
     out = pipe(outer, exhaust_map(lambda v: p if v in (0, 1) else state("late")))
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
 
     # Initial value 0 subscribes to p (busy=True)
     outer.down([(MessageType.DATA, 1)])  # ignored — busy
@@ -272,9 +264,8 @@ def test_exhaust_map_drops_while_busy() -> None:
 
 def test_debounce_basic() -> None:
     s = state(0)
-    sink: list[Messages] = []
     d = pipe(s, debounce(0.05))
-    d.subscribe(sink.append)
+    sink, unsub = collect(d, raw=True)
     s.down([(MessageType.DATA, 1)])
     s.down([(MessageType.DATA, 2)])
     s.down([(MessageType.DATA, 3)])
@@ -284,9 +275,8 @@ def test_debounce_basic() -> None:
 
 def test_throttle_leading_edge() -> None:
     s = node()
-    sink: list[Messages] = []
     t = pipe(s, throttle(0.1, trailing=False))
-    t.subscribe(sink.append)
+    sink, unsub = collect(t, raw=True)
     s.down([(MessageType.DATA, 1)])
     s.down([(MessageType.DATA, 2)])
     s.down([(MessageType.DATA, 3)])
@@ -299,9 +289,8 @@ def test_throttle_leading_edge() -> None:
 def test_sample_on_notifier() -> None:
     inp = node()
     tick = node()
-    sink: list[Messages] = []
     sampled = pipe(inp, sample(tick))
-    sampled.subscribe(sink.append)
+    sink, unsub = collect(sampled, raw=True)
     inp.down([(MessageType.DATA, 10)])
     inp.down([(MessageType.DATA, 20)])
     tick.down([(MessageType.DATA, 1)])
@@ -311,9 +300,8 @@ def test_sample_on_notifier() -> None:
 def test_buffer_notifer() -> None:
     src = node()
     gate = node()
-    sink: list[Messages] = []
     b = pipe(src, buffer(gate))
-    b.subscribe(sink.append)
+    sink, unsub = collect(b, raw=True)
     src.down([(MessageType.DATA, 1)])
     src.down([(MessageType.DATA, 2)])
     gate.down([(MessageType.DATA, 1)])
@@ -322,9 +310,8 @@ def test_buffer_notifer() -> None:
 
 def test_buffer_count() -> None:
     s = node()
-    sink: list[Messages] = []
     b = pipe(s, buffer_count(2))
-    b.subscribe(sink.append)
+    sink, unsub = collect(b, raw=True)
     s.down([(MessageType.DATA, "a")])
     s.down([(MessageType.DATA, "b")])
     assert _values(sink) == [["a", "b"]]
@@ -332,9 +319,8 @@ def test_buffer_count() -> None:
 
 def test_rescue() -> None:
     p, h = _make_deferred_producer()
-    sink: list[Messages] = []
     out = pipe(p, rescue(lambda _e: "ok"))
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     h[0].down([(MessageType.ERROR, RuntimeError("x"))])
     assert _values(sink) == ["ok"]
 
@@ -350,9 +336,8 @@ def test_valve() -> None:
     """valve(control) forwards DATA when control is truthy; RESOLVED otherwise."""
     src = state(1)
     ctrl = state(True)
-    sink: list[Messages] = []
     out = pipe(src, valve(ctrl))
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     assert out.get() == 1
     ctrl.down([(MessageType.DATA, False)])
     src.down([(MessageType.DIRTY,), (MessageType.DATA, 2)])
@@ -384,17 +369,15 @@ def test_pausable_protocol() -> None:
 
 def test_timeout_fires() -> None:
     s = state(0)
-    sink: list[Messages] = []
     out = pipe(s, timeout(0.05))
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     time.sleep(0.12)
     assert _has_error(sink)
 
 
 def test_interval_emits() -> None:
-    sink: list[Messages] = []
     n = interval(0.05)
-    u = n.subscribe(sink.append)
+    sink, u = collect(n, raw=True)
     time.sleep(0.18)
     u()
     vals = _values(sink)
@@ -405,9 +388,8 @@ def test_interval_emits() -> None:
 
 def test_delay_defers_data() -> None:
     src = state(0)
-    sink: list[Messages] = []
     out = pipe(src, delay(0.05))
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     src.down([(MessageType.DATA, 99)])
     # Immediately after, no DATA yet
     assert 99 not in _values(sink)
@@ -418,9 +400,8 @@ def test_delay_defers_data() -> None:
 def test_audit_trailing_only() -> None:
     """audit should NOT emit on the leading edge (trailing-only)."""
     src = state(0)
-    sink: list[Messages] = []
     out = pipe(src, audit(0.05))
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     src.down([(MessageType.DATA, 1)])
     # Leading edge: no emit yet
     vals_immediate = _values(sink)
@@ -431,9 +412,8 @@ def test_audit_trailing_only() -> None:
 
 def test_repeat_replays() -> None:
     src = state(10, resubscribable=True)
-    sink: list[Messages] = []
     out = pipe(src, repeat(2))
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     # Each subscription round should emit 10, then COMPLETE triggers re-sub
     src.down([(MessageType.COMPLETE,)])
     src.down([(MessageType.COMPLETE,)])
@@ -443,9 +423,8 @@ def test_repeat_replays() -> None:
 
 def test_buffer_time_flushes() -> None:
     src = state(0)
-    sink: list[Messages] = []
     out = pipe(src, buffer_time(0.05))
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     src.down([(MessageType.DATA, 1)])
     src.down([(MessageType.DATA, 2)])
     time.sleep(0.12)
@@ -490,8 +469,7 @@ def test_switch_map_reconnect_fresh_inner() -> None:
     sink1.clear()
 
     # Reconnect
-    sink2: list[Messages] = []
-    unsub2 = out.subscribe(sink2.append)
+    sink2, unsub2 = collect(out, raw=True)
     # A new DATA on outer triggers attach() → project() → inner_b is the new inner
     outer.down([(MessageType.DATA, 1)])
     inner_b.down([(MessageType.DATA, "second")])
@@ -505,9 +483,8 @@ def test_switch_map_reconnect_fresh_inner() -> None:
 def test_debounce_teardown_cancels_timer() -> None:
     """After unsubscribe, advancing time does not produce stale emissions from debounce."""
     s = state(0)
-    sink: list[Messages] = []
     out = pipe(s, debounce(0.1))
-    unsub = out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     s.down([(MessageType.DATA, 99)])
     # Unsubscribe before timer fires
     unsub()
@@ -540,8 +517,7 @@ def test_concat_map_reconnect_fresh_queue() -> None:
 
     # First subscription: initial compute spawns an inner for None (SENTINEL dep).
     # Then we send DATA(0) which queues behind that initial inner.
-    sink1: list[Messages] = []
-    unsub1 = out.subscribe(sink1.append)
+    sink1, unsub1 = collect(out, raw=True)
     # Complete the initial inner (spawned by compute with None dep value)
     assert len(results) >= 1
     _, h_init = results[0]
@@ -557,8 +533,7 @@ def test_concat_map_reconnect_fresh_queue() -> None:
     out.unsubscribe()
 
     # Second subscription — reconnect then push a new value
-    sink2: list[Messages] = []
-    unsub2 = out.subscribe(sink2.append)
+    sink2, unsub2 = collect(out, raw=True)
     # Reconnect triggers another initial compute inner — complete it
     init_inners = [(v, h) for v, h in results if v is None]
     if len(init_inners) > 1:
@@ -587,9 +562,8 @@ def test_switch_map_derived_inner_initial_data_not_duplicated() -> None:
     outer, ho = _make_deferred_producer()
     base = state(10)
     derived_inner = node([base], lambda d, _m: d[0] + 1)
-    sink: list[Messages] = []
     out = pipe(outer, switch_map(lambda _v: derived_inner))
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     # Initial compute attaches with None → derived_inner emits 11 once
     vals_before = _values(sink)
     assert vals_before.count(11) == 1, f"initial attach should emit 11 once, got {vals_before}"
@@ -649,7 +623,6 @@ def test_exhaust_map_global_dirty_before_phase2() -> None:
 
 def test_concat_map_void_inner_data_before_complete() -> None:
     outer = state(0)
-    sink: list[Messages] = []
 
     def void_once() -> Any:
         return node(
@@ -658,7 +631,7 @@ def test_concat_map_void_inner_data_before_complete() -> None:
         )
 
     out = pipe(outer, concat_map(lambda _v: void_once()))
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     outer.down([(MessageType.DATA, 1)])
     types = _flatten_types(sink)
     assert MessageType.DATA in types
@@ -668,7 +641,6 @@ def test_concat_map_void_inner_data_before_complete() -> None:
 
 def test_flat_map_void_inner_data_before_complete() -> None:
     outer = state(0)
-    sink: list[Messages] = []
 
     def void_once() -> Any:
         return node(
@@ -677,7 +649,7 @@ def test_flat_map_void_inner_data_before_complete() -> None:
         )
 
     out = pipe(outer, flat_map(lambda _v: void_once()))
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     outer.down([(MessageType.DATA, 1)])
     types = _flatten_types(sink)
     assert MessageType.DATA in types
@@ -687,7 +659,6 @@ def test_flat_map_void_inner_data_before_complete() -> None:
 
 def test_exhaust_map_void_inner_data_before_complete() -> None:
     outer = state(0)
-    sink: list[Messages] = []
 
     def void_once() -> Any:
         return node(
@@ -696,7 +667,7 @@ def test_exhaust_map_void_inner_data_before_complete() -> None:
         )
 
     out = pipe(outer, exhaust_map(lambda _v: void_once()))
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     outer.down([(MessageType.DATA, 1)])
     types = _flatten_types(sink)
     assert MessageType.DATA in types
@@ -706,7 +677,6 @@ def test_exhaust_map_void_inner_data_before_complete() -> None:
 
 def test_rescue_wraps_switch_map_inner_error() -> None:
     outer = state(0)
-    sink: list[Messages] = []
 
     def failing_inner(_v: Any) -> Any:
         return node(
@@ -717,7 +687,7 @@ def test_rescue_wraps_switch_map_inner_error() -> None:
         )
 
     out = pipe(outer, switch_map(failing_inner), rescue(lambda _e: 123))
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     outer.down([(MessageType.DATA, 1)])
     assert 123 in _values(sink)
     assert not _has_error(sink)
@@ -725,9 +695,8 @@ def test_rescue_wraps_switch_map_inner_error() -> None:
 
 def test_debounce_does_not_fire_inside_batch() -> None:
     s = state(0)
-    sink: list[Messages] = []
     out = pipe(s, debounce(0.03))
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     with batch():
         s.down([(MessageType.DATA, 7)])
         time.sleep(0.06)

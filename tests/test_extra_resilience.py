@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+from conftest import collect
 
 from graphrefly import Graph, Messages, MessageType, node, state
 from graphrefly.extra.backoff import (
@@ -121,9 +122,8 @@ def test_resolve_backoff_preset() -> None:
 
 def test_retry_zero_forwards_error() -> None:
     src = _errors_then_ok(errors_before_ok=5)
-    sink: list[Messages] = []
     out = retry(src, 0)
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     time.sleep(0.08)
     assert _has_error(sink)
     assert _values(sink) == []
@@ -131,11 +131,10 @@ def test_retry_zero_forwards_error() -> None:
 
 def test_retry_recovers_with_backoff() -> None:
     src = _errors_then_ok(errors_before_ok=2)
-    sink: list[Messages] = []
     # 10ms base in nanoseconds
     bo = exponential(base_ns=10_000_000, factor=2.0, max_delay_ns=50_000_000, jitter="none")
     out = retry(src, 2, backoff=bo)
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     time.sleep(0.35)
     assert _values(sink) == ["recovered"]
     assert not _has_error(sink)
@@ -143,9 +142,8 @@ def test_retry_recovers_with_backoff() -> None:
 
 def test_retry_exhausted() -> None:
     src = _errors_then_ok(errors_before_ok=5)
-    sink: list[Messages] = []
     out = retry(src, 1, backoff=constant(0))
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     time.sleep(0.15)
     assert _has_error(sink)
     assert _values(sink) == []
@@ -153,9 +151,8 @@ def test_retry_exhausted() -> None:
 
 def test_rate_limiter_queues_then_drains() -> None:
     s = node()  # SENTINEL: no push on subscribe
-    sink: list[Messages] = []
     out = rate_limiter(s, 2, 60_000_000)
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     for i in range(1, 5):
         s.down([(MessageType.DATA, i)])
     time.sleep(0.02)
@@ -172,8 +169,7 @@ def test_retry_backoff_delay_rejects_non_numeric() -> None:
         return "1000"
 
     out = retry(src, 1, backoff=bad_backoff)
-    sink: list[Messages] = []
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     time.sleep(0.05)
     errors = [m[1] for b in sink for m in b if m[0] is MessageType.ERROR]
     assert len(errors) >= 1
@@ -190,8 +186,7 @@ def test_retry_backoff_delay_rejects_non_finite() -> None:
         return float("inf")
 
     out = retry(src, 1, backoff=bad_backoff)
-    sink: list[Messages] = []
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
     time.sleep(0.05)
     errors = [m[1] for b in sink for m in b if m[0] is MessageType.ERROR]
     assert len(errors) >= 1
@@ -216,8 +211,7 @@ def test_with_breaker_errors_when_open() -> None:
     b.record_failure(ValueError("trip"))
     src = state(1)
     bundle = with_breaker(b, on_open="error")(src)
-    sink: list[Messages] = []
-    bundle.node.subscribe(sink.append)
+    sink, unsub = collect(bundle.node, raw=True)
     src.down([(MessageType.DATA, 42)])
     assert any(
         m[0] is MessageType.ERROR and isinstance(m[1], CircuitOpenError)
@@ -231,8 +225,7 @@ def test_with_breaker_skip_resolved_when_open() -> None:
     b.record_failure(ValueError("trip"))
     src = state(1)
     bundle = with_breaker(b, on_open="skip")(src)
-    sink: list[Messages] = []
-    bundle.node.subscribe(sink.append)
+    sink, unsub = collect(bundle.node, raw=True)
     src.down([(MessageType.DATA, 42)])
     assert any(m[0] is MessageType.RESOLVED for batch in sink for m in batch)
 
@@ -248,8 +241,7 @@ def test_token_bucket() -> None:
 def test_with_status_error_and_active() -> None:
     s = state(1)
     w = with_status(s, initial_status="pending")
-    sink: list[Messages] = []
-    w.node.subscribe(sink.append)
+    sink, unsub = collect(w.node, raw=True)
     # Push-model: state(1) pushes DATA(1) on subscribe, transitioning status to "active".
     assert w.status.get() == "active"
     s.down([(MessageType.DATA, 2)])
@@ -450,8 +442,7 @@ def test_resolve_decorrelated_jitter_preset() -> None:
 def test_fallback_plain_value() -> None:
     src = throw_error(ValueError("boom"))
     n = fallback(src, 42)
-    sink: list[Messages] = []
-    n.subscribe(sink.append)
+    sink, unsub = collect(n, raw=True)
     time.sleep(0.02)
     vals = _values(sink)
     assert 42 in vals
@@ -461,8 +452,7 @@ def test_fallback_plain_value() -> None:
 def test_fallback_passthrough_on_data() -> None:
     src = of(1, 2, 3)
     n = fallback(src, 99)
-    sink: list[Messages] = []
-    n.subscribe(sink.append)
+    sink, unsub = collect(n, raw=True)
     time.sleep(0.02)
     vals = _values(sink)
     assert vals == [1, 2, 3]
@@ -472,8 +462,7 @@ def test_fallback_node() -> None:
     src = throw_error(ValueError("boom"))
     fb_node = of(100)
     n = fallback(src, fb_node)
-    sink: list[Messages] = []
-    n.subscribe(sink.append)
+    sink, unsub = collect(n, raw=True)
     time.sleep(0.02)
     vals = _values(sink)
     assert 100 in vals
@@ -482,8 +471,7 @@ def test_fallback_node() -> None:
 def test_timeout_fires() -> None:
     src = never()
     n = timeout(src, 20_000_000)  # 20ms
-    sink: list[Messages] = []
-    n.subscribe(sink.append)
+    sink, unsub = collect(n, raw=True)
     time.sleep(0.1)
     assert any(
         m[0] is MessageType.ERROR and isinstance(m[1], ResTimeoutError) for b in sink for m in b
@@ -493,8 +481,7 @@ def test_timeout_fires() -> None:
 def test_timeout_resets_on_data() -> None:
     s = state(0)
     n = timeout(s, 80_000_000)  # 80ms
-    sink: list[Messages] = []
-    n.subscribe(sink.append)
+    sink, unsub = collect(n, raw=True)
     time.sleep(0.03)
     s.down([(MessageType.DATA, 1)])
     time.sleep(0.03)
@@ -512,8 +499,7 @@ def test_timeout_resets_on_data() -> None:
 def test_timeout_cancelled_by_complete() -> None:
     src = of(1)
     n = timeout(src, 50_000_000)
-    sink: list[Messages] = []
-    n.subscribe(sink.append)
+    sink, unsub = collect(n, raw=True)
     time.sleep(0.1)
     # Should have completed, no timeout error
     assert any(m[0] is MessageType.COMPLETE for b in sink for m in b)
@@ -525,8 +511,7 @@ def test_timeout_cancelled_by_complete() -> None:
 def test_cache_stores_and_replays() -> None:
     s = state(0)
     n = cache(s, 1_000_000_000)  # 1s TTL
-    sink: list[Messages] = []
-    n.subscribe(sink.append)
+    sink, unsub = collect(n, raw=True)
     s.down([(MessageType.DATA, 42)])
     time.sleep(0.02)
     vals = _values(sink)
@@ -538,8 +523,7 @@ def test_cache_stores_and_replays() -> None:
 def test_cache_forwards_live_data() -> None:
     s = node()  # SENTINEL: no push on subscribe
     n = cache(s, 1_000_000_000)
-    sink: list[Messages] = []
-    n.subscribe(sink.append)
+    sink, unsub = collect(n, raw=True)
     s.down([(MessageType.DATA, 1)])
     s.down([(MessageType.DATA, 2)])
     s.down([(MessageType.DATA, 3)])
@@ -569,8 +553,7 @@ def test_cache_range_error() -> None:
 def test_fallback_with_retry_composition() -> None:
     src = throw_error(ValueError("x"))
     n = fallback(retry(src, count=0), "safe")
-    sink: list[Messages] = []
-    n.subscribe(sink.append)
+    sink, unsub = collect(n, raw=True)
     time.sleep(0.05)
     vals = _values(sink)
     assert "safe" in vals

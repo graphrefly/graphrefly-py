@@ -8,6 +8,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from conftest import collect
+
 from graphrefly.core import Messages, MessageType, state
 from graphrefly.core.protocol import batch
 from graphrefly.core.sugar import derived, pipe
@@ -46,8 +48,7 @@ def test_debounce_flush_on_complete() -> None:
     """Debounce flushes pending value when source completes."""
     s = state(0)
     d = pipe(s, debounce(0.05))
-    sink: list[Messages] = []
-    d.subscribe(sink.append)
+    sink, unsub = collect(d, raw=True)
 
     s.down([(MessageType.DIRTY,)])
     s.down([(MessageType.DATA, 42)])
@@ -65,8 +66,7 @@ def test_debounce_cancel_on_error() -> None:
     """Debounce cancels pending on upstream ERROR."""
     s = state(0)
     d = pipe(s, debounce(0.05))
-    sink: list[Messages] = []
-    d.subscribe(sink.append)
+    sink, unsub = collect(d, raw=True)
 
     s.down([(MessageType.DIRTY,)])
     s.down([(MessageType.DATA, 42)])
@@ -80,8 +80,7 @@ def test_debounce_complete_without_pending() -> None:
     """Debounce forwards COMPLETE even without pending."""
     s = state(0)
     d = pipe(s, debounce(0.05))
-    sink: list[Messages] = []
-    d.subscribe(sink.append)
+    sink, unsub = collect(d, raw=True)
 
     s.down([(MessageType.COMPLETE,)])
     assert _has(sink, MessageType.COMPLETE)
@@ -91,8 +90,7 @@ def test_throttle_forwards_complete() -> None:
     """Throttle forwards upstream COMPLETE."""
     s = state(0)
     t = pipe(s, throttle(0.1))
-    sink: list[Messages] = []
-    t.subscribe(sink.append)
+    sink, unsub = collect(t, raw=True)
 
     s.down([(MessageType.COMPLETE,)])
     assert _has(sink, MessageType.COMPLETE)
@@ -102,8 +100,7 @@ def test_throttle_forwards_error() -> None:
     """Throttle forwards upstream ERROR."""
     s = state(0)
     t = pipe(s, throttle(0.1))
-    sink: list[Messages] = []
-    t.subscribe(sink.append)
+    sink, unsub = collect(t, raw=True)
 
     s.down([(MessageType.ERROR, RuntimeError("x"))])
     assert _has(sink, MessageType.ERROR)
@@ -113,8 +110,7 @@ def test_timeout_clears_on_complete() -> None:
     """Timeout timer is cleared when source completes."""
     s = state(0)
     t = pipe(s, timeout(0.05))
-    sink: list[Messages] = []
-    t.subscribe(sink.append)
+    sink, unsub = collect(t, raw=True)
 
     s.down([(MessageType.COMPLETE,)])
     time.sleep(0.1)
@@ -127,8 +123,7 @@ def test_timeout_clears_on_error() -> None:
     """Timeout timer is cleared when source errors."""
     s = state(0)
     t = pipe(s, timeout(0.05))
-    sink: list[Messages] = []
-    t.subscribe(sink.append)
+    sink, unsub = collect(t, raw=True)
 
     s.down([(MessageType.ERROR, RuntimeError("upstream"))])
     time.sleep(0.1)
@@ -141,8 +136,7 @@ def test_merge_all_complete() -> None:
     s1 = state(1)
     s2 = state(2)
     m = merge(s1, s2)
-    sink: list[Messages] = []
-    m.subscribe(sink.append)
+    sink, unsub = collect(m, raw=True)
 
     s1.down([(MessageType.COMPLETE,)])
     assert not _has(sink, MessageType.COMPLETE)
@@ -156,8 +150,7 @@ def test_merge_error_propagates() -> None:
     s1 = state(1)
     s2 = state(2)
     m = merge(s1, s2)
-    sink: list[Messages] = []
-    m.subscribe(sink.append)
+    sink, unsub = collect(m, raw=True)
 
     s1.down([(MessageType.ERROR, RuntimeError("fail"))])
     assert _has(sink, MessageType.ERROR)
@@ -168,8 +161,7 @@ def test_merge_independent_values() -> None:
     s1 = state(0)
     s2 = state(0)
     m = merge(s1, s2)
-    sink: list[Messages] = []
-    m.subscribe(sink.append)
+    sink, unsub = collect(m, raw=True)
 
     with batch():
         s1.down([(MessageType.DIRTY,)])
@@ -191,8 +183,7 @@ def test_switchmap_waits_for_inner_on_outer_complete() -> None:
     outer = state(0)
     inner = state(10)
     out = pipe(outer, switch_map(lambda _v: inner))
-    sink: list[Messages] = []
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
 
     outer.down([(MessageType.COMPLETE,)])
     assert not _has(sink, MessageType.COMPLETE)
@@ -206,8 +197,7 @@ def test_switchmap_inner_error_propagates() -> None:
     outer = state(0)
     inner = state(10)
     out = pipe(outer, switch_map(lambda _v: inner))
-    sink: list[Messages] = []
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
 
     inner.down([(MessageType.ERROR, RuntimeError("inner-fail"))])
     assert _has(sink, MessageType.ERROR)
@@ -218,8 +208,7 @@ def test_concatmap_inner_error_propagates() -> None:
     outer = state(0)
     inner = state(10)
     out = pipe(outer, concat_map(lambda _v: inner))
-    sink: list[Messages] = []
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
 
     inner.down([(MessageType.ERROR, RuntimeError("inner-err"))])
     assert _has(sink, MessageType.ERROR)
@@ -230,8 +219,7 @@ def test_exhaustmap_inner_error_propagates() -> None:
     outer = state(0)
     inner = state(10)
     out = pipe(outer, exhaust_map(lambda _v: inner))
-    sink: list[Messages] = []
-    out.subscribe(sink.append)
+    sink, unsub = collect(out, raw=True)
 
     inner.down([(MessageType.ERROR, RuntimeError("inner-err"))])
     assert _has(sink, MessageType.ERROR)
@@ -295,8 +283,7 @@ def test_combine_error_propagates() -> None:
     s1 = state(1)
     s2 = state(2)
     c = combine(s1, s2)
-    sink: list[Messages] = []
-    c.subscribe(sink.append)
+    sink, unsub = collect(c, raw=True)
 
     s1.down([(MessageType.ERROR, RuntimeError("boom"))])
     assert _has(sink, MessageType.ERROR)
@@ -307,8 +294,7 @@ def test_concat_error_stops_chain() -> None:
     s1 = state(1)
     s2 = state(2)
     c = pipe(s1, concat(s2))
-    sink: list[Messages] = []
-    c.subscribe(sink.append)
+    sink, unsub = collect(c, raw=True)
 
     s1.down([(MessageType.ERROR, RuntimeError("first-err"))])
     assert _has(sink, MessageType.ERROR)
@@ -318,8 +304,7 @@ def test_batch_coalesces_to_final_value() -> None:
     """Batch coalesces to final value."""
     s = state(0)
     d = derived([s], lambda deps, _a: deps[0])
-    sink: list[Messages] = []
-    d.subscribe(sink.append)
+    sink, unsub = collect(d, raw=True)
 
     with batch():
         s.down([(MessageType.DIRTY,)])

@@ -32,6 +32,7 @@ class NodeProfile:
     value_size_bytes: int
     subscriber_count: int
     dep_count: int
+    is_orphan_effect: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +45,7 @@ class GraphProfileResult:
     nodes: tuple[NodeProfile, ...]
     total_value_size_bytes: int
     hotspots: tuple[NodeProfile, ...]
+    orphan_effects: tuple[NodeProfile, ...]
 
 
 # ---------------------------------------------------------------------------
@@ -86,20 +88,26 @@ def graph_profile(
         subscriber_count = impl._sink_count if impl else 0
         dep_count = len(node_desc.get("deps", []))
 
+        node_type = node_desc.get("type", "unknown")
+        is_orphan_effect = node_type == "effect" and subscriber_count == 0
+
         profiles.append(
             NodeProfile(
                 path=path,
-                type=node_desc.get("type", "unknown"),
+                type=node_type,
                 status=node_desc.get("status", "unknown"),
                 value_size_bytes=value_size_bytes,
                 subscriber_count=subscriber_count,
                 dep_count=dep_count,
+                is_orphan_effect=is_orphan_effect,
             )
         )
 
     total_value_size_bytes = sum(p.value_size_bytes for p in profiles)
 
     hotspots = tuple(sorted(profiles, key=lambda p: p.value_size_bytes, reverse=True)[:top_n])
+
+    orphan_effects = tuple(p for p in profiles if p.is_orphan_effect)
 
     return GraphProfileResult(
         node_count=len(profiles),
@@ -108,4 +116,5 @@ def graph_profile(
         nodes=tuple(profiles),
         total_value_size_bytes=total_value_size_bytes,
         hotspots=hotspots,
+        orphan_effects=orphan_effects,
     )

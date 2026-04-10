@@ -22,6 +22,8 @@ from graphrefly.core.sugar import state
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
+    from graphrefly.graph.profile import GraphProfileResult
+
 
 class DescribeResult(dict[str, Any]):
     """Dict subclass returned by :meth:`Graph.describe`.
@@ -58,13 +60,19 @@ class ObserveResult:
     dirty_count: int = 0
     resolved_count: int = 0
     events: list[dict[str, Any]] = field(default_factory=list)
-    completed_cleanly: bool = False
-    errored: bool = False
+    any_completed_cleanly: bool = False
+    any_errored: bool = False
+    _node_errored: set[str] = field(default_factory=set, repr=False)
     _dispose_fn: Callable[[], None] | None = field(default=None, repr=False)
     _on_event: Callable[[dict[str, Any]], None] | None = field(default=None, repr=False)
     _graph: Any = field(default=None, repr=False)
     _path: str | None = field(default=None, repr=False)
     _observe_opts: dict[str, Any] = field(default_factory=dict, repr=False)
+
+    @property
+    def completed_without_errors(self) -> bool:
+        """True if at least one COMPLETE received and no ERROR from any observed node."""
+        return self.any_completed_cleanly and not self.any_errored
 
     def dispose(self) -> None:
         """Unsubscribe from the observation."""
@@ -1206,6 +1214,20 @@ class Graph:
         object.__setattr__(result, "_expand_fn", _expand)
         return result
 
+    def resource_profile(self, *, top_n: int = 10) -> GraphProfileResult:
+        """Snapshot-based resource profile: per-node stats, orphan effect detection,
+        memory hotspots. Zero runtime overhead — walks nodes on demand.
+
+        Args:
+            top_n: Limit hotspot list (default 10).
+
+        Returns:
+            Aggregate profile with per-node details, hotspots, and orphan effects.
+        """
+        from graphrefly.graph.profile import graph_profile
+
+        return graph_profile(self, top_n=top_n)
+
     def observe(
         self,
         path: str | None = None,
@@ -1416,12 +1438,12 @@ class Graph:
                                 event["dep_values"] = list(last_run_dep_values)
                             _emit_event(event)
                     elif t is MessageType.COMPLETE:
-                        if not result.errored:
-                            result.completed_cleanly = True
+                        if not result.any_errored:
+                            result.any_completed_cleanly = True
                         if not _detail_minimal:
                             _emit_event(_base_event("complete"))
                     elif t is MessageType.ERROR:
-                        result.errored = True
+                        result.any_errored = True
                         if not _detail_minimal:
                             _emit_event(_base_event("error", data=m[1] if len(m) > 1 else None))
 
@@ -1446,12 +1468,13 @@ class Graph:
                         if not _detail_minimal:
                             _emit_event(_base_event("resolved", event_path=qpath))
                     elif t is MessageType.COMPLETE:
-                        if not result.errored:
-                            result.completed_cleanly = True
+                        if qpath not in result._node_errored:
+                            result.any_completed_cleanly = True
                         if not _detail_minimal:
                             _emit_event(_base_event("complete", event_path=qpath))
                     elif t is MessageType.ERROR:
-                        result.errored = True
+                        result.any_errored = True
+                        result._node_errored.add(qpath)
                         if not _detail_minimal:
                             _emit_event(
                                 _base_event(
@@ -1554,10 +1577,13 @@ class Graph:
                 result.dirty_count += 1
             elif event_type == "resolved":
                 result.resolved_count += 1
-            elif event_type == "complete" and not result.errored:
-                result.completed_cleanly = True
+            elif event_type == "complete":
+                if event_path is None or event_path not in result._node_errored:
+                    result.any_completed_cleanly = True
             elif event_type == "error":
-                result.errored = True
+                result.any_errored = True
+                if event_path is not None:
+                    result._node_errored.add(event_path)
             result.events.append(event)
             if should_log(event_type):
                 sink(render_event(event), event)

@@ -67,35 +67,55 @@ def _set_test_runner() -> Generator[None]:
 # ---------------------------------------------------------------------------
 
 
-def collect(node: Any) -> tuple[list[list[tuple[Any, ...]]], Callable[[], None]]:
-    """Subscribe and collect message **batches**, filtering START.
+def collect(
+    node: Any,
+    *,
+    flat: bool = False,
+    raw: bool = False,
+) -> tuple[list[Any], Callable[[], None]]:
+    """Subscribe and collect messages from a node.
 
-    Each sink callback invocation becomes one entry in ``batches``.
-    Returns ``(batches, unsub)``.
+    Args:
+        node: The subscribable node.
+        flat: If True, collect flat individual messages instead of batches.
+        raw: If True, include START handshake messages.
+
+    Returns:
+        ``(messages, unsub)`` — ``messages`` is either a list of batches
+        (each batch = list of tuples) or a flat list of tuples, depending
+        on ``flat``.
+
+    Examples::
+
+        # Default: batches, no START
+        batches, unsub = collect(n)
+
+        # Flat messages, no START
+        msgs, unsub = collect(n, flat=True)
+
+        # Batches including START
+        batches, unsub = collect(n, raw=True)
     """
-    batches: list[list[tuple[Any, ...]]] = []
+    messages: list[Any] = []
 
-    def sink(msgs: Any) -> None:
-        filtered = [m for m in msgs if m[0] is not MessageType.START]
-        if filtered:
-            batches.append(filtered)
+    if flat:
+        def sink(batch: Any) -> None:
+            for m in batch:
+                if raw or m[0] is not MessageType.START:
+                    messages.append(m)
+    else:
+        def sink(batch: Any) -> None:
+            filtered = list(batch) if raw else [m for m in batch if m[0] is not MessageType.START]
+            if filtered:
+                messages.append(filtered)
 
     unsub = node.subscribe(sink)
-    return batches, unsub
+    return messages, unsub
 
 
 def collect_flat(node: Any) -> tuple[list[tuple[Any, ...]], Callable[[], None]]:
     """Subscribe and collect **flat** message tuples, filtering START.
 
-    Each individual message ``(TYPE, value?)`` is pushed to ``msgs``.
-    Returns ``(msgs, unsub)``.
+    .. deprecated:: Use ``collect(node, flat=True)`` instead.
     """
-    msgs: list[tuple[Any, ...]] = []
-
-    def sink(batch: Any) -> None:
-        for m in batch:
-            if m[0] is not MessageType.START:
-                msgs.append(m)
-
-    unsub = node.subscribe(sink)
-    return msgs, unsub
+    return collect(node, flat=True)

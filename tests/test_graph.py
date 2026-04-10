@@ -655,8 +655,9 @@ def test_observe_error_does_not_mark_completed_cleanly() -> None:
     a.down([(MessageType.ERROR, RuntimeError("boom"))])
     a.down([(MessageType.COMPLETE,)])
     obs.dispose()
-    assert obs.errored is True
-    assert obs.completed_cleanly is False
+    assert obs.any_errored is True
+    assert obs.any_completed_cleanly is False
+    assert obs.completed_without_errors is False
 
 
 def test_to_mermaid_exports_qualified_nodes_edges_and_direction() -> None:
