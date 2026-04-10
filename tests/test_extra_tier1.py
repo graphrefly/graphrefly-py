@@ -201,7 +201,6 @@ def test_zip_pairs() -> None:
     assert tuples == [(10, 20)]
 
 
-
 def test_find_first_match() -> None:
     s = state(1)
     f = pipe(s, find(lambda x: x >= 3))

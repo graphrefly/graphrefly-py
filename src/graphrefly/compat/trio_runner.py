@@ -84,6 +84,16 @@ class TrioRunner:
 
         return cancel
 
+    def would_block_deadlock(self) -> bool:
+        """True if blocking the current thread would starve the trio nursery."""
+        try:
+            import trio as _trio
+
+            _trio.lowlevel.current_trio_token()
+            return True
+        except RuntimeError:
+            return False
+
     def __repr__(self) -> str:
         pending = self._scheduled - self._completed
         return (

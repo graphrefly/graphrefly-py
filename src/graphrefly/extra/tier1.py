@@ -507,7 +507,6 @@ def last(*, default: Any = _LAST_NO_DEFAULT) -> PipeOperator:
     return _op
 
 
-
 def tap(fn_or_observer: Callable[[Any], None] | dict[str, Callable[..., None]]) -> PipeOperator:
     """Invoke side effects for each emission; value passes through unchanged.
 

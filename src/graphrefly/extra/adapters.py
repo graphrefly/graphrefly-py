@@ -15,8 +15,8 @@ built on :func:`~graphrefly.core.node.node` -- no second protocol.
 
 from __future__ import annotations
 
-import asyncio
 import csv
+import inspect
 import json
 import os
 import re
@@ -2479,14 +2479,14 @@ def from_nats(
 
         # Detect async subscription (nats-py v2+: subscribe() returns a coroutine
         # that resolves to an AsyncIterable, or directly an AsyncIterable).
-        is_async = asyncio.iscoroutine(sub_or_coro) or isinstance(sub_or_coro, ABCAsyncIterable)
+        is_async = inspect.iscoroutine(sub_or_coro) or isinstance(sub_or_coro, ABCAsyncIterable)
 
         if is_async:
             from graphrefly.core.runner import resolve_runner
 
             async def _async_drain() -> None:
                 sub = sub_or_coro
-                if asyncio.iscoroutine(sub):
+                if inspect.iscoroutine(sub):
                     sub = await sub
                 async for msg in sub:
                     if not active[0]:
@@ -4251,7 +4251,9 @@ def to_tortoise(
             try:
                 instance = model_class(**kwargs)
                 # Tortoise .save() is a coroutine — bridge to sync
-                asyncio.run(instance.save())
+                import asyncio as _asyncio
+
+                _asyncio.run(instance.save())
             except Exception as err:
                 handler(SinkTransportError(stage="send", error=err, value=value))
             return True

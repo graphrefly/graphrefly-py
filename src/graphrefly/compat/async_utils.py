@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 from typing import TYPE_CHECKING, Any
 
+from graphrefly.core.node import NO_VALUE
 from graphrefly.core.protocol import MessageType
 
 if TYPE_CHECKING:
@@ -101,13 +102,11 @@ async def first_value_from_async(source: Node[Any]) -> Any:
         assert value == 42
     """
     # Fast path: already settled with a cached value.
-    # ``source.get()`` returns ``None`` when no value is cached, so
-    # ``is not None`` doubles as the "has value" sentinel while still
-    # returning falsy values like ``0``, ``False``, ``""``.
+    # Uses NO_VALUE sentinel so ``None`` as a real domain value is not skipped.
     status = source.status
     if status in ("settled", "resolved"):
-        v = source.get()
-        if v is not None:
+        v = getattr(source, "_cached", NO_VALUE)
+        if v is not NO_VALUE:
             return v
 
     loop = asyncio.get_running_loop()
@@ -163,12 +162,11 @@ async def settled(source: Node[Any]) -> Any:
         value = await settled(b)
         assert value == 20
     """
-    # Fast path: already settled (see ``first_value_from_async`` for the
-    # ``is not None`` rationale).
+    # Fast path: already settled — uses NO_VALUE sentinel so ``None`` is not skipped.
     status = source.status
     if status in ("settled", "resolved"):
-        v = source.get()
-        if v is not None:
+        v = getattr(source, "_cached", NO_VALUE)
+        if v is not NO_VALUE:
             return v
 
     loop = asyncio.get_running_loop()

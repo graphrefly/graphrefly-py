@@ -153,7 +153,9 @@ def harness_trace(
         return f"{elapsed_secs():.3f}"
 
     def _record_event(
-        stage: str, etype: TraceEventType, raw_data: Any,
+        stage: str,
+        etype: TraceEventType,
+        raw_data: Any,
     ) -> None:
         e = elapsed_secs()
         ev = TraceEvent(elapsed=e, stage=stage, type=etype)

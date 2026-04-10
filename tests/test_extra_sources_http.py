@@ -64,7 +64,9 @@ def test_from_http_error():
         # Wire observer BEFORE the producer starts (subscribe activates the fetch thread).
         errored = threading.Event()
         unsub_status = bundle.status.subscribe(
-            lambda msgs: [errored.set() for m in msgs if m[0] is MessageType.DATA and m[1] == "errored"]
+            lambda msgs: [
+                errored.set() for m in msgs if m[0] is MessageType.DATA and m[1] == "errored"
+            ]
         )
         unsub = bundle.node.subscribe(lambda _: None)
 

@@ -96,6 +96,14 @@ class AsyncioRunner:
 
         return cancel
 
+    def would_block_deadlock(self) -> bool:
+        """True if blocking the current thread would starve this runner's loop."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        return loop is self._loop
+
     def __repr__(self) -> str:
         pending = self._scheduled - self._completed
         running = self._loop.is_running()

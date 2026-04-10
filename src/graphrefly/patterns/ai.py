@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
 from graphrefly.core.cancellation import cancellation_token
 from graphrefly.core.clock import monotonic_ns
-from graphrefly.core.node import Node
+from graphrefly.core.node import NO_VALUE, Node
 from graphrefly.core.protocol import MessageType, batch
 from graphrefly.core.sugar import derived, effect, producer, state
 from graphrefly.extra.composite import Extraction, distill
@@ -158,13 +158,28 @@ _DEFAULT_TIMEOUT = 30.0  # seconds
 
 
 def _resolve_node_input(raw: Any, *, timeout: float = _DEFAULT_TIMEOUT) -> Any:
-    """Resolve tool handler output via ``from_any`` / ``get()`` and first ``DATA``."""
+    """Resolve tool handler output via ``from_any`` / ``get()`` and first ``DATA``.
+
+    .. warning::
+
+       This function **blocks** via ``first_value_from`` (``threading.Event.wait``).
+       If the default runner is an event-loop runner (``AsyncioRunner``) and this
+       call originates from the event loop thread, a deadlock will occur — the
+       runner cannot process the scheduled coroutine while the thread is blocked.
+       See COMPOSITION-GUIDE §14.
+    """
+    needs_runner = inspect.isawaitable(raw) or isinstance(raw, AsyncIterable)
+    if needs_runner:
+        _check_event_loop_deadlock()
     if isinstance(raw, Node):
         # Only trust get() when node is in settled state
         if getattr(raw, "status", None) == "settled":
-            cached = raw.get()
-            if cached is not None:
+            cached = getattr(raw, "_cached", NO_VALUE)
+            if cached is not NO_VALUE:
                 return cached
+        # Node resolution via first_value_from blocks — same deadlock
+        # risk as awaitable/AsyncIterable paths (COMPOSITION-GUIDE §14).
+        _check_event_loop_deadlock()
         try:
             return first_value_from(raw, timeout=timeout)
         except StopIteration:
@@ -182,6 +197,69 @@ def _resolve_node_input(raw: Any, *, timeout: float = _DEFAULT_TIMEOUT) -> Any:
         except StopIteration:
             msg = "tool_registry: async iterable handler completed without producing a value"
             raise ValueError(msg) from None
+    return raw
+
+
+def _has_event_loop_runner() -> bool:
+    """Return True when blocking the current thread would deadlock the runner.
+
+    Delegates to ``runner.would_block_deadlock()`` — each runner knows its
+    own threading model.  No asyncio/trio imports needed; patterns layer
+    stays runner-agnostic.  See COMPOSITION-GUIDE §14.
+    """
+    from graphrefly.core.runner import get_default_runner
+
+    try:
+        runner = get_default_runner()
+    except RuntimeError:
+        return False
+    checker = getattr(runner, "would_block_deadlock", None)
+    return checker() if checker is not None else False
+
+
+def _check_event_loop_deadlock() -> None:
+    """Raise early if blocking would deadlock an event-loop runner.
+
+    Delegates to ``runner.would_block_deadlock()``; thread-spawning runners
+    return False so blocking is allowed.
+    """
+    if not _has_event_loop_runner():
+        return
+
+    from graphrefly.core.runner import get_default_runner
+
+    runner_type = type(get_default_runner()).__name__
+    raise RuntimeError(
+        f"_resolve_node_input() is about to block with first_value_from(), "
+        f"but the default runner ({runner_type}) reports would_block_deadlock=True.  "
+        f"This will deadlock — the runner schedules work on the same event loop "
+        f"that first_value_from() is blocking.  Use a thread-spawning runner, "
+        f"or refactor to return the awaitable as a NodeInput and let "
+        f"switch_map/from_any handle it reactively.  See COMPOSITION-GUIDE §14."
+    )
+
+
+async def _async_resolve_node_input(raw: Any) -> Any:
+    """Non-blocking counterpart of ``_resolve_node_input``.
+
+    Awaits async results instead of blocking with ``first_value_from``.
+    Used when ``_has_event_loop_runner()`` is True to avoid deadlock.
+    """
+    if inspect.isawaitable(raw):
+        return await raw
+    if isinstance(raw, AsyncIterable):
+        async for value in raw:
+            return value
+        msg = "_async_resolve_node_input: async iterable completed without producing a value"
+        raise ValueError(msg)
+    if isinstance(raw, Node):
+        if getattr(raw, "status", None) == "settled":
+            cached = raw.get()
+            if cached is not None:
+                return cached
+        from graphrefly.compat.async_utils import first_value_from_async
+
+        return await first_value_from_async(raw)
     return raw
 
 
@@ -395,6 +473,7 @@ def prompt_node(
         return json.dumps([(m.role, m.content) for m in msgs], sort_keys=True)
 
     def _invoke_with_retries(msgs: list[ChatMessage]) -> Any:
+        """Invoke the adapter with retries, blocking to resolve async results."""
         last_err: Exception | None = None
         attempts = 1 + max(0, retries)
         for _ in range(attempts):
@@ -402,6 +481,48 @@ def prompt_node(
                 raw = adapter.invoke(msgs, invoke_opts)
                 response = _resolve_node_input(raw)
                 return response
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+        raise last_err  # type: ignore[misc]
+
+    async def _async_invoke_with_retries(msgs: list[ChatMessage]) -> Any:
+        """Invoke an async adapter with retries, resolving non-blocking.
+
+        Returns the raw response.  This is a coroutine so ``switch_map`` →
+        ``from_any`` → ``from_awaitable`` can schedule it on the runner
+        **without** blocking the calling thread.  Matches TS ``attempt()``
+        (COMPOSITION-GUIDE §14).
+        """
+        last_err: Exception | None = None
+        attempts = 1 + max(0, retries)
+        for _ in range(attempts):
+            try:
+                raw = adapter.invoke(msgs, invoke_opts)
+                if inspect.isawaitable(raw):
+                    return await raw
+                if isinstance(raw, AsyncIterable):
+                    ait = raw.__aiter__()
+                    try:
+                        return await ait.__anext__()
+                    except StopAsyncIteration:
+                        msg = (
+                            "_async_invoke_with_retries: async iterable"
+                            " completed without producing a value"
+                        )
+                        raise ValueError(msg) from None
+                    finally:
+                        aclose = getattr(ait, "aclose", None)
+                        if aclose is not None:
+                            await aclose()
+                if isinstance(raw, Node):
+                    if getattr(raw, "status", None) == "settled":
+                        cached = getattr(raw, "_cached", NO_VALUE)
+                        if cached is not NO_VALUE:
+                            return cached
+                    from graphrefly.compat.async_utils import first_value_from_async
+
+                    return await first_value_from_async(raw)
+                return raw
             except Exception as exc:  # noqa: BLE001
                 last_err = exc
         raise last_err  # type: ignore[misc]
@@ -448,9 +569,24 @@ def prompt_node(
                 if key in response_cache:
                     return state(response_cache[key])
 
+        if _has_event_loop_runner():
+            # Event-loop runner detected — return coroutine as NodeInput.
+            # switch_map → from_any → from_awaitable → runner.schedule().
+            # Non-blocking: matches TS attempt() → Promise → fromPromise
+            # (COMPOSITION-GUIDE §14).
+            async def _async_extract() -> Any:
+                response = await _async_invoke_with_retries(msgs)
+                result = _extract_content(response)
+                if response_cache is not None and cache_lock is not None:
+                    with cache_lock:
+                        response_cache[key] = result
+                return result
+
+            return _async_extract()
+
+        # Default: blocking path — works with _ThreadRunner and no-runner.
         response = _invoke_with_retries(msgs)
         result = _extract_content(response)
-
         if response_cache is not None and cache_lock is not None:
             with cache_lock:
                 response_cache[key] = result
@@ -617,13 +753,21 @@ class ToolRegistryGraph(Graph):
         self.definitions.down([(MessageType.DATA, next_defs)])
 
     def execute(self, name: str, args: dict[str, Any]) -> Any:
-        """Execute a tool by name. Resolves async/reactive handler results."""
+        """Execute a tool by name. Resolves async/reactive handler results.
+
+        Returns a plain value when blocking is safe, or a coroutine when an
+        event-loop runner is active (caller must ``await`` it).
+        See COMPOSITION-GUIDE §14.
+        """
         defs = self.definitions.get() or {}
         tool = defs.get(name)
         if tool is None:
             msg = f'tool_registry: unknown tool "{name}"'
             raise ValueError(msg)
-        return _resolve_node_input(tool.handler(args))
+        raw = tool.handler(args)
+        if _has_event_loop_runner():
+            return _async_resolve_node_input(raw)
+        return _resolve_node_input(raw)
 
     def get_definition(self, name: str) -> ToolDefinition | None:
         """Get a tool definition by name."""
@@ -2158,34 +2302,44 @@ def graph_from_spec(
         ),
     )
 
-    response = _resolve_node_input(raw_result)
-    if not isinstance(response, LLMResponse):
-        msg = f"graph_from_spec: expected LLMResponse, got {type(response).__name__}"
-        raise ValueError(msg)
+    def _build_graph(response: Any) -> Graph:
+        if not isinstance(response, LLMResponse):
+            msg = f"graph_from_spec: expected LLMResponse, got {type(response).__name__}"
+            raise ValueError(msg)
 
-    content = response.content.strip()
-    if content.startswith("```"):
-        content = _strip_fences(content)
+        content = response.content.strip()
+        if content.startswith("```"):
+            content = _strip_fences(content)
 
-    try:
-        parsed = json.loads(content)
-    except json.JSONDecodeError as exc:
-        msg = f"graph_from_spec: LLM response is not valid JSON: {content[:200]}"
-        raise ValueError(msg) from exc
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError as exc:
+            msg = f"graph_from_spec: LLM response is not valid JSON: {content[:200]}"
+            raise ValueError(msg) from exc
 
-    validation = validate_graph_def(parsed)
-    if not validation.valid:
-        detail = "\n".join(validation.errors)
-        msg = f"graph_from_spec: invalid graph definition:\n{detail}"
-        raise ValueError(msg)
+        validation = validate_graph_def(parsed)
+        if not validation.valid:
+            detail = "\n".join(validation.errors)
+            msg = f"graph_from_spec: invalid graph definition:\n{detail}"
+            raise ValueError(msg)
 
-    # Ensure version and subgraphs fields for from_snapshot
-    if "version" not in parsed:
-        parsed["version"] = 1
-    if "subgraphs" not in parsed or not isinstance(parsed["subgraphs"], list):
-        parsed["subgraphs"] = []
+        # Ensure version and subgraphs fields for from_snapshot
+        if "version" not in parsed:
+            parsed["version"] = 1
+        if "subgraphs" not in parsed or not isinstance(parsed["subgraphs"], list):
+            parsed["subgraphs"] = []
 
-    return Graph.from_snapshot(parsed, build)
+        return Graph.from_snapshot(parsed, build)
+
+    if _has_event_loop_runner():
+
+        async def _async_graph_from_spec() -> Graph:
+            response = await _async_resolve_node_input(raw_result)
+            return _build_graph(response)
+
+        return _async_graph_from_spec()  # type: ignore[return-value]
+
+    return _build_graph(_resolve_node_input(raw_result))
 
 
 # ---------------------------------------------------------------------------
@@ -2317,44 +2471,54 @@ def suggest_strategy(
         ),
     )
 
-    response = _resolve_node_input(raw_result)
-    if not isinstance(response, LLMResponse):
-        msg = f"suggest_strategy: expected LLMResponse, got {type(response).__name__}"
-        raise ValueError(msg)
+    def _build_plan(response: Any) -> StrategyPlan:
+        if not isinstance(response, LLMResponse):
+            msg = f"suggest_strategy: expected LLMResponse, got {type(response).__name__}"
+            raise ValueError(msg)
 
-    content = response.content.strip()
-    if content.startswith("```"):
-        content = _strip_fences(content)
+        content = response.content.strip()
+        if content.startswith("```"):
+            content = _strip_fences(content)
 
-    try:
-        parsed = json.loads(content)
-    except json.JSONDecodeError as exc:
-        msg = f"suggest_strategy: LLM response is not valid JSON: {content[:200]}"
-        raise ValueError(msg) from exc
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError as exc:
+            msg = f"suggest_strategy: LLM response is not valid JSON: {content[:200]}"
+            raise ValueError(msg) from exc
 
-    if not isinstance(parsed, dict):
-        msg = "suggest_strategy: expected a JSON object"
-        raise ValueError(msg)
+        if not isinstance(parsed, dict):
+            msg = "suggest_strategy: expected a JSON object"
+            raise ValueError(msg)
 
-    summary = parsed.get("summary")
-    if not isinstance(summary, str):
-        msg = "suggest_strategy: missing 'summary' in response"
-        raise ValueError(msg)
+        summary = parsed.get("summary")
+        if not isinstance(summary, str):
+            msg = "suggest_strategy: missing 'summary' in response"
+            raise ValueError(msg)
 
-    reasoning = parsed.get("reasoning")
-    if not isinstance(reasoning, str):
-        msg = "suggest_strategy: missing 'reasoning' in response"
-        raise ValueError(msg)
+        reasoning = parsed.get("reasoning")
+        if not isinstance(reasoning, str):
+            msg = "suggest_strategy: missing 'reasoning' in response"
+            raise ValueError(msg)
 
-    ops_raw = parsed.get("operations")
-    if not isinstance(ops_raw, list):
-        msg = "suggest_strategy: missing 'operations' list in response"
-        raise ValueError(msg)
+        ops_raw = parsed.get("operations")
+        if not isinstance(ops_raw, list):
+            msg = "suggest_strategy: missing 'operations' list in response"
+            raise ValueError(msg)
 
-    operations = tuple(_parse_strategy_operation(op) for op in ops_raw if isinstance(op, dict))
+        operations = tuple(_parse_strategy_operation(op) for op in ops_raw if isinstance(op, dict))
 
-    return StrategyPlan(
-        summary=summary,
-        operations=operations,
-        reasoning=reasoning,
-    )
+        return StrategyPlan(
+            summary=summary,
+            operations=operations,
+            reasoning=reasoning,
+        )
+
+    if _has_event_loop_runner():
+
+        async def _async_suggest_strategy() -> StrategyPlan:
+            response = await _async_resolve_node_input(raw_result)
+            return _build_plan(response)
+
+        return _async_suggest_strategy()  # type: ignore[return-value]
+
+    return _build_plan(_resolve_node_input(raw_result))

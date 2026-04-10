@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import time
 from typing import Any
 
@@ -402,7 +404,7 @@ class TestHarnessLoop:
         assert entry is not None
         assert entry.success_rate == 1.0
 
-    def test_gate_modify_overrides_classification(self) -> None:
+    async def test_gate_modify_overrides_classification(self) -> None:
         """gate.modify() overrides rootCause/intervention before forwarding.
 
         Revalidated with harnessTrace (inspection consolidation §5) to verify
@@ -448,47 +450,76 @@ class TestHarnessLoop:
         trace_lines: list[str] = []
         trace_handle = harness_trace(h, logger=trace_lines.append)
 
-        h.intake.publish(
-            IntakeItem(
-                source="eval",
-                summary="T5: resilience ordering wrong",
-                evidence="wrong order in retry stack",
-                affects_areas=("graphspec",),
-                severity="high",
-            )
-        )
+        # Reactive waits: subscribe BEFORE triggering the pipeline.
+        loop = asyncio.get_running_loop()
 
-        # Pipeline processes synchronously with mock adapter — queue is populated.
+        # 1. Queue population — subscribe to the pre-created queue topic.
         queue = h.queues["needs-decision"]
-        assert queue.latest.get() is not None
-        assert len(queue.retained()) >= 1
+        queue_ready: asyncio.Future[None] = loop.create_future()
 
-        gate_ctrl = h.gates["needs-decision"]
+        def _on_queue(msgs: object) -> None:
+            for msg in msgs:  # type: ignore[union-attr]
+                if msg[0] is MessageType.DATA and len(queue.retained()) >= 1:
+                    with contextlib.suppress(asyncio.InvalidStateError):
+                        loop.call_soon_threadsafe(queue_ready.set_result, None)
 
-        # Human steering: override triage classification.
-        # Items flowing through gates are dicts (router merges intake + triage
-        # as plain dicts), so dict spread is the correct transform here.
-        # Approve ALL pending items (START handshake may have buffered the
-        # initial None value from topic.latest, matching the TS test).
-        pending_count = gate_ctrl.count.get() or 1
-        gate_ctrl.modify(
-            lambda item, *_args: {
-                **(item if isinstance(item, dict) else {}),
-                "root_cause": "composition",
-                "intervention": "template",
-            },
-            count=pending_count,
-        )
+        unsub_queue = queue.latest.subscribe(_on_queue)
 
-        # Pipeline flows through execute → verify → strategy (may be async
-        # due to the mock adapter returning awaitables). Poll for convergence.
-        deadline = time.monotonic() + 5.0
-        entry = None
-        while time.monotonic() < deadline:
-            entry = h.strategy.lookup("composition", "template")
-            if entry is not None:
-                break
-            time.sleep(0.05)
+        # 2. Strategy entry — subscribe to strategy node.
+        strategy_ready: asyncio.Future[None] = loop.create_future()
+
+        def _on_strategy(msgs: object) -> None:
+            for msg in msgs:  # type: ignore[union-attr]
+                if (
+                    msg[0] is MessageType.DATA
+                    and h.strategy.lookup("composition", "template") is not None
+                ):
+                    with contextlib.suppress(asyncio.InvalidStateError):
+                        loop.call_soon_threadsafe(strategy_ready.set_result, None)
+
+        unsub_strat = h.strategy.node.subscribe(_on_strategy)
+
+        # Publish intake item — pipeline runs async via AsyncioRunner.
+        try:
+            h.intake.publish(
+                IntakeItem(
+                    source="eval",
+                    summary="T5: resilience ordering wrong",
+                    evidence="wrong order in retry stack",
+                    affects_areas=("graphspec",),
+                    severity="high",
+                )
+            )
+
+            # Await queue population (reactive, no polling — §5.8).
+            await asyncio.wait_for(queue_ready, timeout=5.0)
+
+            assert len(queue.retained()) >= 1
+
+            gate_ctrl = h.gates["needs-decision"]
+
+            # Human steering: override triage classification.
+            # Items flowing through gates are dicts (router merges intake + triage
+            # as plain dicts), so dict spread is the correct transform here.
+            # Approve ALL pending items (START handshake may have buffered the
+            # initial None value from topic.latest, matching the TS test).
+            pending_count = gate_ctrl.count.get() or 1
+            gate_ctrl.modify(
+                lambda item, *_args: {
+                    **(item if isinstance(item, dict) else {}),
+                    "root_cause": "composition",
+                    "intervention": "template",
+                },
+                count=pending_count,
+            )
+
+            # Reactive wait for strategy entry (no polling — §5.8).
+            await asyncio.wait_for(strategy_ready, timeout=5.0)
+        finally:
+            unsub_queue()
+            unsub_strat()
+
+        entry = h.strategy.lookup("composition", "template")
         assert entry is not None
         assert entry.successes >= 1
 
@@ -604,12 +635,8 @@ class TestHarnessTrace:
                             }
                         ]
                     ),
-                    "execute": StageScript(
-                        responses=[{"outcome": "success", "detail": "Fixed"}]
-                    ),
-                    "verify": StageScript(
-                        responses=[{"verified": True, "findings": []}]
-                    ),
+                    "execute": StageScript(responses=[{"outcome": "success", "detail": "Fixed"}]),
+                    "verify": StageScript(responses=[{"verified": True, "findings": []}]),
                 }
             )
         )

@@ -10,7 +10,6 @@ Protocol/system/ingest adapters (HTTP, WebSocket, SSE, MCP, git, fs, Kafka, etc.
 
 from __future__ import annotations
 
-import asyncio
 import threading
 from collections.abc import AsyncIterable, Awaitable, Callable, Iterable
 from datetime import datetime
@@ -398,7 +397,7 @@ def from_any(value: Any, *, runner: Any | None = None) -> Node[Any]:
 
     - Existing :class:`~graphrefly.core.node.Node` -> returned as-is.
     - :class:`collections.abc.AsyncIterable` / async iterator -> :func:`from_async_iter`.
-    - Awaitable / :class:`asyncio.Future` / coroutine -> :func:`from_awaitable`.
+    - :class:`collections.abc.Awaitable` (incl. coroutines, futures) -> :func:`from_awaitable`.
     - Otherwise tries ``iter(value)``; if that fails uses :func:`of`.
 
     Args:
@@ -421,7 +420,7 @@ def from_any(value: Any, *, runner: Any | None = None) -> Node[Any]:
         return value
     if isinstance(value, AsyncIterable):
         return from_async_iter(value, runner=runner)
-    if isinstance(value, Awaitable) or asyncio.isfuture(value) or asyncio.iscoroutine(value):
+    if isinstance(value, Awaitable):
         return from_awaitable(value, runner=runner)
     try:
         it = iter(value)
@@ -574,7 +573,7 @@ def first_value_from(
         assert first_value_from(of(42)) == 42
         ```
     """
-    got: list[Any | None] = [None]
+    got: list[Any] = [NO_VALUE]
     err_box: list[BaseException | Any | None] = [None]
     complete_without_data = [False]
     done = threading.Event()
@@ -583,14 +582,14 @@ def first_value_from(
         for m in msgs:
             t = m[0]
             if t is MessageType.DATA:
-                if got[0] is None:
+                if got[0] is NO_VALUE:
                     got[0] = _msg_val(m)
                 done.set()
             elif t is MessageType.ERROR:
                 err_box[0] = _msg_val(m)
                 done.set()
             elif t is MessageType.COMPLETE:
-                if got[0] is None:
+                if got[0] is NO_VALUE:
                     complete_without_data[0] = True
                 done.set()
 
@@ -606,7 +605,7 @@ def first_value_from(
                     err_box[0] = RuntimeError("source node is in errored state")
                 done.set()
             elif status == "completed":
-                if got[0] is None:
+                if got[0] is NO_VALUE:
                     complete_without_data[0] = True
                 done.set()
 
@@ -623,7 +622,7 @@ def first_value_from(
         if isinstance(err, BaseException):
             raise err
         raise RuntimeError(str(err))
-    if complete_without_data[0] and got[0] is None:
+    if complete_without_data[0] and got[0] is NO_VALUE:
         raise StopIteration
     return got[0]
 
