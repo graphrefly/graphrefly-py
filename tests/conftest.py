@@ -99,11 +99,13 @@ def collect(
     messages: list[Any] = []
 
     if flat:
+
         def sink(batch: Any) -> None:
             for m in batch:
                 if raw or m[0] is not MessageType.START:
                     messages.append(m)
     else:
+
         def sink(batch: Any) -> None:
             filtered = list(batch) if raw else [m for m in batch if m[0] is not MessageType.START]
             if filtered:
