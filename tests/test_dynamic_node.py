@@ -1,14 +1,14 @@
 """Tests for dynamic_node — runtime dep tracking with diamond resolution."""
 
+from conftest import collect
+
 from graphrefly import MessageType, batch, dynamic_node, node, state
 from graphrefly.core.guard import policy
 from graphrefly.core.meta import describe_node
 
 
 def _collect(n):
-    batches = []
-    unsub = n.subscribe(lambda msgs: batches.append(msgs))
-    return batches, unsub
+    return collect(n, raw=True)
 
 
 def _data_values(batches):
