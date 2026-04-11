@@ -11,10 +11,10 @@ import json
 import math
 import re as _re
 import threading
-from collections.abc import AsyncIterable, Iterable
+from collections.abc import AsyncIterable, Callable, Iterable
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast, runtime_checkable
 
 from graphrefly.core.cancellation import cancellation_token
 from graphrefly.core.clock import monotonic_ns
@@ -40,7 +40,7 @@ from graphrefly.patterns.messaging import TopicGraph, topic
 from graphrefly.patterns.orchestration import GateController, gate
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Mapping, Sequence
 
     from graphrefly.core.node import NodeImpl
 
@@ -829,6 +829,121 @@ def cost_meter_extractor(
         name=name or "cost-meter",
         initial=_ZERO_READING,
     )
+
+
+# ---------------------------------------------------------------------------
+# Composition B: Content safety pipeline
+# ---------------------------------------------------------------------------
+
+
+def redactor(
+    stream_topic: TopicGraph,
+    patterns: list[Any],
+    replace_fn: Callable[[str], str] | None = None,
+    *,
+    name: str | None = None,
+) -> Node[StreamChunk]:
+    """Stream extractor that replaces matched patterns in the accumulated text.
+
+    Returns a derived node emitting a sanitized :class:`StreamChunk` on every
+    chunk: ``accumulated`` and ``token`` have matched substrings replaced by
+    ``replace_fn``. The default ``replace_fn`` replaces with ``"[REDACTED]"``.
+
+    Compose with :func:`content_gate` for in-flight safety pipelines.
+
+    Args:
+        stream_topic: Streaming topic to monitor.
+        patterns:     List of compiled ``re.Pattern`` objects.
+        replace_fn:   ``(match: str) -> str`` replacement function.
+                      Defaults to ``lambda m: "[REDACTED]"``.
+        name:         Optional node name.
+
+    Returns:
+        Derived node emitting sanitized :class:`StreamChunk` values.
+    """
+    _replace = replace_fn if replace_fn is not None else (lambda _m: "[REDACTED]")
+
+    def _sanitize(text: str) -> str:
+        result = text
+        for pat in patterns:
+            result = pat.sub(_replace, result)
+        return result
+
+    def _compute(dep_values: list[Any], _actions: Any) -> StreamChunk:
+        chunk = dep_values[0]
+        if chunk is None:
+            return StreamChunk(source="", token="", accumulated="", index=-1)
+        c: StreamChunk = chunk
+        return StreamChunk(
+            source=c.source,
+            token=_sanitize(c.token),
+            accumulated=_sanitize(c.accumulated),
+            index=c.index,
+        )
+
+    return derived([stream_topic.latest], _compute, name=name or "redactor")
+
+
+# ---------------------------------------------------------------------------
+
+ContentDecision = Literal["allow", "review", "block"]
+
+
+def content_gate(
+    stream_topic: TopicGraph,
+    classifier: Callable[[str], float] | Node[float],
+    threshold: float,
+    *,
+    hard_multiplier: float = 1.5,
+    name: str | None = None,
+) -> Node[ContentDecision]:
+    """Derived node that classifies accumulated stream text.
+
+    Emits a three-way decision on every new chunk:
+
+    - ``"allow"`` — score below ``threshold``
+    - ``"review"`` — score in ``[threshold, threshold × hard_multiplier)``
+    - ``"block"`` — score at or above ``threshold × hard_multiplier``
+
+    Wire the output into a valve (automatic) or gate (human approval).
+    This node does not itself control flow — it classifies.
+
+    Args:
+        stream_topic:    Streaming topic to classify.
+        classifier:      ``(accumulated: str) -> float`` scoring function, or
+                         a ``Node[float]`` for live scores.
+        threshold:       Score at which output becomes ``"review"`` or
+                         ``"block"``.
+        hard_multiplier: Multiplier on ``threshold`` for ``"block"`` boundary.
+        name:            Optional node name.
+
+    Returns:
+        Derived node emitting :data:`ContentDecision`.
+    """
+    hard_threshold = threshold * hard_multiplier
+    classifier_fn: Callable[[str], float] | None = classifier if callable(classifier) else None
+    classifier_node: Node[float] | None = None if callable(classifier) else classifier
+
+    deps: list[Node[Any]] = [stream_topic.latest]
+    if classifier_node is not None:
+        deps.append(classifier_node)
+
+    def _compute(dep_values: list[Any], _actions: Any) -> ContentDecision:
+        chunk = dep_values[0]
+        if chunk is None:
+            return "allow"
+        score: float = (
+            dep_values[1] if (classifier_node is not None and len(dep_values) > 1) else 0.0
+        )
+        if classifier_fn is not None:
+            score = classifier_fn(chunk.accumulated)
+        if score >= hard_threshold:
+            return "block"
+        if score >= threshold:
+            return "review"
+        return "allow"
+
+    return derived(deps, _compute, name=name or "content-gate", initial="allow")
 
 
 # ---------------------------------------------------------------------------

@@ -196,15 +196,13 @@ def test_concat_map_coerces_iterable_project_return() -> None:
 
 def test_flat_map_concurrent() -> None:
     outer, ho = _make_deferred_producer()
-    p_init, _h_init = _make_deferred_producer()  # absorbs initial compute
     p1, h1 = _make_deferred_producer()
     p2, h2 = _make_deferred_producer()
     counter = [0]
 
     def make_inner(_v: int) -> Any:
         counter[0] += 1
-        # counter 1 = initial compute (absorbed), 2 = DATA 1, 3 = DATA 2
-        return [p_init, p1, p2][counter[0] - 1]
+        return [p1, p2][counter[0] - 1]
 
     out = pipe(outer, flat_map(make_inner))
     sink, unsub = collect(out, raw=True)
@@ -515,14 +513,9 @@ def test_concat_map_reconnect_fresh_queue() -> None:
 
     out = pipe(outer, concat_map(make_inner))
 
-    # First subscription: initial compute spawns an inner for None (SENTINEL dep).
-    # Then we send DATA(0) which queues behind that initial inner.
+    # First subscription: SENTINEL dep, no initial inner spawned (fn doesn't
+    # call project). Send DATA(0) to trigger the first inner via onMessage.
     sink1, unsub1 = collect(out, raw=True)
-    # Complete the initial inner (spawned by compute with None dep value)
-    assert len(results) >= 1
-    _, h_init = results[0]
-    h_init[0].down([(MessageType.COMPLETE,)])
-    # Now send DATA(0) — it was buffered, now drains
     ho[0].down([(MessageType.DATA, 0)])
     inners_0 = [(v, h) for v, h in results if v == 0]
     assert inners_0, "inner for value 0 should be created"
@@ -534,11 +527,6 @@ def test_concat_map_reconnect_fresh_queue() -> None:
 
     # Second subscription — reconnect then push a new value
     sink2, unsub2 = collect(out, raw=True)
-    # Reconnect triggers another initial compute inner — complete it
-    init_inners = [(v, h) for v, h in results if v is None]
-    if len(init_inners) > 1:
-        _, h_init2 = init_inners[-1]
-        h_init2[0].down([(MessageType.COMPLETE,)])
     ho[0].down([(MessageType.DATA, 42)])
     # After reconnect + new DATA, a new inner should be created for value 42
     inners_42 = [(v, h) for v, h in results if v == 42]
@@ -554,20 +542,20 @@ def test_switch_map_derived_inner_initial_data_not_duplicated() -> None:
     """Regression: session parity fix #4 (_forward_inner emitted flag).
 
     With push-on-subscribe, each attach (subscribe to inner) emits exactly once.
-    The deferred-producer outer triggers an initial compute (attach with None),
-    then the explicit DATA triggers a second attach. Each attach subscribes to
-    the derived inner which pushes its value once — verifying _forward_inner's
-    emitted flag prevents double-emission per attach.
+    A valued outer triggers attach via onMessage DATA, then an explicit DATA
+    triggers a second attach. Each attach subscribes to the derived inner which
+    pushes its value once — verifying _forward_inner's emitted flag prevents
+    double-emission per attach.
     """
-    outer, ho = _make_deferred_producer()
+    outer = state(0)
     base = state(10)
     derived_inner = node([base], lambda d, _m: d[0] + 1)
     out = pipe(outer, switch_map(lambda _v: derived_inner))
     sink, unsub = collect(out, raw=True)
-    # Initial compute attaches with None → derived_inner emits 11 once
+    # First DATA(0) from push-on-subscribe triggers attach → derived_inner emits 11 once
     vals_before = _values(sink)
     assert vals_before.count(11) == 1, f"initial attach should emit 11 once, got {vals_before}"
-    ho[0].down([(MessageType.DATA, 0)])
+    outer.down([(MessageType.DATA, 1)])
     # Second attach re-subscribes → derived_inner emits 11 once more
     vals_after = _values(sink)
     assert vals_after.count(11) == 2, f"after explicit DATA, expect 2 total, got {vals_after}"
@@ -703,3 +691,87 @@ def test_debounce_does_not_fire_inside_batch() -> None:
         assert 7 not in _values(sink)
     time.sleep(0.04)
     assert 7 in _values(sink)
+
+
+# ---------------------------------------------------------------------------
+# D8 / SENTINEL dep safety — operators must not corrupt state when dep is
+# SENTINEL (no cached DATA). Regression: operator fn received None from
+# dep.get() and processed it as real data.
+# ---------------------------------------------------------------------------
+
+
+def test_switch_map_sentinel_dep_no_project_call() -> None:
+    trigger = node()
+    project_calls = [0]
+
+    def project(_v: Any) -> Any:
+        project_calls[0] += 1
+        return state("inner")
+
+    out = pipe(trigger, switch_map(project))
+    sink, unsub = collect(out, raw=True)
+    assert project_calls[0] == 0
+    assert len(_values(sink)) == 0
+    trigger.down([(MessageType.DATA, 1)])
+    assert project_calls[0] == 1
+    assert "inner" in _values(sink)
+    unsub()
+
+
+def test_exhaust_map_sentinel_dep_no_project_call() -> None:
+    trigger = node()
+    project_calls = [0]
+
+    def project(_v: Any) -> Any:
+        project_calls[0] += 1
+        return state("inner")
+
+    out = pipe(trigger, exhaust_map(project))
+    sink, unsub = collect(out, raw=True)
+    assert project_calls[0] == 0
+    trigger.down([(MessageType.DATA, 1)])
+    assert project_calls[0] == 1
+    unsub()
+
+
+def test_concat_map_sentinel_dep_no_project_call() -> None:
+    trigger = node()
+    project_calls = [0]
+
+    def project(_v: Any) -> Any:
+        project_calls[0] += 1
+        return state("inner")
+
+    out = pipe(trigger, concat_map(project))
+    sink, unsub = collect(out, raw=True)
+    assert project_calls[0] == 0
+    trigger.down([(MessageType.DATA, 1)])
+    assert project_calls[0] == 1
+    unsub()
+
+
+def test_flat_map_sentinel_dep_no_project_call() -> None:
+    trigger = node()
+    project_calls = [0]
+
+    def project(_v: Any) -> Any:
+        project_calls[0] += 1
+        return state("inner")
+
+    out = pipe(trigger, flat_map(project))
+    sink, unsub = collect(out, raw=True)
+    assert project_calls[0] == 0
+    trigger.down([(MessageType.DATA, 1)])
+    assert project_calls[0] == 1
+    unsub()
+
+
+def test_buffer_count_sentinel_dep_no_corruption() -> None:
+    trigger = node()
+    out = pipe(trigger, buffer_count(2))
+    sink, unsub = collect(out, raw=True)
+    trigger.down([(MessageType.DATA, 1)])
+    trigger.down([(MessageType.DATA, 2)])
+    data_vals = _values(sink)
+    assert data_vals == [[1, 2]]
+    unsub()

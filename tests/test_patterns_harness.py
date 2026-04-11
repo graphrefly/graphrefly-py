@@ -696,3 +696,390 @@ class TestHarnessTrace:
         # Give time for any accidental delivery
         time.sleep(0.05)
         assert not any("After dispose" in line for line in lines)
+
+
+# ---------------------------------------------------------------------------
+# Composition A: eval_source
+# ---------------------------------------------------------------------------
+
+
+class TestEvalSource:
+    def test_fires_runner_on_trigger_and_emits_result(self) -> None:
+        import threading
+
+        from graphrefly.core.protocol import MessageType
+        from graphrefly.patterns.harness.bridge import eval_source
+
+        trigger = state("run-a")
+        ready = threading.Event()
+
+        def runner() -> EvalResult:
+            return EvalResult(run_id="r1", model="test", tasks=())
+
+        results: list[EvalResult] = []
+
+        result_node = eval_source(trigger, runner)
+
+        def _on(msgs: Any) -> None:
+            for m in msgs:
+                if m[0] is MessageType.DATA and m[1] is not None:
+                    results.append(m[1])
+                    ready.set()
+
+        unsub = result_node.subscribe(_on)
+        ready.wait(timeout=2.0)
+
+        assert len(results) >= 1
+        assert results[-1].run_id == "r1"
+        unsub()
+
+
+# ---------------------------------------------------------------------------
+# Composition A: before_after_compare
+# ---------------------------------------------------------------------------
+
+
+class TestBeforeAfterCompare:
+    def _make(
+        self,
+        run_id: str,
+        tasks: list[tuple[str, bool, int | None, int | None]],
+    ) -> EvalResult:
+        """(task_id, valid, passes, total)"""
+        task_list = []
+        for tid, valid, passes, total in tasks:
+            if total is not None:
+                scores = tuple(
+                    EvalJudgeScore(claim=f"c{i}", pass_=i < (passes or 0), reasoning="")
+                    for i in range(total)
+                )
+            else:
+                scores = None
+            task_list.append(EvalTaskResult(task_id=tid, valid=valid, judge_scores=scores))
+        return EvalResult(run_id=run_id, model="test", tasks=tuple(task_list))
+
+    def test_identifies_new_failures_and_resolved(self) -> None:
+        from graphrefly.patterns.harness.bridge import before_after_compare
+
+        before = state(self._make("b", [("t1", True, None, None), ("t2", False, None, None)]))
+        after = state(self._make("a", [("t1", False, None, None), ("t2", True, None, None)]))
+
+        delta = before_after_compare(before, after)
+        unsub = delta.subscribe(lambda _: None)
+
+        d = delta.get()
+        assert d is not None
+        assert "t1" in d.new_failures
+        assert "t2" in d.resolved
+        assert d.overall_improved is False  # 1 resolved, 1 failure — equal
+        unsub()
+
+    def test_overall_improved_when_more_resolved(self) -> None:
+        from graphrefly.patterns.harness.bridge import before_after_compare
+
+        before = state(
+            self._make(
+                "b",
+                [("t1", False, None, None), ("t2", False, None, None), ("t3", True, None, None)],
+            )
+        )
+        after = state(
+            self._make(
+                "a",
+                [("t1", True, None, None), ("t2", True, None, None), ("t3", False, None, None)],
+            )
+        )
+
+        delta = before_after_compare(before, after)
+        unsub = delta.subscribe(lambda _: None)
+
+        d = delta.get()
+        assert d is not None
+        assert len(d.resolved) == 2
+        assert len(d.new_failures) == 1
+        assert d.overall_improved is True
+        unsub()
+
+    def test_score_diff_with_judge_scores(self) -> None:
+        from graphrefly.patterns.harness.bridge import before_after_compare
+
+        before = state(self._make("b", [("t1", True, 2, 4)]))
+        after = state(self._make("a", [("t1", True, 3, 4)]))
+
+        delta = before_after_compare(before, after)
+        unsub = delta.subscribe(lambda _: None)
+
+        d = delta.get()
+        assert d is not None
+        td = d.task_deltas[0]
+        assert td.score_diff == 1  # 3 - 2
+        unsub()
+
+
+# ---------------------------------------------------------------------------
+# Composition A: affected_task_filter
+# ---------------------------------------------------------------------------
+
+
+class TestAffectedTaskFilter:
+    def _mk(self, tasks: list[str]) -> TriagedItem:
+        return TriagedItem(
+            source="eval",
+            summary="",
+            evidence="",
+            affects_areas=(),
+            root_cause="unknown",
+            intervention="investigate",
+            route="backlog",
+            priority=0.0,
+            affects_eval_tasks=tuple(tasks),
+        )
+
+    def test_collects_affected_task_ids(self) -> None:
+        from graphrefly.patterns.harness.bridge import affected_task_filter
+
+        issues = state([self._mk(["T1", "T2"]), self._mk(["T2", "T3"])])
+        filtered = affected_task_filter(issues)
+        unsub = filtered.subscribe(lambda _: None)
+
+        assert filtered.get() == ["T1", "T2", "T3"]
+        unsub()
+
+    def test_intersects_with_full_task_set(self) -> None:
+        from graphrefly.patterns.harness.bridge import affected_task_filter
+
+        issues = state([self._mk(["T1", "T2", "T3"])])
+        filtered = affected_task_filter(issues, ("T1", "T3", "T5"))
+        unsub = filtered.subscribe(lambda _: None)
+
+        assert filtered.get() == ["T1", "T3"]  # T2 excluded, T5 not affected
+        unsub()
+
+
+# ---------------------------------------------------------------------------
+# Composition D: code_change_bridge
+# ---------------------------------------------------------------------------
+
+
+class TestCodeChangeBridge:
+    def test_publishes_items_for_lint_and_test_failures(self) -> None:
+        from graphrefly.patterns.harness.bridge import (
+            CodeChange,
+            LintError,
+            TestFailure,
+            code_change_bridge,
+        )
+        from graphrefly.patterns.messaging import topic
+
+        source = state(None)
+        intake_topic = topic("intake")
+        published: list[IntakeItem] = []
+
+        unsub_intake = intake_topic.latest.subscribe(
+            lambda msgs: [
+                published.append(m[1])
+                for m in msgs
+                if m[0] is MessageType.DATA and m[1] is not None
+            ]
+        )
+
+        bridge = code_change_bridge(source, intake_topic)
+        unsub_bridge = bridge.subscribe(lambda _: None)
+
+        change = CodeChange(
+            files=("src/foo.py",),
+            lint_errors=(
+                LintError(file="src/foo.py", line=10, col=3, rule="E501", message="line too long"),
+            ),
+            test_failures=(
+                TestFailure(test_id="test_foo", file="src/foo.py", message="AssertionError"),
+            ),
+        )
+        source.down([[MessageType.DATA, change]])
+
+        assert len(published) >= 2
+        sources = [i.source for i in published]
+        assert "code-change" in sources
+        assert "test" in sources
+        unsub_intake()
+        unsub_bridge()
+
+
+# ---------------------------------------------------------------------------
+# Composition D: notify_effect
+# ---------------------------------------------------------------------------
+
+
+class TestNotifyEffect:
+    def test_calls_transport_for_each_entry(self) -> None:
+        from graphrefly.patterns.harness.bridge import notify_effect
+        from graphrefly.patterns.messaging import topic
+
+        alert_topic = topic("alerts")
+        calls: list[str] = []
+        eff = notify_effect(alert_topic, calls.append)
+        unsub = eff.subscribe(lambda _: None)
+
+        alert_topic.publish("first")
+        alert_topic.publish("second")
+
+        assert "first" in calls
+        assert "second" in calls
+        unsub()
+
+
+# ---------------------------------------------------------------------------
+# Composition B: redactor
+# ---------------------------------------------------------------------------
+
+
+class TestRedactor:
+    def test_replaces_matched_patterns(self) -> None:
+        import re
+
+        from graphrefly.patterns.ai import StreamChunk, redactor
+        from graphrefly.patterns.messaging import topic
+
+        stream = topic("stream")
+        ssn_pattern = re.compile(r"\d{3}-\d{2}-\d{4}")
+        sanitized = redactor(stream, [ssn_pattern])
+        results: list[StreamChunk] = []
+        unsub = sanitized.subscribe(
+            lambda msgs: [
+                results.append(m[1])
+                for m in msgs
+                if m[0] is MessageType.DATA and m[1] is not None and m[1].index >= 0
+            ]
+        )
+
+        stream.publish(StreamChunk(
+            source="test", token="SSN: 123-45-6789",
+            accumulated="SSN: 123-45-6789", index=0,
+        ))
+
+        last = results[-1] if results else None
+        assert last is not None
+        assert last.accumulated == "SSN: [REDACTED]"
+        unsub()
+
+    def test_custom_replace_fn(self) -> None:
+        import re
+
+        from graphrefly.patterns.ai import StreamChunk, redactor
+        from graphrefly.patterns.messaging import topic
+
+        stream = topic("stream2")
+        pattern = re.compile(r"secret", re.IGNORECASE)
+        sanitized = redactor(stream, [pattern], replace_fn=lambda _m: "***")
+        results: list[StreamChunk] = []
+        unsub = sanitized.subscribe(
+            lambda msgs: [
+                results.append(m[1])
+                for m in msgs
+                if m[0] is MessageType.DATA and m[1] is not None and m[1].index >= 0
+            ]
+        )
+
+        stream.publish(StreamChunk(
+            source="test", token="my secret",
+            accumulated="my secret data", index=0,
+        ))
+
+        last = results[-1] if results else None
+        assert last is not None
+        assert last.accumulated == "my *** data"
+        unsub()
+
+
+# ---------------------------------------------------------------------------
+# Composition B: content_gate
+# ---------------------------------------------------------------------------
+
+
+class TestContentGate:
+    def _push(self, stream: Any, acc: str) -> None:
+        from graphrefly.patterns.ai import StreamChunk
+
+        stream.publish(StreamChunk(source="test", token=acc, accumulated=acc, index=0))
+
+    def test_returns_allow_below_threshold(self) -> None:
+        from graphrefly.patterns.ai import content_gate
+        from graphrefly.patterns.messaging import topic
+
+        stream = topic("stream-cg-allow")
+        gate = content_gate(stream, lambda text: len(text) / 100, threshold=0.5)
+        decisions: list[str] = []
+        unsub = gate.subscribe(
+            lambda msgs: [
+                decisions.append(m[1])
+                for m in msgs
+                if m[0] is MessageType.DATA and m[1] is not None
+            ]
+        )
+
+        self._push(stream, "hi")  # 2/100 = 0.02 — below 0.5
+        assert decisions[-1] == "allow"
+        unsub()
+
+    def test_returns_review_in_middle_band(self) -> None:
+        from graphrefly.patterns.ai import content_gate
+        from graphrefly.patterns.messaging import topic
+
+        stream = topic("stream-cg-review")
+        gate = content_gate(stream, lambda _: 0.6, threshold=0.5)  # hard = 0.75
+        decisions: list[str] = []
+        unsub = gate.subscribe(
+            lambda msgs: [
+                decisions.append(m[1])
+                for m in msgs
+                if m[0] is MessageType.DATA and m[1] is not None
+            ]
+        )
+
+        self._push(stream, "x")
+        assert decisions[-1] == "review"
+        unsub()
+
+    def test_returns_block_above_hard_threshold(self) -> None:
+        from graphrefly.patterns.ai import content_gate
+        from graphrefly.patterns.messaging import topic
+
+        stream = topic("stream-cg-block")
+        gate = content_gate(stream, lambda _: 0.9, threshold=0.5)  # 0.9 >= 0.75
+        decisions: list[str] = []
+        unsub = gate.subscribe(
+            lambda msgs: [
+                decisions.append(m[1])
+                for m in msgs
+                if m[0] is MessageType.DATA and m[1] is not None
+            ]
+        )
+
+        self._push(stream, "x")
+        assert decisions[-1] == "block"
+        unsub()
+
+    def test_accepts_node_classifier(self) -> None:
+        from graphrefly.patterns.ai import content_gate
+        from graphrefly.patterns.messaging import topic
+
+        stream = topic("stream-cg-node")
+        score = state(0.8)
+        gate = content_gate(stream, score, threshold=0.5)  # 0.8 >= 0.75 → block
+        decisions: list[str] = []
+        unsub = gate.subscribe(
+            lambda msgs: [
+                decisions.append(m[1])
+                for m in msgs
+                if m[0] is MessageType.DATA and m[1] is not None
+            ]
+        )
+
+        self._push(stream, "x")
+        assert decisions[-1] == "block"
+
+        # Lower score to allow
+        score.down([[MessageType.DATA, 0.1]])
+        self._push(stream, "y")
+        assert decisions[-1] == "allow"
+        unsub()

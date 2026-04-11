@@ -145,7 +145,6 @@ def switch_map(
     def _op(outer: Node[Any]) -> Node[Any]:
         inner_unsub: Callable[[], None] | None = None
         source_done = False
-        attached = False
 
         def clear_inner() -> None:
             nonlocal inner_unsub
@@ -154,8 +153,7 @@ def switch_map(
                 inner_unsub = None
 
         def attach(v: Any, a: NodeActions) -> None:
-            nonlocal attached, inner_unsub
-            attached = True
+            nonlocal inner_unsub
             clear_inner()
 
             def _on_inner_complete() -> None:
@@ -165,9 +163,7 @@ def switch_map(
 
             inner_unsub = _forward_inner(_as_node(fn(v)), a, _on_inner_complete)
 
-        def compute(deps: list[Any], a: NodeActions) -> Any:
-            if not attached:
-                attach(deps[0], a)
+        def compute(_deps: list[Any], _a: NodeActions) -> Any:
             return clear_inner
 
         def on_message(msg: Any, _index: int, a: NodeActions) -> bool:
@@ -240,7 +236,6 @@ def concat_map(
         queue: deque[Any] = deque()
         inner_unsub: Callable[[], None] | None = None
         source_done = False
-        attached = False
 
         def clear_inner() -> None:
             nonlocal inner_unsub
@@ -265,16 +260,12 @@ def concat_map(
             inner_unsub = _forward_inner(_as_node(fn(v)), a, _on_inner_complete)
 
         def enqueue(v: Any, a: NodeActions) -> None:
-            nonlocal attached
-            attached = True
             if max_buffer > 0 and len(queue) >= max_buffer:
                 queue.popleft()
             queue.append(v)
             try_pump(a)
 
-        def compute(deps: list[Any], a: NodeActions) -> Any:
-            if not attached:
-                enqueue(deps[0], a)
+        def compute(_deps: list[Any], _a: NodeActions) -> Any:
             return clear_inner
 
         def on_message(msg: Any, _index: int, a: NodeActions) -> bool:
@@ -355,7 +346,6 @@ def flat_map(
         source_done = False
         inner_stops: list[Callable[[], None]] = []
         buffer: deque[Any] = deque()
-        attached = False
 
         def try_complete(a: NodeActions) -> None:
             if source_done and active == 0 and len(buffer) == 0:
@@ -397,11 +387,7 @@ def flat_map(
             active = 0
             buffer.clear()
 
-        def compute(deps: list[Any], a: NodeActions) -> Any:
-            nonlocal attached
-            if not attached:
-                attached = True
-                enqueue(deps[0], a)
+        def compute(_deps: list[Any], _a: NodeActions) -> Any:
             return clear_all
 
         def on_message(msg: Any, _index: int, a: NodeActions) -> bool:
@@ -463,7 +449,6 @@ def exhaust_map(fn: Callable[[Any], Any], *, initial: Any = _UNSET) -> PipeOpera
     def _op(outer: Node[Any]) -> Node[Any]:
         inner_unsub: Callable[[], None] | None = None
         source_done = False
-        attached = False
 
         def clear_inner() -> None:
             nonlocal inner_unsub
@@ -472,8 +457,7 @@ def exhaust_map(fn: Callable[[Any], Any], *, initial: Any = _UNSET) -> PipeOpera
                 inner_unsub = None
 
         def attach(v: Any, a: NodeActions) -> None:
-            nonlocal attached, inner_unsub
-            attached = True
+            nonlocal inner_unsub
 
             def _on_inner_complete() -> None:
                 clear_inner()
@@ -482,9 +466,7 @@ def exhaust_map(fn: Callable[[Any], Any], *, initial: Any = _UNSET) -> PipeOpera
 
             inner_unsub = _forward_inner(_as_node(fn(v)), a, _on_inner_complete)
 
-        def compute(deps: list[Any], a: NodeActions) -> Any:
-            if not attached and inner_unsub is None:
-                attach(deps[0], a)
+        def compute(_deps: list[Any], _a: NodeActions) -> Any:
             return clear_inner
 
         def on_message(msg: Any, _index: int, a: NodeActions) -> bool:

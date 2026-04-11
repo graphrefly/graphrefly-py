@@ -764,3 +764,48 @@ def test_combine_reconnect() -> None:
     data_vals = [m[1] for batch in sink2 for m in batch if m[0] is MessageType.DATA]
     assert (10, 4) in data_vals
     unsub2()
+
+
+# ---------------------------------------------------------------------------
+# D8 / SENTINEL dep safety — accumulator operators must not process SENTINEL
+# undefined as real data. Regression: dep.get() returned None from SENTINEL
+# and operators accumulated it.
+# ---------------------------------------------------------------------------
+
+
+def test_reduce_sentinel_dep_no_corruption() -> None:
+    trigger = node()
+    out = pipe(trigger, reduce(lambda acc, v: acc + v, 0))
+    sink, unsub = collect(out, raw=True)
+    trigger.down([(MessageType.DATA, 10)])
+    trigger.down([(MessageType.DATA, 20)])
+    trigger.down([(MessageType.COMPLETE,)])
+    data_vals = [m[1] for batch in sink for m in batch if m[0] is MessageType.DATA]
+    assert 30 in data_vals
+    unsub()
+
+
+def test_take_while_sentinel_dep_no_predicate_call() -> None:
+    trigger = node()
+    predicate_calls = [0]
+
+    def pred(v: object) -> bool:
+        predicate_calls[0] += 1
+        return v < 10  # type: ignore[operator]
+
+    out = pipe(trigger, take_while(pred))
+    sink, unsub = collect(out, raw=True)
+    assert predicate_calls[0] == 0
+    trigger.down([(MessageType.DATA, 5)])
+    assert predicate_calls[0] == 1
+    unsub()
+
+
+def test_last_sentinel_dep_no_emit_on_complete() -> None:
+    trigger = node()
+    out = pipe(trigger, last())
+    sink, unsub = collect(out, raw=True)
+    trigger.down([(MessageType.COMPLETE,)])
+    data_vals = [m for batch in sink for m in batch if m[0] is MessageType.DATA]
+    assert len(data_vals) == 0
+    unsub()

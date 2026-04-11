@@ -158,13 +158,19 @@ def reduce(  # noqa: A001 — roadmap API name
     def _op(src: Node[Any]) -> Node[Any]:
         acc = [seed]
         saw_data = [False]
+        dep_has_data = [False]
 
         def compute(deps: list[Any], _actions: NodeActions) -> Any:
+            if not dep_has_data[0]:
+                return None
             saw_data[0] = True
             acc[0] = reducer(acc[0], deps[0])
             return None
 
         def on_message(msg: Any, _index: int, actions: NodeActions) -> bool:
+            if msg[0] is MessageType.DATA:
+                dep_has_data[0] = True
+                return False
             if msg[0] is MessageType.COMPLETE:
                 if not saw_data[0]:
                     acc[0] = seed
@@ -329,9 +335,12 @@ def take_while(predicate: Callable[[Any], bool]) -> PipeOperator:
 
     def _op(src: Node[Any]) -> Node[Any]:
         done = [False]
+        dep_has_data = [False]
 
         def compute(deps: list[Any], actions: NodeActions) -> Any:
             if done[0]:
+                return None
+            if not dep_has_data[0]:
                 return None
             v = deps[0]
             if not predicate(v):
@@ -340,9 +349,15 @@ def take_while(predicate: Callable[[Any], bool]) -> PipeOperator:
                 return None
             return v
 
+        def on_message(msg: Any, _index: int, _actions: NodeActions) -> bool:
+            if msg[0] is MessageType.DATA:
+                dep_has_data[0] = True
+            return False
+
         return node(
             [src],
             compute,
+            on_message=on_message,
             describe_kind="take_while",
             complete_when_deps_complete=False,
         )
@@ -494,15 +509,14 @@ def last(*, default: Any = _LAST_NO_DEFAULT) -> PipeOperator:
                 return True
             return False
 
-        init = default if use_default else None
-        return node(
-            [src],
-            compute,
-            on_message=on_message,
-            describe_kind="last",
-            initial=init,
-            complete_when_deps_complete=False,
-        )
+        opts: dict[str, Any] = {
+            "on_message": on_message,
+            "describe_kind": "last",
+            "complete_when_deps_complete": False,
+        }
+        if use_default:
+            opts["initial"] = default
+        return node([src], compute, **opts)
 
     return _op
 
