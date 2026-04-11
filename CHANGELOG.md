@@ -2,6 +2,22 @@
 
 <!-- version list -->
 
+## v0.20.0 (2026-04-11)
+
+### Chores
+
+- Add integrations page
+  ([`7f16d1b`](https://github.com/graphrefly/graphrefly-py/commit/7f16d1b9d9b5aadb5875e4bcb08e6decae469d1f))
+
+- Update docs
+  ([`0f2d779`](https://github.com/graphrefly/graphrefly-py/commit/0f2d779eeddcf9eec9ed339bcae4dbf6899363d3))
+
+### Features
+
+- Fix bug
+  ([`e5f9cc4`](https://github.com/graphrefly/graphrefly-py/commit/e5f9cc440a854cde0aac1060f02121b85ce06831))
+
+
 ## v0.19.0 (2026-04-10)
 
 ### Chores
