@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [clean-slate, main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Python host package
+        uses: actions/checkout@v5
+        with:
+          path: graphrefly-py
+
+      - name: Checkout Rust native engine
+        uses: actions/checkout@v5
+        with:
+          repository: graphrefly/graphrefly-rs
+          ref: clean-slate
+          path: graphrefly-rs
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Sync dependencies
+        working-directory: graphrefly-py
+        run: uv sync --group dev
+
+      - name: Build native extension
+        working-directory: graphrefly-py
+        run: uv run maturin develop --release
+
+      - name: Test
+        working-directory: graphrefly-py
+        run: uv run pytest
+
+      - name: Lint
+        working-directory: graphrefly-py
+        run: uv run ruff check .
+
+      - name: Type check
+        working-directory: graphrefly-py
+        run: uv run mypy src
