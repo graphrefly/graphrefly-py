@@ -8,26 +8,53 @@ from importlib import metadata
 from importlib.metadata import PackageNotFoundError
 from inspect import isawaitable, iscoroutinefunction
 from threading import get_ident
-from typing import Any, TypeVar, cast
+from typing import Any, Literal, TypeVar, cast, overload
 
 from graphrefly import _native
-from graphrefly.exceptions import CallbackError, GraphReflyRuntimeError, GraphReflyValueError
+from graphrefly.exceptions import (
+    CallbackError,
+    GraphCallbackError,
+    GraphReflyRuntimeError,
+    GraphReflyValueError,
+    SubscriberCallbackError,
+)
 
 T = TypeVar("T")
 U = TypeVar("U")
 _VERSION = "0.21.0a0"
+_MAX_CALLBACK_ERRORS = 32
 
 
 @dataclass(frozen=True, slots=True)
-class Message:
-    """A public subscription event.
+class DataMessage[T]:
+    """DATA observation with a domain payload.
 
-    `value` is present for DATA and ERROR observations. Other protocol messages use
-    `None` as the v0 no-DATA sentinel; domain DATA may not be `None` in this slice.
+    `None` is a valid domain payload in Python v1; no-DATA is represented by
+    message shape, not by the payload value.
     """
+
+    value: T
+    kind: Literal["DATA"] = "DATA"
+
+
+@dataclass(frozen=True, slots=True)
+class ErrorMessage:
+    """ERROR observation with a Python-owned error envelope."""
+
+    error: GraphCallbackError
+    kind: Literal["ERROR"] = "ERROR"
+
+
+@dataclass(frozen=True, slots=True)
+class ControlMessage:
+    """Non-DATA / non-ERROR observation."""
 
     kind: str
     value: object | None = None
+
+
+type Message[T] = DataMessage[T] | ErrorMessage | ControlMessage
+type ObserverErrorHandler = Callable[[SubscriberCallbackError], object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,21 +62,33 @@ class GraphEvent:
     """Graph-level observation from the native engine."""
 
     path: str
-    message: Message
+    message: Message[Any]
+    tier: int
     seq: int
 
 
 class Subscription:
     """Idempotent subscription handle."""
 
-    def __init__(self, native: _native.Subscription, *, owner_thread: int) -> None:
+    def __init__(
+        self,
+        native: _native.Subscription,
+        *,
+        owner_thread: int,
+        callback_errors: list[SubscriberCallbackError] | None = None,
+    ) -> None:
         self._native = native
         self._owner_thread = owner_thread
+        self._callback_errors = callback_errors if callback_errors is not None else []
         self._closed = False
 
     @property
     def closed(self) -> bool:
         return self._closed
+
+    @property
+    def callback_errors(self) -> tuple[SubscriberCallbackError, ...]:
+        return tuple(self._callback_errors)
 
     def unsubscribe(self) -> None:
         self._check_thread()
@@ -97,25 +136,40 @@ class Node[T]:
 
     def cache(self) -> T | None:
         self._check_thread()
-        return cast("T | None", self._native.cache())
+        has_value, value = self._native.cache_entry()
+        if not has_value:
+            return None
+        return cast("T | None", value)
 
     @property
     def status(self) -> str:
         self._check_thread()
         return self._native.status()
 
-    def subscribe(self, callback: Callable[[Message], object]) -> Subscription:
+    def subscribe(
+        self,
+        callback: Callable[[Message[T]], object],
+        *,
+        on_error: ObserverErrorHandler | None = None,
+    ) -> Subscription:
         self._check_thread()
         _reject_async_callable(callback)
+        if on_error is not None:
+            _reject_async_callable(on_error)
+        callback_errors: list[SubscriberCallbackError] = []
 
         def native_callback(kind: str, value: object) -> None:
-            result = callback(Message(kind=kind, value=value))
-            _reject_awaitable(result)
+            try:
+                result = callback(_message_from_native(kind, value))
+                _reject_awaitable(result)
+            except BaseException as error:
+                _record_observer_error(error, callback_errors, on_error)
 
         try:
             return Subscription(
                 self._native.subscribe(native_callback),
                 owner_thread=self._owner_thread,
+                callback_errors=callback_errors,
             )
         except RuntimeError as error:
             raise GraphReflyRuntimeError(str(error)) from error
@@ -133,6 +187,13 @@ class Graph:
         self._owner_thread = get_ident()
         self._native = _native.Graph(name)
 
+    def __enter__(self) -> Graph:
+        self._check_thread()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self._check_thread()
+
     def state(self, value: T, name: str | None = None) -> Node[T]:
         self._check_thread()
         try:
@@ -146,8 +207,24 @@ class Graph:
         except RuntimeError as error:
             raise GraphReflyRuntimeError(str(error)) from error
 
-    def producer(self, callback: Callable[[], T], name: str | None = None) -> Node[T]:
+    @overload
+    def producer(self, callback: Callable[[], T], name: str | None = None) -> Node[T]: ...
+
+    @overload
+    def producer(
+        self,
+        callback: None = None,
+        name: str | None = None,
+    ) -> Callable[[Callable[[], T]], Node[T]]: ...
+
+    def producer(
+        self,
+        callback: Callable[[], T] | None = None,
+        name: str | None = None,
+    ) -> Node[T] | Callable[[Callable[[], T]], Node[T]]:
         self._check_thread()
+        if callback is None:
+            return lambda fn: self.producer(fn, name or fn.__name__)
 
         def native_callback() -> T:
             value = callback()
@@ -162,13 +239,32 @@ class Graph:
         except RuntimeError as error:
             raise GraphReflyRuntimeError(str(error)) from error
 
+    @overload
     def derived(
         self,
         deps: Iterable[Node[Any]],
         callback: Callable[..., U],
         name: str | None = None,
-    ) -> Node[U]:
+    ) -> Node[U]: ...
+
+    @overload
+    def derived(
+        self,
+        deps: Iterable[Node[Any]],
+        callback: None = None,
+        name: str | None = None,
+    ) -> Callable[[Callable[..., U]], Node[U]]: ...
+
+    def derived(
+        self,
+        deps: Iterable[Node[Any]],
+        callback: Callable[..., U] | None = None,
+        name: str | None = None,
+    ) -> Node[U] | Callable[[Callable[..., U]], Node[U]]:
         self._check_thread()
+        deps = list(deps)
+        if callback is None:
+            return lambda fn: self.derived(deps, fn, name or fn.__name__)
         native_deps = self._native_deps(deps)
 
         def native_callback(*values: object) -> U:
@@ -184,13 +280,32 @@ class Graph:
         except RuntimeError as error:
             raise GraphReflyRuntimeError(str(error)) from error
 
+    @overload
     def effect(
         self,
         deps: Iterable[Node[Any]],
         callback: Callable[..., object],
         name: str | None = None,
-    ) -> Node[object]:
+    ) -> Node[object]: ...
+
+    @overload
+    def effect(
+        self,
+        deps: Iterable[Node[Any]],
+        callback: None = None,
+        name: str | None = None,
+    ) -> Callable[[Callable[..., object]], Node[object]]: ...
+
+    def effect(
+        self,
+        deps: Iterable[Node[Any]],
+        callback: Callable[..., object] | None = None,
+        name: str | None = None,
+    ) -> Node[object] | Callable[[Callable[..., object]], Node[object]]:
         self._check_thread()
+        deps = list(deps)
+        if callback is None:
+            return lambda fn: self.effect(deps, fn, name or fn.__name__)
         native_deps = self._native_deps(deps)
 
         def native_callback(*values: object) -> None:
@@ -224,16 +339,36 @@ class Graph:
         self._check_thread()
         return _normalize_describe(self._native.describe())
 
-    def observe(self, callback: Callable[[GraphEvent], object]) -> Subscription:
+    def observe(
+        self,
+        callback: Callable[[GraphEvent], object],
+        *,
+        on_error: ObserverErrorHandler | None = None,
+    ) -> Subscription:
         self._check_thread()
         _reject_async_callable(callback)
+        if on_error is not None:
+            _reject_async_callable(on_error)
+        callback_errors: list[SubscriberCallbackError] = []
 
-        def native_callback(path: str, kind: str, value: object, seq: int) -> None:
-            event = GraphEvent(path=path, message=Message(kind=kind, value=value), seq=seq)
-            result = callback(event)
-            _reject_awaitable(result)
+        def native_callback(path: str, kind: str, value: object, tier: int, seq: int) -> None:
+            event = GraphEvent(
+                path=path,
+                message=_message_from_native(kind, value),
+                tier=tier,
+                seq=seq,
+            )
+            try:
+                result = callback(event)
+                _reject_awaitable(result)
+            except BaseException as error:
+                _record_observer_error(error, callback_errors, on_error)
 
-        return Subscription(self._native.observe(native_callback), owner_thread=self._owner_thread)
+        return Subscription(
+            self._native.observe(native_callback),
+            owner_thread=self._owner_thread,
+            callback_errors=callback_errors,
+        )
 
     def _native_deps(self, deps: Iterable[Node[Any]]) -> list[_native.Node]:
         native_deps = []
@@ -275,11 +410,68 @@ def _reject_async_callable(callback: Callable[..., object]) -> None:
         raise GraphReflyRuntimeError(msg)
 
 
+def _message_from_native(kind: str, value: object) -> Message[Any]:
+    if kind == "DATA":
+        return DataMessage(value)
+    if kind == "ERROR":
+        return ErrorMessage(_graph_callback_error(value))
+    return ControlMessage(kind=kind, value=value)
+
+
+def _graph_callback_error(value: object) -> GraphCallbackError:
+    if isinstance(value, GraphCallbackError):
+        return value
+    text = str(value)
+    type_name, separator, message = text.partition(": ")
+    if not separator:
+        type_name = "Exception"
+        message = text
+    return GraphCallbackError(type_name=type_name, message=message, raw=value)
+
+
+def _record_observer_error(
+    error: BaseException,
+    callback_errors: list[SubscriberCallbackError],
+    on_error: ObserverErrorHandler | None,
+) -> None:
+    wrapped = (
+        error
+        if isinstance(error, SubscriberCallbackError)
+        else SubscriberCallbackError(_scrub_exception(error))
+    )
+    _remember_callback_error(callback_errors, wrapped)
+    if on_error is not None:
+        try:
+            result = on_error(wrapped)
+            _reject_awaitable(result)
+        except BaseException as handler_error:
+            _remember_callback_error(
+                callback_errors,
+                SubscriberCallbackError(_scrub_exception(handler_error)),
+            )
+
+
+def _remember_callback_error(
+    callback_errors: list[SubscriberCallbackError],
+    error: SubscriberCallbackError,
+) -> None:
+    callback_errors.append(error)
+    if len(callback_errors) > _MAX_CALLBACK_ERRORS:
+        del callback_errors[: len(callback_errors) - _MAX_CALLBACK_ERRORS]
+
+
+def _scrub_exception(error: BaseException) -> BaseException:
+    error.__traceback__ = None
+    error.__context__ = None
+    error.__cause__ = None
+    return error
+
+
 def _normalize_describe(snapshot: dict[str, Any]) -> dict[str, Any]:
     nodes = []
     for node in snapshot.get("nodes", []):
         normalized = dict(node)
-        has_value = normalized.get("value") is not None
+        has_value = bool(normalized.get("has_value", normalized.get("value") is not None))
         normalized["has_value"] = has_value
         if not has_value:
             normalized.pop("value", None)

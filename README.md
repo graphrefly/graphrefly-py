@@ -4,7 +4,7 @@
 
 This clean-slate foundation layers a small Python-owned facade over the Rust native graph engine from `~/src/graphrefly-rs/crates/graphrefly-bindings-py`. It does not implement a second Python wave core, and it does not expose the raw PyO3 module as the final public API.
 
-## v0 Surface
+## v1 Foundation Surface
 
 ```python
 from graphrefly import Graph
@@ -20,24 +20,25 @@ assert plus_one.cache() == 5
 assert plus_one.status in {"settled", "resolved"}
 ```
 
-The v0 facade exposes:
+The Python-owned facade exposes:
 
 - `Graph`
 - `Node[T]`
 - `Subscription`
-- `Message[T]` and `GraphEvent`
+- `DataMessage[T]`, `ErrorMessage`, `ControlMessage`, `Message[T]`, and `GraphEvent`
 - synchronous `Graph.state`, `Graph.producer`, `Graph.derived`, `Graph.effect`, and `Graph.batch`
+- explicit-Graph decorator sugar for `producer`, `derived`, and `effect`
 - `Node.set`, `Node.cache`, `Node.status`, `Node.subscribe`
 - `Graph.describe` and `Graph.observe`
 
 ## Boundary Notes
 
 - The sync wave protocol runs in Rust; Python callbacks enter through the native dispatcher path.
-- Native graph handles are single-thread host objects in v0.
+- Native graph handles are single-thread host objects in this foundation slice.
 - Python values are held as strong object references by the native engine. No serialization, copy, or immutability promise is made yet.
-- `None` is reserved as the v0 no-DATA sentinel and cannot be emitted as DATA.
+- `None` is valid Python DATA. Absence of DATA is represented by private native presence flags, not by a public `None` sentinel.
 - Async callbacks are not accepted in the sync core. Asyncio/trio adapters are deferred to later CSP-7 slices.
-- Callback failures become graph `ERROR` observations. Public API value/runtime failures use `GraphReflyValueError` and `GraphReflyRuntimeError`.
+- Node callback failures become graph `ERROR` observations wrapped as `GraphCallbackError`. Subscribe/observe callback failures stay at the Python observer boundary as `SubscriberCallbackError`. Public API value/runtime failures use `GraphReflyValueError` and `GraphReflyRuntimeError`.
 
 ## Local Development
 

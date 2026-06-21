@@ -26,13 +26,21 @@ Sibling implementations:
 
 Python owns the public facade, typing, decorators/context managers, value registry and lifetime policy, exception taxonomy, async/runtime adapters, ecosystem adapters, and product recipes. Rust owns the synchronous graph engine and native foundation. Do not implement a separate Python wave core.
 
+Current Python value/message boundary:
+
+- `None` is valid Python DATA.
+- No-DATA is a private native presence state, not a public `None` sentinel.
+- Public observations use `DataMessage`, `ErrorMessage`, and `ControlMessage`.
+- Node callback failures become graph `ERROR` payloads wrapped as `GraphCallbackError`.
+- Subscribe/observe callback failures are Python observer-boundary failures captured as `SubscriberCallbackError`.
+
 ## Clean-Slate Floor
 
 - No protocol/tier/message/ctx/batch semantic changes from this repo. Route any such need through spec-amend in `~/src/graphrefly`.
 - Do not restore the old Python pure-core, `NodeImpl`, `Runner`, `Actor`, GraphSpec, subgraph locks, old Impl/facade/port model, or structural TS parity.
 - Cross-runtime parity is behavioral conformance, not matching symbols.
 - Async belongs at source/pool/adapter boundaries, not inside the sync wave core.
-- Native handles are single-thread host objects in v0.
+- Native handles are single-thread host objects in this foundation slice.
 
 ## Commands
 

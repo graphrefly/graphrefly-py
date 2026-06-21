@@ -1,4 +1,4 @@
-"""Public exception classes for the v0 Python facade."""
+"""Public exception classes for the Python facade."""
 
 
 class GraphReflyError(Exception):
@@ -15,3 +15,21 @@ class GraphReflyValueError(GraphReflyError, ValueError):
 
 class CallbackError(GraphReflyError):
     """A Python callback failed and is mapped into graph ERROR."""
+
+
+class GraphCallbackError(CallbackError):
+    """Callback failure represented as a graph ERROR payload."""
+
+    def __init__(self, type_name: str, message: str, raw: object | None = None) -> None:
+        self.type_name = type_name
+        self.message = message
+        self.raw = raw
+        super().__init__(f"{type_name}: {message}" if type_name else message)
+
+
+class SubscriberCallbackError(CallbackError):
+    """A subscribe/observe callback failed at the Python observer boundary."""
+
+    def __init__(self, original: BaseException) -> None:
+        self.original = original
+        super().__init__(str(original))
