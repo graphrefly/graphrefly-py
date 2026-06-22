@@ -77,6 +77,7 @@ class ControlMessage:
 type Message[T] = DataMessage[T] | ErrorMessage | ControlMessage
 type ObserverErrorHandler = Callable[[SubscriberCallbackError], object]
 type PausableMode = bool | Literal["resumeAll"]
+type NodeCallback = Callable[["Ctx"], object]
 
 
 class _GraphLifetime:
@@ -311,6 +312,11 @@ class Ctx:
             return default
         return pull.params
 
+    @property
+    def rewire_next(self) -> RewireNext:
+        self._check_thread()
+        return RewireNext(self)
+
     def emit(self, value: object) -> None:
         self._check_thread()
         _reject_sentinel_data(value)
@@ -445,6 +451,75 @@ class Ctx:
         if toward_dep is not None and toward_dep >= self.dep_len:
             msg = "toward_dep must reference an existing dependency in the Python facade"
             raise GraphReflyValueError(msg)
+
+
+class RewireNext:
+    """Callback-scoped deferred topology mutation facade."""
+
+    def __init__(self, ctx: Ctx) -> None:
+        self._ctx = ctx
+
+    def subscribe_dep(self, dep: Node[Any], callback: NodeCallback) -> None:
+        self._ctx._check_thread()
+        callback = _validate_rewire_callback(callback)
+        native_dep = self._native_node(dep)
+        native_callback = self._native_callback(callback)
+        try:
+            self._ctx._native._rewire_next_subscribe_dep(native_dep, native_callback)
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._ctx._lifetime, error)
+
+    def unsubscribe_dep(self, dep: Node[Any], callback: NodeCallback) -> None:
+        self._ctx._check_thread()
+        callback = _validate_rewire_callback(callback)
+        native_dep = self._native_node(dep)
+        native_callback = self._native_callback(callback)
+        try:
+            self._ctx._native._rewire_next_unsubscribe_dep(native_dep, native_callback)
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._ctx._lifetime, error)
+
+    def replace_deps(self, deps: Iterable[Node[Any]], callback: NodeCallback) -> None:
+        self._ctx._check_thread()
+        callback = _validate_rewire_callback(callback)
+        native_deps = [self._native_node(dep) for dep in deps]
+        native_callback = self._native_callback(callback)
+        try:
+            self._ctx._native._rewire_next_replace_deps(native_deps, native_callback)
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._ctx._lifetime, error)
+
+    def _native_node(self, dep: Node[Any]) -> _native.Node:
+        if not isinstance(dep, Node):
+            msg = "rewire_next deps must be graphrefly.Node objects"
+            raise GraphReflyValueError(msg)
+        dep._check_thread()
+        if dep._lifetime is not self._ctx._lifetime:
+            msg = "rewire_next deps must belong to the same GraphReFly graph"
+            raise GraphReflyRuntimeError(msg)
+        return dep._native
+
+    def _native_callback(self, callback: NodeCallback) -> Callable[[_native.Ctx], None]:
+        owner_thread = self._ctx._owner_thread
+        lifetime = self._ctx._lifetime
+
+        def native_callback(native_ctx: _native.Ctx) -> None:
+            value = callback(
+                Ctx(
+                    native_ctx,
+                    owner_thread=owner_thread,
+                    lifetime=lifetime,
+                )
+            )
+            _reject_awaitable(value)
+
+        return native_callback
 
 
 class Node[T]:
@@ -1025,6 +1100,15 @@ def _reject_async_callable(callback: Callable[..., object]) -> None:
     if iscoroutinefunction(callback):
         msg = "async callbacks are deferred to a later adapter slice"
         raise GraphReflyRuntimeError(msg)
+
+
+def _validate_rewire_callback(callback: object) -> NodeCallback:
+    if not callable(callback):
+        msg = "rewire_next callback must be callable in the Python facade"
+        raise GraphReflyValueError(msg)
+    typed = cast("NodeCallback", callback)
+    _reject_async_callable(typed)
+    return typed
 
 
 def _message_from_native(kind: str, value: object) -> Message[Any]:

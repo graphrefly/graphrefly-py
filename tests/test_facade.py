@@ -16,6 +16,7 @@ from graphrefly import (
     GraphReflyRuntimeError,
     GraphReflyValueError,
     Message,
+    RewireNext,
     SubscriberCallbackError,
     Subscription,
 )
@@ -27,8 +28,10 @@ def test_import_package_surface():
     assert Graph("smoke").describe()["name"] == "smoke"
     assert graphrefly.DataIssue("missing", "reserved").code == "missing"
     assert graphrefly.Ctx is Ctx
+    assert graphrefly.RewireNext is RewireNext
     assert issubclass(graphrefly.GraphReflyNoDataError, LookupError)
     assert hasattr(import_module("graphrefly._native"), "Graph")
+    assert "_conformance" not in graphrefly.__all__
 
 
 def test_python_callback_runs_through_rust_graph_and_subscription_observes_wave():
@@ -468,6 +471,29 @@ def test_advanced_node_fatal_during_batch_commit_propagates_without_graph_error(
     assert graph.closed is True
     with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
         bad.cache(default=None)
+    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
+
+
+def test_rewire_next_fatal_callback_propagates_without_graph_error():
+    graph = Graph("py-rewire-next-fatal-smoke")
+    source = graph.state(0, name="source")
+    helper = graph.state("helper", name="helper")
+    seen: list[Message[object]] = []
+
+    def body(ctx: Ctx) -> None:
+        if ctx.dep_len > 1 and ctx.has_data(1):
+            raise SystemExit("rewire next exit")
+        if ctx.has_data(0) and ctx.data(0) == 1:
+            ctx.rewire_next.subscribe_dep(helper, body)
+        ctx.emit(ctx.data(0))
+
+    node = graph.node([source], body, name="rewire-next-fatal", partial=True)
+    with pytest.raises(SystemExit, match="rewire next exit"), node.subscribe(seen.append):
+        source.set(1)
+
+    assert graph.closed is True
+    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
+        node.cache(default=None)
     assert not any(isinstance(msg, ErrorMessage) for msg in seen)
 
 

@@ -362,6 +362,453 @@ def _fresh_values(ctx, index: int) -> list[object]:
     ]
 
 
+def _data_values(messages: list[Message[object]]) -> list[object]:
+    return [message.value for message in messages if isinstance(message, DataMessage)]
+
+
+def test_c11_public_rewire_next_subscribe_unsubscribe_replace_boundary():
+    graph = Graph("py-c11-rewire-next")
+    stimulus = ConformanceStimulus(graph)
+    source = stimulus.state_empty("source")
+    seen: list[Message[object]] = []
+    activations: list[int] = []
+    deactivations: list[int] = []
+    queued_activation_snapshots: list[tuple[int, tuple[int, ...]]] = []
+    current: list[object | None] = [None]
+
+    def make_inner(value: int):
+        def inner_body(ctx) -> None:
+            activations.append(value)
+            ctx.on_deactivation(lambda value=value: deactivations.append(value))
+            ctx.emit(("inner", value))
+
+        return graph.node([], inner_body, name=f"inner-{value}")
+
+    def op_body(ctx) -> None:
+        for value in _fresh_values(ctx, 0):
+            assert isinstance(value, int)
+            inner = make_inner(value)
+            queued_activation_snapshots.append((value, tuple(activations)))
+            if value == 3:
+                current[0] = inner
+                ctx.rewire_next.replace_deps([source, inner], op_body)
+            else:
+                if current[0] is not None:
+                    ctx.rewire_next.unsubscribe_dep(current[0], op_body)
+                current[0] = inner
+                ctx.rewire_next.subscribe_dep(inner, op_body)
+
+        for index in range(1, ctx.dep_len):
+            if ctx.terminal(index):
+                if current[0] is not None:
+                    ctx.rewire_next.unsubscribe_dep(current[0], op_body)
+                continue
+            for value in _fresh_values(ctx, index):
+                ctx.emit(value)
+
+    op = graph.node(
+        [source],
+        op_body,
+        name="op",
+        partial=True,
+        complete_when_deps_complete=False,
+        terminal_as_real_input=True,
+    )
+
+    with op.subscribe(seen.append):
+        seen.clear()
+        source.set(1)
+        assert queued_activation_snapshots[-1] == (1, ())
+        assert activations == [1]
+        assert ("inner", 1) in _data_values(seen)
+
+        seen.clear()
+        source.set(2)
+        assert deactivations == [1]
+        assert activations == [1, 2]
+        assert ("inner", 2) in _data_values(seen)
+
+        seen.clear()
+        source.set(3)
+        assert deactivations == [1, 2]
+        assert activations == [1, 2, 3]
+        assert ("inner", 3) in _data_values(seen)
+
+        seen.clear()
+        assert current[0] is not None
+        stimulus.c23_dep_completes(current[0])
+        assert deactivations == [1, 2, 3]
+        assert op.status != "completed"
+
+
+def test_c11_terminal_owner_drains_queued_rewire_without_post_terminal_output():
+    graph = Graph("py-c11-terminal-drain")
+    stimulus = ConformanceStimulus(graph)
+    source = stimulus.state_empty("source")
+    seen: list[Message[object]] = []
+    activations: list[str] = []
+
+    def helper_body(ctx) -> None:
+        activations.append("helper")
+        ctx.emit("late-helper")
+
+    helper = graph.node([], helper_body, name="helper")
+
+    def terminal_body(ctx) -> None:
+        if _fresh_values(ctx, 0):
+            ctx.rewire_next.subscribe_dep(helper, terminal_body)
+            conformance.down_complete(ctx)
+        for index in range(1, ctx.dep_len):
+            for value in _fresh_values(ctx, index):
+                ctx.emit(value)
+
+    op = graph.node([source], terminal_body, name="op", partial=True)
+    with op.subscribe(seen.append):
+        seen.clear()
+        source.set(1)
+        assert op.status == "completed"
+        assert activations == ["helper"]
+        assert not any(isinstance(message, DataMessage) for message in seen)
+
+        seen.clear()
+        stimulus.c17_dep_emits_data_then_completes(helper, "post-terminal")
+        assert seen == []
+
+
+def test_c11_terminal_owner_drains_unsubscribe_and_replace_variants():
+    unsubscribe_graph = Graph("py-c11-terminal-unsubscribe")
+    unsubscribe_stimulus = ConformanceStimulus(unsubscribe_graph)
+    unsubscribe_source = unsubscribe_stimulus.state_empty("source")
+    unsubscribe_seen: list[Message[object]] = []
+    helper_activations: list[str] = []
+    helper_deactivations: list[str] = []
+
+    def helper_body(ctx) -> None:
+        helper_activations.append("helper")
+        ctx.on_deactivation(lambda: helper_deactivations.append("helper"))
+        ctx.emit("helper")
+
+    helper = unsubscribe_graph.node([], helper_body, name="helper")
+
+    def unsubscribe_body(ctx) -> None:
+        for value in _fresh_values(ctx, 0):
+            if value == "attach":
+                ctx.rewire_next.subscribe_dep(helper, unsubscribe_body)
+            elif value == "terminal-unsubscribe":
+                ctx.rewire_next.unsubscribe_dep(helper, unsubscribe_body)
+                conformance.down_complete(ctx)
+        for index in range(1, ctx.dep_len):
+            for value in _fresh_values(ctx, index):
+                ctx.emit(value)
+
+    unsubscribe_op = unsubscribe_graph.node(
+        [unsubscribe_source],
+        unsubscribe_body,
+        name="unsubscribe-op",
+        partial=True,
+    )
+    with unsubscribe_op.subscribe(unsubscribe_seen.append):
+        unsubscribe_source.set("attach")
+        assert helper_activations == ["helper"]
+
+        unsubscribe_seen.clear()
+        unsubscribe_source.set("terminal-unsubscribe")
+        assert unsubscribe_op.status == "completed"
+        assert helper_deactivations == ["helper"]
+        assert not any(isinstance(message, DataMessage) for message in unsubscribe_seen)
+
+        unsubscribe_seen.clear()
+        unsubscribe_stimulus.c17_dep_emits_data_then_completes(helper, "post-terminal")
+        assert unsubscribe_seen == []
+
+    replace_graph = Graph("py-c11-terminal-replace")
+    replace_stimulus = ConformanceStimulus(replace_graph)
+    replace_source = replace_stimulus.state_empty("source")
+    replace_seen: list[Message[object]] = []
+    old_deactivations: list[str] = []
+    new_activations: list[str] = []
+
+    def old_body(ctx) -> None:
+        ctx.on_deactivation(lambda: old_deactivations.append("old"))
+        ctx.emit("old")
+
+    def new_body(ctx) -> None:
+        new_activations.append("new")
+        ctx.emit("new")
+
+    old_helper = replace_graph.node([], old_body, name="old-helper")
+    new_helper = replace_graph.node([], new_body, name="new-helper")
+
+    def replace_body(ctx) -> None:
+        for value in _fresh_values(ctx, 0):
+            if value == "attach":
+                ctx.rewire_next.subscribe_dep(old_helper, replace_body)
+            elif value == "terminal-replace":
+                ctx.rewire_next.replace_deps([replace_source, new_helper], replace_body)
+                conformance.down_complete(ctx)
+        for index in range(1, ctx.dep_len):
+            for value in _fresh_values(ctx, index):
+                ctx.emit(value)
+
+    replace_op = replace_graph.node([replace_source], replace_body, name="replace-op", partial=True)
+    with replace_op.subscribe(replace_seen.append):
+        replace_source.set("attach")
+
+        replace_seen.clear()
+        replace_source.set("terminal-replace")
+        assert replace_op.status == "completed"
+        assert old_deactivations == ["old"]
+        assert new_activations == ["new"]
+        assert not any(isinstance(message, DataMessage) for message in replace_seen)
+
+        replace_seen.clear()
+        replace_stimulus.c17_dep_emits_data_then_completes(new_helper, "post-terminal")
+        assert replace_seen == []
+
+
+def test_c11_immediate_in_fn_self_rewire_is_d37_error_private_harness():
+    graph = Graph("py-c11-immediate-reject")
+    stimulus = ConformanceStimulus(graph)
+    source = stimulus.state_empty("source")
+    helper = graph.node([], lambda ctx: ctx.emit("helper"), name="helper")
+    seen: list[Message[object]] = []
+    bad_holder: list[object] = []
+
+    def bad_body(ctx) -> None:
+        if _fresh_values(ctx, 0):
+            stimulus.c11_immediate_subscribe_dep(bad_holder[0], helper, bad_body)
+
+    bad = graph.node([source], bad_body, name="bad", partial=True)
+    bad_holder.append(bad)
+
+    with bad.subscribe(seen.append):
+        seen.clear()
+        source.set(1)
+        errors = [message for message in seen if isinstance(message, ErrorMessage)]
+        assert bad.status == "errored"
+        assert errors
+        assert "D37" in errors[-1].error.message
+
+
+def test_c11_no_net_change_rewire_next_is_noop():
+    graph = Graph("py-c11-no-net-change")
+    stimulus = ConformanceStimulus(graph)
+    source = stimulus.state_empty("source")
+    seen: list[Message[object]] = []
+    runs = 0
+
+    def body(ctx) -> None:
+        nonlocal runs
+        for value in _fresh_values(ctx, 0):
+            runs += 1
+            ctx.rewire_next.replace_deps([source], body)
+            ctx.emit(value)
+
+    node = graph.node([source], body, name="node", partial=True)
+    with node.subscribe(seen.append):
+        seen.clear()
+        source.set(1)
+        assert runs == 1
+        assert _data_values(seen) == [1]
+
+
+def test_c11_public_rewire_next_rejects_non_callable_callback():
+    graph = Graph("py-c11-callback-validation")
+    stimulus = ConformanceStimulus(graph)
+    source = stimulus.state_empty("source")
+    helper = graph.state("helper", name="helper")
+
+    def body(ctx) -> None:
+        if _fresh_values(ctx, 0):
+            with pytest.raises(GraphReflyValueError, match="callback must be callable"):
+                ctx.rewire_next.subscribe_dep(helper, object())  # type: ignore[arg-type]
+
+    node = graph.node([source], body, name="node", partial=True)
+    with node.subscribe(lambda _message: None):
+        source.set(1)
+
+    assert node.status != "errored"
+
+
+def test_c11_public_rewire_next_merge_keeps_multiple_inners_live():
+    graph = Graph("py-c11-merge")
+    stimulus = ConformanceStimulus(graph)
+    source = stimulus.state_empty("source")
+    inners: dict[str, object] = {}
+    seen: list[Message[object]] = []
+
+    def op_body(ctx) -> None:
+        for label in _fresh_values(ctx, 0):
+            assert isinstance(label, str)
+            inner = graph.state(("cached", label), name=f"inner-{label}")
+            inners[label] = inner
+            ctx.rewire_next.subscribe_dep(inner, op_body)
+        for index in range(1, ctx.dep_len):
+            for value in _fresh_values(ctx, index):
+                ctx.emit(value)
+
+    op = graph.node([source], op_body, name="op", partial=True)
+    with op.subscribe(seen.append):
+        source.set("A")
+        source.set("B")
+        seen.clear()
+
+        inner_a = inners["A"]
+        inner_b = inners["B"]
+        assert hasattr(inner_a, "set")
+        assert hasattr(inner_b, "set")
+        inner_a.set(("live", "A"))
+        inner_b.set(("live", "B"))
+
+    assert ("live", "A") in _data_values(seen)
+    assert ("live", "B") in _data_values(seen)
+
+
+def test_c25_public_rewire_next_batch_commit_old_shape_before_drain():
+    graph = Graph("py-c25-batch-commit")
+    stimulus = ConformanceStimulus(graph)
+    source = stimulus.state_empty("source")
+    helper_activations: list[str] = []
+    seen: list[Message[object]] = []
+
+    def helper_body(ctx) -> None:
+        helper_activations.append("helper")
+        ctx.emit("helper")
+
+    helper = graph.node([], helper_body, name="helper")
+
+    def op_body(ctx) -> None:
+        if _fresh_values(ctx, 0):
+            ctx.rewire_next.subscribe_dep(helper, op_body)
+            ctx.emit("old-shape")
+        for index in range(1, ctx.dep_len):
+            for value in _fresh_values(ctx, index):
+                ctx.emit(value)
+
+    op = graph.node([source], op_body, name="op", partial=True)
+    with op.subscribe(seen.append):
+        seen.clear()
+
+        def body() -> None:
+            source.set(1)
+            assert helper_activations == []
+
+        graph.batch(body)
+
+    values = _data_values(seen)
+    assert values == ["old-shape", "helper"]
+    assert helper_activations == ["helper"]
+
+
+def test_c25_public_rewire_next_batch_rollback_drops_tasks():
+    graph = Graph("py-c25-rollback")
+    stimulus = ConformanceStimulus(graph)
+    source = stimulus.state_empty("source")
+    helper = graph.state("helper-1", name="helper")
+    replacement = graph.state("replacement", name="replacement")
+    rollback_helper = graph.state("rollback-helper", name="rollback-helper")
+    seen: list[Message[object]] = []
+
+    def op_body(ctx) -> None:
+        for value in _fresh_values(ctx, 0):
+            if value == "attach-rollback":
+                ctx.rewire_next.subscribe_dep(rollback_helper, op_body)
+            elif value == "attach":
+                ctx.rewire_next.subscribe_dep(helper, op_body)
+            elif value == "drop":
+                ctx.rewire_next.unsubscribe_dep(helper, op_body)
+                ctx.rewire_next.replace_deps([source, replacement], op_body)
+        for index in range(1, ctx.dep_len):
+            for value in _fresh_values(ctx, index):
+                ctx.emit(value)
+
+    op = graph.node([source], op_body, name="op", partial=True)
+    with op.subscribe(seen.append):
+        with pytest.raises(ValueError, match="rollback"):
+            graph.batch(
+                lambda: (
+                    source.set("attach-rollback"),
+                    (_ for _ in ()).throw(ValueError("rollback")),
+                )
+            )
+        rollback_helper.set("must-not-drive-after-subscribe-rollback")
+        assert "must-not-drive-after-subscribe-rollback" not in _data_values(seen)
+
+        graph.batch(lambda: source.set("attach"))
+        seen.clear()
+
+        with pytest.raises(ValueError, match="rollback"):
+            graph.batch(lambda: (source.set("drop"), (_ for _ in ()).throw(ValueError("rollback"))))
+
+        helper.set("still-live")
+        replacement.set("must-not-drive")
+
+    assert "still-live" in _data_values(seen)
+    assert "must-not-drive" not in _data_values(seen)
+
+
+def test_c25_public_rewire_next_pause_final_lock_gating():
+    graph = Graph("py-c25-pause")
+    stimulus = ConformanceStimulus(graph)
+    source = stimulus.state_empty("source")
+    helper_activations: list[str] = []
+    op_holder: list[object] = []
+
+    def helper_body(ctx) -> None:
+        helper_activations.append("helper")
+        ctx.emit("helper")
+
+    helper = graph.node([], helper_body, name="helper")
+
+    def op_body(ctx) -> None:
+        if _fresh_values(ctx, 0):
+            ctx.rewire_next.subscribe_dep(helper, op_body)
+            graph.pause(op_holder[0], "A")
+            graph.pause(op_holder[0], "B")
+
+    op = graph.node([source], op_body, name="op", partial=True)
+    op_holder.append(op)
+
+    with op.subscribe(lambda _message: None):
+        source.set(1)
+        assert helper_activations == []
+        graph.resume(op, "A")
+        assert helper_activations == []
+        graph.resume(op, "B")
+        assert helper_activations == ["helper"]
+
+
+def test_c25_public_rewire_next_combined_batch_pause_ordering():
+    graph = Graph("py-c25-batch-pause")
+    stimulus = ConformanceStimulus(graph)
+    source = stimulus.state_empty("source")
+    helper_activations: list[int] = []
+    op_holder: list[object] = []
+
+    def make_helper(value: int):
+        def helper_body(ctx) -> None:
+            helper_activations.append(value)
+            ctx.emit(("helper", value))
+
+        return graph.node([], helper_body, name=f"helper-{value}")
+
+    def op_body(ctx) -> None:
+        for value in _fresh_values(ctx, 0):
+            assert isinstance(value, int)
+            helper = make_helper(value)
+            ctx.rewire_next.subscribe_dep(helper, op_body)
+            graph.pause(op_holder[0], f"lock-{value}")
+
+    op = graph.node([source], op_body, name="op", partial=True)
+    op_holder.append(op)
+
+    with op.subscribe(lambda _message: None):
+        graph.batch(lambda: source.set(1))
+        assert helper_activations == []
+        graph.resume(op, "lock-1")
+        assert helper_activations == [1]
+
+
 def test_c15_dep_complete_releases_dirty_and_joins_once():
     graph = Graph("py-c15-complete-mid-dirty")
     stimulus = ConformanceStimulus(graph)

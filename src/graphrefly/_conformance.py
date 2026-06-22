@@ -162,6 +162,27 @@ class ConformanceStimulus:
         _reject_sentinel_data(value)
         self._native_node(node)._conformance_up_data_forbidden(value)
 
+    def c11_immediate_subscribe_dep(
+        self,
+        node: Node[Any],
+        dep: Node[Any],
+        callback: Callable[[Ctx], object],
+    ) -> None:
+        def native_callback(native_ctx: _native.Ctx) -> None:
+            value = callback(
+                Ctx(
+                    native_ctx,
+                    owner_thread=self._graph._owner_thread,
+                    lifetime=self._graph._lifetime,
+                )
+            )
+            _reject_awaitable(value)
+
+        self._native_node(node)._conformance_immediate_subscribe_dep(
+            self._native_node(dep),
+            native_callback,
+        )
+
     def _native_node(self, node: Node[Any]) -> _native.Node:
         return self._graph._native_node(node)
 
@@ -169,3 +190,7 @@ class ConformanceStimulus:
 def up_data_forbidden(ctx: Ctx, value: object) -> None:
     _reject_sentinel_data(value)
     ctx._native._conformance_up_data(value)
+
+
+def down_complete(ctx: Ctx) -> None:
+    ctx._native._conformance_down_complete()
