@@ -345,6 +345,225 @@ def test_c14_cleanup_hooks_are_per_run_and_single_run_hook_is_kept():
     assert single_cleanups == 1
 
 
+def _kinds(messages: list[Message[object]]) -> list[str]:
+    return [message.kind for message in messages]
+
+
+def test_c15_dep_complete_releases_dirty_and_joins_once():
+    graph = Graph("py-c15-complete-mid-dirty")
+    b = graph.state(1, name="b")
+    c = graph.state(10, name="c")
+    runs = 0
+    seen: list[Message[object]] = []
+
+    def sum2(ctx) -> None:
+        nonlocal runs
+        runs += 1
+        left = ctx.data(0, 0)
+        right = ctx.data(1, 0)
+        ctx.emit(left + right)
+
+    d = graph.node(
+        [b, c],
+        sum2,
+        name="d",
+        complete_when_deps_complete=False,
+    )
+
+    with d.subscribe(seen.append):
+        assert d.cache() == 11
+        runs = 0
+        seen.clear()
+
+        b._native._down_dirty()
+        assert d.status == "dirty"
+        c.set(20)
+        assert runs == 0
+        assert d.cache() == 11
+        b._native._down_complete()
+
+        assert _kinds(seen) == ["DIRTY", "DATA"]
+        assert runs == 1
+        assert d.cache() == 21
+        assert d.status != "completed"
+
+
+def test_c15_dep_complete_sole_dirty_contributor_un_dirties_without_data():
+    graph = Graph("py-c15-sole-dirty-complete")
+    b = graph.state(1, name="b")
+    c = graph.state(10, name="c")
+    seen: list[Message[object]] = []
+
+    def sum2(ctx) -> None:
+        ctx.emit(ctx.data(0, 0) + ctx.data(1, 0))
+
+    d = graph.node(
+        [b, c],
+        sum2,
+        name="d",
+        complete_when_deps_complete=False,
+    )
+
+    with d.subscribe(seen.append):
+        assert d.cache() == 11
+        seen.clear()
+
+        b._native._down_dirty()
+        b._native._down_complete()
+
+        assert _kinds(seen) == ["DIRTY", "RESOLVED"]
+        assert d.cache() == 11
+        assert d.status == "resolved"
+        assert d.status != "completed"
+
+
+def test_c15_absorbed_error_releases_dirty_and_can_read_terminal():
+    graph = Graph("py-c15-rescue-error")
+    b = graph.state(1, name="b")
+    c = graph.state(10, name="c")
+    seen: list[Message[object]] = []
+
+    def rescue(ctx) -> None:
+        left = 0 if ctx.terminal(0) == "boom" else ctx.data(0, 0)
+        right = ctx.data(1, 0)
+        ctx.emit(left + right)
+
+    d = graph.node(
+        [b, c],
+        rescue,
+        name="d",
+        error_when_deps_error=False,
+        terminal_as_real_input=True,
+    )
+
+    with d.subscribe(seen.append):
+        assert d.cache() == 11
+        seen.clear()
+
+        b._native._down_dirty()
+        b._native._down_error("boom")
+
+        assert _kinds(seen) == ["DIRTY", "DATA"]
+        assert not any(isinstance(message, ErrorMessage) for message in seen)
+        assert d.status != "errored"
+        assert d.status != "completed"
+        assert d.cache() == 10
+
+
+def test_c15_gate_holds_terminal_dirty_release_un_dirties_without_running():
+    graph = Graph("py-c15-gate-holds")
+    b = graph.state(0, name="b")
+    c = graph.node([], lambda _ctx: None, name="empty-c")
+    runs = 0
+    seen: list[Message[object]] = []
+
+    def sum2(ctx) -> None:
+        nonlocal runs
+        runs += 1
+        ctx.emit(ctx.data(0, 0) + ctx.data(1, 0))
+
+    d = graph.node(
+        [b, c],
+        sum2,
+        name="d",
+        complete_when_deps_complete=False,
+    )
+
+    with d.subscribe(seen.append):
+        assert runs == 0
+        assert d.has_value is False
+        seen.clear()
+
+        c._native._down_dirty()
+        b.set(5)
+        assert runs == 0
+        c._native._down_complete()
+
+        assert runs == 0
+        assert _kinds(seen) == ["DIRTY", "RESOLVED"]
+        assert d.has_value is False
+
+
+def test_c17_absorbed_error_then_complete_auto_completes():
+    graph = Graph("py-c17-error-then-complete")
+    b = graph.node([], lambda _ctx: None, name="empty-b")
+    c = graph.node([], lambda _ctx: None, name="empty-c")
+    seen: list[Message[object]] = []
+
+    def forward_b(ctx) -> None:
+        if ctx.has_data(0):
+            ctx.emit(ctx.data(0))
+
+    d = graph.node(
+        [b, c],
+        forward_b,
+        name="d",
+        error_when_deps_error=False,
+    )
+
+    with d.subscribe(seen.append):
+        seen.clear()
+        c._native._down_error("boom")
+        assert d.status != "completed"
+        assert d.status != "errored"
+
+        b._native._down_data_complete(1)
+
+        assert _kinds(seen).count("COMPLETE") == 1
+        assert d.status == "completed"
+
+
+def test_c17_complete_then_absorbed_error_auto_completes_order_independent():
+    graph = Graph("py-c17-complete-then-error")
+    b = graph.node([], lambda _ctx: None, name="empty-b")
+    c = graph.node([], lambda _ctx: None, name="empty-c")
+    seen: list[Message[object]] = []
+
+    def forward_b(ctx) -> None:
+        if ctx.has_data(0):
+            ctx.emit(ctx.data(0))
+
+    d = graph.node(
+        [b, c],
+        forward_b,
+        name="d",
+        error_when_deps_error=False,
+    )
+
+    with d.subscribe(seen.append):
+        seen.clear()
+        b._native._down_data_complete(1)
+        assert _kinds(seen).count("COMPLETE") == 0
+        assert d.status != "completed"
+        assert d.status != "errored"
+
+        c._native._down_error("boom")
+
+        assert _kinds(seen).count("COMPLETE") == 1
+        assert d.status == "completed"
+
+
+def test_c17_default_error_cascade_does_not_take_absorbed_path():
+    graph = Graph("py-c17-default-error-cascade")
+    b = graph.node([], lambda _ctx: None, name="empty-b")
+    c = graph.node([], lambda _ctx: None, name="empty-c")
+    seen: list[Message[object]] = []
+
+    def forward_b(ctx) -> None:
+        if ctx.has_data(0):
+            ctx.emit(ctx.data(0))
+
+    d = graph.node([b, c], forward_b, name="d")
+
+    with d.subscribe(seen.append):
+        seen.clear()
+        c._native._down_error("boom")
+
+        assert any(isinstance(message, ErrorMessage) for message in seen)
+        assert ControlMessage("COMPLETE") not in seen
+        assert d.status == "errored"
+
+
 def test_c23_raw_ctx_wave_data_preserves_per_wave_distinctions():
     graph = Graph("py-c23-wave-data")
     a = graph.state(0, name="a")
