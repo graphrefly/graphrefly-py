@@ -32,6 +32,11 @@ Current Python value/message boundary:
 - No-DATA is a private native presence state, not a public `None` sentinel.
 - Public `Node.cache()` raises `GraphReflyNoDataError` when no DATA is present; `cache(default=...)` is the explicit fallback path.
 - Public observations use `DataMessage`, `ErrorMessage`, and `ControlMessage`.
+- Public advanced authoring uses `Graph.node(deps, callback, name=None)`, where
+  `callback` receives a Python-owned callback-scoped `Ctx` facade. `Ctx` may expose
+  host-natural dep presence/value reads, `emit`, per-node `state`, `on_invalidate`,
+  and `on_deactivation`; it is not a raw PyO3 object and must not expose arbitrary
+  raw protocol message construction/sending.
 - Public graph-owned control convenience is `Graph.pause(node, lock_id)`, `Graph.resume(node, lock_id)`, and `Graph.invalidate(node)`. Do not expose raw `Node.up(msgs)` or arbitrary public message sending.
 - Node callback failures become graph `ERROR` payloads wrapped as `GraphCallbackError`.
 - Subscribe/observe callback failures are Python observer-boundary failures captured as `SubscriberCallbackError`.

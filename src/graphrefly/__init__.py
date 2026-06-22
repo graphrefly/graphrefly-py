@@ -3,6 +3,7 @@
 from graphrefly._facade import (
     _VERSION,
     ControlMessage,
+    Ctx,
     DataMessage,
     ErrorMessage,
     Graph,
@@ -26,6 +27,7 @@ from graphrefly.issues import DataIssue
 __all__ = [
     "CallbackError",
     "ControlMessage",
+    "Ctx",
     "DataMessage",
     "DataIssue",
     "ErrorMessage",

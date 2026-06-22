@@ -7,6 +7,7 @@ import graphrefly
 from graphrefly import (
     CallbackError,
     ControlMessage,
+    Ctx,
     DataMessage,
     ErrorMessage,
     Graph,
@@ -16,6 +17,7 @@ from graphrefly import (
     GraphReflyValueError,
     Message,
     SubscriberCallbackError,
+    Subscription,
 )
 
 
@@ -24,6 +26,7 @@ def test_import_package_surface():
     assert graphrefly.version() == "0.21.0a0"
     assert Graph("smoke").describe()["name"] == "smoke"
     assert graphrefly.DataIssue("missing", "reserved").code == "missing"
+    assert graphrefly.Ctx is Ctx
     assert issubclass(graphrefly.GraphReflyNoDataError, LookupError)
     assert hasattr(import_module("graphrefly._native"), "Graph")
 
@@ -147,6 +150,201 @@ def test_absent_cache_raises_without_conflating_cached_none():
 
     assert none_value.has_value is True
     assert none_value.cache() is None
+
+
+def test_advanced_node_ctx_emit_preserves_none_and_no_data_absence():
+    graph = Graph("py-node-none-no-data-smoke")
+    source = graph.state(1, name="source")
+    none_node = graph.node([source], lambda ctx: ctx.emit(None), name="none_node")
+    quiet_node = graph.node([source], lambda _ctx: None, name="quiet_node")
+
+    with none_node.subscribe(lambda _msg: None), quiet_node.subscribe(lambda _msg: None):
+        assert none_node.has_value is True
+        assert none_node.cache() is None
+        assert quiet_node.has_value is False
+        with pytest.raises(GraphReflyNoDataError, match="no cached DATA"):
+            quiet_node.cache()
+
+
+def test_advanced_ctx_dep_presence_does_not_conflate_none_with_absence():
+    graph = Graph("py-node-dep-presence-smoke")
+    none_source = graph.state(None, name="none_source")
+    trigger = graph.state(1, name="trigger")
+    seen: list[tuple[bool, object, int]] = []
+
+    def body(ctx: Ctx) -> None:
+        seen.append((ctx.has_data(0), ctx.data(0, "missing"), ctx.data(1)))
+        ctx.emit(seen[-1])
+
+    node = graph.node([none_source, trigger], body, name="presence")
+    with node.subscribe(lambda _msg: None):
+        assert node.cache() == (True, None, 1)
+        graph.invalidate(none_source)
+        trigger.set(2)
+        assert node.cache() == (False, "missing", 2)
+
+    assert seen == [(True, None, 1), (False, "missing", 2)]
+
+
+def test_advanced_node_callback_exception_becomes_graph_error_observation():
+    graph = Graph("py-node-error-smoke")
+    source = graph.state(1, name="source")
+    seen: list[Message[object]] = []
+
+    def boom(_ctx: Ctx) -> None:
+        raise ValueError("node boom")
+
+    bad = graph.node([source], boom, name="bad")
+    with bad.subscribe(seen.append):
+        pass
+
+    assert any(
+        isinstance(msg, ErrorMessage)
+        and msg.error.type_name == "ValueError"
+        and msg.error.message == "node boom"
+        for msg in seen
+    )
+
+
+def test_advanced_ctx_cleanup_hook_exception_becomes_graph_error():
+    graph = Graph("py-node-hook-error-smoke")
+    source = graph.state(1, name="source")
+    seen: list[Message[object]] = []
+
+    def flush() -> None:
+        raise ValueError("hook boom")
+
+    def body(ctx: Ctx) -> None:
+        ctx.on_invalidate(flush)
+        ctx.emit(ctx.data(0))
+
+    node = graph.node([source], body, name="hook_error")
+    with node.subscribe(seen.append):
+        seen.clear()
+        graph.invalidate(source)
+
+    assert any(
+        isinstance(msg, ErrorMessage)
+        and msg.error.type_name == "ValueError"
+        and msg.error.message == "hook boom"
+        for msg in seen
+    )
+
+
+def test_advanced_ctx_commit_preserves_hook_order_before_emit_reentry():
+    graph = Graph("py-node-hook-order-smoke")
+    source = graph.state(1, name="source")
+    events: list[str] = []
+    subscription: list[Subscription] = []
+
+    def cleanup() -> None:
+        events.append("cleanup")
+
+    def body(ctx: Ctx) -> None:
+        ctx.on_deactivation(cleanup)
+        ctx.emit(ctx.data(0))
+
+    def observe(msg: Message[object]) -> None:
+        if isinstance(msg, DataMessage) and msg.value == 2:
+            events.append("data")
+            subscription[0].unsubscribe()
+
+    node = graph.node([source], body, name="hook_order")
+    sub = node.subscribe(observe)
+    subscription.append(sub)
+    events.clear()
+
+    source.set(2)
+
+    assert events == ["data", "cleanup"]
+    assert sub.closed is True
+
+
+def test_advanced_ctx_is_inactive_during_commit_reentry():
+    graph = Graph("py-node-ctx-scope-smoke")
+    source = graph.state(1, name="source")
+    stashed: list[Ctx] = []
+    errors: list[GraphReflyRuntimeError] = []
+
+    def body(ctx: Ctx) -> None:
+        stashed.clear()
+        stashed.append(ctx)
+        ctx.emit(ctx.data(0))
+
+    def observe(msg: Message[object]) -> None:
+        if isinstance(msg, DataMessage) and msg.value == 2:
+            with pytest.raises(GraphReflyRuntimeError) as exc_info:
+                stashed[0].emit("late")
+            errors.append(exc_info.value)
+
+    node = graph.node([source], body, name="ctx_scope")
+    with node.subscribe(observe):
+        source.set(2)
+
+    assert errors
+    assert "ctx is only valid" in str(errors[0])
+
+
+def test_advanced_node_fatal_base_exception_propagates_and_poisons_facade():
+    graph = Graph("py-node-fatal-smoke")
+    source = graph.state(1, name="source")
+    seen: list[Message[object]] = []
+
+    def boom(_ctx: Ctx) -> None:
+        raise SystemExit("node exit")
+
+    bad = graph.node([source], boom, name="bad")
+    with pytest.raises(SystemExit, match="node exit"):
+        bad.subscribe(seen.append)
+
+    assert graph.closed is True
+    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
+        bad.cache(default=None)
+    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
+
+
+def test_advanced_node_fatal_deactivation_hook_propagates_and_poisons_facade():
+    graph = Graph("py-node-deactivation-fatal-smoke")
+    source = graph.state(1, name="source")
+    seen: list[Message[object]] = []
+
+    def cleanup() -> None:
+        raise SystemExit("deactivation exit")
+
+    def body(ctx: Ctx) -> None:
+        ctx.on_deactivation(cleanup)
+        ctx.emit(ctx.data(0))
+
+    node = graph.node([source], body, name="fatal_cleanup")
+    sub = node.subscribe(seen.append)
+
+    with pytest.raises(SystemExit, match="deactivation exit"):
+        sub.unsubscribe()
+
+    assert graph.closed is True
+    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
+        node.cache(default=None)
+    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
+
+
+def test_advanced_node_fatal_during_batch_commit_propagates_without_graph_error():
+    graph = Graph("py-node-batch-fatal-smoke")
+    source = graph.state(0, name="source")
+    seen: list[Message[object]] = []
+
+    def boom(ctx: Ctx) -> None:
+        if ctx.data(0) == 1:
+            raise SystemExit("node batch exit")
+        ctx.emit(ctx.data(0))
+
+    bad = graph.node([source], boom, name="bad")
+    with pytest.raises(SystemExit, match="node batch exit"), bad.subscribe(seen.append):
+        graph.batch(lambda: source.set(1))
+
+    assert graph.closed is True
+    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
+        bad.cache(default=None)
+    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
 
 
 def test_decorators_and_context_manager_are_explicit_graph_owned_sugar():

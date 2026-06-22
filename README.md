@@ -12,11 +12,19 @@ from graphrefly import Graph
 graph = Graph("demo")
 source = graph.state(1, name="source")
 plus_one = graph.derived([source], lambda value: value + 1, name="plus_one")
+advanced = graph.node(
+    [source],
+    lambda ctx: ctx.emit(ctx.data(0) + 10),
+    name="advanced",
+)
 
-with plus_one.subscribe(lambda msg: print(msg.kind, msg.value)):
+with plus_one.subscribe(lambda msg: print(msg.kind, msg.value)), advanced.subscribe(
+    lambda _msg: None
+):
     source.set(4)
 
 assert plus_one.cache() == 5
+assert advanced.cache() == 14
 assert plus_one.status in {"settled", "resolved"}
 ```
 
@@ -24,10 +32,12 @@ The Python-owned facade exposes:
 
 - `Graph`
 - `Node[T]`
+- `Ctx`
 - `Subscription`
 - `DataMessage[T]`, `ErrorMessage`, `ControlMessage`, `Message[T]`, and `GraphEvent`
-- synchronous `Graph.state`, `Graph.producer`, `Graph.derived`, `Graph.effect`, and `Graph.batch`
+- synchronous `Graph.state`, `Graph.producer`, `Graph.node`, `Graph.derived`, `Graph.effect`, and `Graph.batch`
 - explicit-Graph decorator sugar for `producer`, `derived`, and `effect`
+- advanced `Ctx` helpers for dep DATA presence/value reads, `emit`, per-node `state`, `on_invalidate`, and `on_deactivation`
 - `Node.set`, `Node.cache(default=...)`, `Node.has_value`, `Node.status`, `Node.subscribe`
 - graph-owned control convenience: `Graph.pause(node, lock_id)`, `Graph.resume(node, lock_id)`, and `Graph.invalidate(node)`
 - `Graph.describe` and `Graph.observe`
@@ -45,6 +55,7 @@ The Python-owned facade exposes:
 - Node callback failures become graph `ERROR` observations wrapped as `GraphCallbackError`. Subscribe/observe callback failures stay at the Python observer boundary as `SubscriberCallbackError`. Public API value/runtime failures use `GraphReflyValueError` and `GraphReflyRuntimeError`.
 - Fatal Python `BaseException` process-control failures such as `KeyboardInterrupt`, `SystemExit`, and `GeneratorExit` propagate back to the initiating Python caller instead of becoming graph `ERROR` or `SubscriberCallbackError`. Per D431/D436, a fatal first observed after native batch commit has begun aborts the host boundary but does not claim full transactional rollback of graph effects already committed; the facade is then closed/poisoned and later use is rejected.
 - `DataIssue` is a reserved passive DATA envelope for future domain/material issue payloads; this slice does not emit it and does not change protocol `ERROR` semantics.
+- Public Python does not expose raw `Node.up(msgs)`, arbitrary message construction/sending, or raw PyO3 handles. The advanced `Ctx` facade is callback-scoped and host-natural; protocol raw-wave surfaces stay deferred unless they can mirror the language-neutral shape exactly.
 
 ## Local Development
 

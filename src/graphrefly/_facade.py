@@ -159,8 +159,163 @@ class Subscription:
             self._unsubscribe_native()
 
     def _unsubscribe_native(self) -> None:
-        self._native.unsubscribe()
+        try:
+            self._native.unsubscribe()
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            self._closed = True
+            if self._lifetime is not None:
+                _poison_on_fatal(self._lifetime, error)
+            raise
         self._closed = True
+
+
+class Ctx:
+    """Python-owned facade for an advanced node callback invocation."""
+
+    def __init__(
+        self,
+        native: _native.Ctx,
+        *,
+        owner_thread: int,
+        lifetime: _GraphLifetime,
+    ) -> None:
+        self._native = native
+        self._owner_thread = owner_thread
+        self._lifetime = lifetime
+
+    @property
+    def dep_len(self) -> int:
+        self._check_thread()
+        try:
+            return self._native.dep_len()
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+
+    def has_data(self, index: int) -> bool:
+        self._check_thread()
+        try:
+            has_value, _value = self._native.data_entry(index)
+        except IndexError:
+            raise
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+        return has_value
+
+    @overload
+    def data(self, index: int) -> object: ...
+
+    @overload
+    def data(self, index: int, default: U) -> object | U: ...
+
+    def data(self, index: int, default: object = _NO_DEFAULT) -> object:
+        self._check_thread()
+        try:
+            has_value, value = self._native.data_entry(index)
+        except IndexError:
+            raise
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+        if not has_value:
+            if default is _NO_DEFAULT:
+                msg = f"dependency {index} has no DATA value in this ctx invocation"
+                raise GraphReflyNoDataError(msg)
+            return default
+        return value
+
+    def emit(self, value: object) -> None:
+        self._check_thread()
+        try:
+            self._native.emit(value)
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+
+    @property
+    def has_state(self) -> bool:
+        self._check_thread()
+        try:
+            has_value, _value = self._native.state_entry()
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+        return has_value
+
+    @property
+    def state(self) -> object | None:
+        self._check_thread()
+        try:
+            _has_value, value = self._native.state_entry()
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+        return value
+
+    @state.setter
+    def state(self, value: object) -> None:
+        self._check_thread()
+        try:
+            self._native.set_state(value)
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+
+    def persist_state(self, on: bool = True) -> None:
+        self._check_thread()
+        try:
+            self._native.state_persist(on)
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+
+    def on_invalidate(self, callback: Callable[[], object]) -> None:
+        self._check_thread()
+        _reject_async_callable(callback)
+
+        def native_callback() -> None:
+            result = callback()
+            _reject_awaitable(result)
+
+        try:
+            self._native.on_invalidate(native_callback)
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+
+    def on_deactivation(self, callback: Callable[[], object]) -> None:
+        self._check_thread()
+        _reject_async_callable(callback)
+
+        def native_callback() -> None:
+            result = callback()
+            _reject_awaitable(result)
+
+        try:
+            self._native.on_deactivation(native_callback)
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+
+    def _check_thread(self) -> None:
+        if get_ident() != self._owner_thread:
+            msg = "GraphReFly Python ctx objects are bound to their creating thread in v0"
+            raise GraphReflyRuntimeError(msg)
+        if self._lifetime.closed:
+            raise GraphReflyRuntimeError(self._lifetime.closed_message)
 
 
 class Node[T]:
@@ -392,6 +547,55 @@ class Graph:
         try:
             return Node(
                 self._native.derived(native_deps, native_callback, name),
+                owner_thread=self._owner_thread,
+                lifetime=self._lifetime,
+            )
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+
+    @overload
+    def node(
+        self,
+        deps: Iterable[Node[Any]],
+        callback: Callable[[Ctx], object],
+        name: str | None = None,
+    ) -> Node[object]: ...
+
+    @overload
+    def node(
+        self,
+        deps: Iterable[Node[Any]],
+        callback: None = None,
+        name: str | None = None,
+    ) -> Callable[[Callable[[Ctx], object]], Node[object]]: ...
+
+    def node(
+        self,
+        deps: Iterable[Node[Any]],
+        callback: Callable[[Ctx], object] | None = None,
+        name: str | None = None,
+    ) -> Node[object] | Callable[[Callable[[Ctx], object]], Node[object]]:
+        self._check_thread()
+        deps = list(deps)
+        if callback is None:
+            return lambda fn: self.node(deps, fn, name or fn.__name__)
+        native_deps = self._native_deps(deps)
+
+        def native_callback(native_ctx: _native.Ctx) -> None:
+            value = callback(
+                Ctx(
+                    native_ctx,
+                    owner_thread=self._owner_thread,
+                    lifetime=self._lifetime,
+                )
+            )
+            _reject_awaitable(value)
+
+        try:
+            return Node(
+                self._native.node(native_deps, native_callback, name),
                 owner_thread=self._owner_thread,
                 lifetime=self._lifetime,
             )
