@@ -8,7 +8,7 @@ from importlib import metadata
 from importlib.metadata import PackageNotFoundError
 from inspect import isawaitable, iscoroutinefunction
 from threading import get_ident
-from typing import Any, Literal, TypeVar, cast, overload
+from typing import Any, Literal, NoReturn, TypeVar, cast, overload
 from weakref import ReferenceType, ref
 
 from graphrefly import _native
@@ -64,13 +64,19 @@ class _GraphLifetime:
     def __init__(self, owner_thread: int) -> None:
         self.owner_thread = owner_thread
         self.closed = False
+        self.poisoned = False
         self.subscriptions: list[ReferenceType[Subscription]] = []
+
+    @property
+    def closed_message(self) -> str:
+        if self.poisoned:
+            return "GraphReFly graph is closed after a fatal host boundary abort"
+        return "GraphReFly graph is closed"
 
     def register(self, subscription: Subscription) -> None:
         if self.closed:
             subscription._close_from_graph()
-            msg = "GraphReFly graph is closed"
-            raise GraphReflyRuntimeError(msg)
+            raise GraphReflyRuntimeError(self.closed_message)
         self.subscriptions.append(ref(subscription))
 
     def unregister(self, subscription: Subscription) -> None:
@@ -89,6 +95,10 @@ class _GraphLifetime:
         for subscription in subscriptions:
             if subscription is not None:
                 subscription._close_from_graph()
+
+    def poison(self) -> None:
+        self.poisoned = True
+        self.close()
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +190,8 @@ class Node[T]:
             raise GraphReflyValueError(str(error)) from error
         except RuntimeError as error:
             raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
 
     @overload
     def cache(self) -> T: ...
@@ -189,7 +201,12 @@ class Node[T]:
 
     def cache(self, default: object = _NO_DEFAULT) -> object:
         self._check_thread()
-        has_value, value = self._native.cache_entry()
+        try:
+            has_value, value = self._native.cache_entry()
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
         if not has_value:
             if default is _NO_DEFAULT:
                 msg = "node has no cached DATA value"
@@ -200,13 +217,23 @@ class Node[T]:
     @property
     def has_value(self) -> bool:
         self._check_thread()
-        has_value, _value = self._native.cache_entry()
+        try:
+            has_value, _value = self._native.cache_entry()
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
         return has_value
 
     @property
     def status(self) -> str:
         self._check_thread()
-        return self._native.status()
+        try:
+            return self._native.status()
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
 
     def subscribe(
         self,
@@ -238,14 +265,15 @@ class Node[T]:
             return subscription
         except RuntimeError as error:
             raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
 
     def _check_thread(self) -> None:
         if get_ident() != self._owner_thread:
             msg = "GraphReFly Python nodes are bound to their creating thread in v0"
             raise GraphReflyRuntimeError(msg)
         if self._lifetime.closed:
-            msg = "GraphReFly graph is closed"
-            raise GraphReflyRuntimeError(msg)
+            raise GraphReflyRuntimeError(self._lifetime.closed_message)
 
 
 class Graph:
@@ -272,6 +300,8 @@ class Graph:
         self._check_thread(allow_closed=True)
         try:
             self._native.raise_pending_fatal()
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
         finally:
             self._lifetime.close()
 
@@ -288,6 +318,8 @@ class Graph:
             raise GraphReflyValueError(str(error)) from error
         except RuntimeError as error:
             raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
 
     @overload
     def producer(self, callback: Callable[[], T], name: str | None = None) -> Node[T]: ...
@@ -321,6 +353,8 @@ class Graph:
             )
         except RuntimeError as error:
             raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
 
     @overload
     def derived(
@@ -363,6 +397,8 @@ class Graph:
             )
         except RuntimeError as error:
             raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
 
     @overload
     def effect(
@@ -404,6 +440,8 @@ class Graph:
             )
         except RuntimeError as error:
             raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
 
     def batch(self, callback: Callable[[], object]) -> None:
         self._check_thread()
@@ -419,10 +457,49 @@ class Graph:
             raise
         except RuntimeError as error:
             raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
 
     def describe(self) -> dict[str, Any]:
         self._check_thread()
-        return _normalize_describe(self._native.describe())
+        try:
+            return _normalize_describe(self._native.describe())
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+
+    def pause(self, node: Node[Any], lock_id: str) -> None:
+        self._check_thread()
+        _reject_non_string_lock_id(lock_id)
+        native = self._native_node(node)
+        try:
+            native.pause(lock_id)
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+
+    def resume(self, node: Node[Any], lock_id: str) -> None:
+        self._check_thread()
+        _reject_non_string_lock_id(lock_id)
+        native = self._native_node(node)
+        try:
+            native.resume(lock_id)
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+
+    def invalidate(self, node: Node[Any]) -> None:
+        self._check_thread()
+        native = self._native_node(node)
+        try:
+            native.invalidate()
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
 
     def observe(
         self,
@@ -449,23 +526,31 @@ class Graph:
             except Exception as error:
                 _record_observer_error(error, callback_errors, on_error)
 
-        subscription = Subscription(
-            self._native.observe(native_callback),
-            owner_thread=self._owner_thread,
-            lifetime=self._lifetime,
-            callback_errors=callback_errors,
-        )
-        self._lifetime.register(subscription)
-        return subscription
+        try:
+            subscription = Subscription(
+                self._native.observe(native_callback),
+                owner_thread=self._owner_thread,
+                lifetime=self._lifetime,
+                callback_errors=callback_errors,
+            )
+            self._lifetime.register(subscription)
+            return subscription
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+
+    def _native_node(self, node: Node[Any]) -> _native.Node:
+        node._check_thread()
+        if node._lifetime is not self._lifetime:
+            msg = "node must belong to this GraphReFly graph"
+            raise GraphReflyRuntimeError(msg)
+        return node._native
 
     def _native_deps(self, deps: Iterable[Node[Any]]) -> list[_native.Node]:
         native_deps = []
         for dep in deps:
-            dep._check_thread()
-            if dep._owner_thread != self._owner_thread:
-                msg = "dependency nodes must belong to the same GraphReFly Python thread in v0"
-                raise GraphReflyRuntimeError(msg)
-            native_deps.append(dep._native)
+            native_deps.append(self._native_node(dep))
         return native_deps
 
     def _check_thread(self, *, allow_closed: bool = False) -> None:
@@ -473,8 +558,7 @@ class Graph:
             msg = "GraphReFly Python graphs are bound to their creating thread in v0"
             raise GraphReflyRuntimeError(msg)
         if self._lifetime.closed and not allow_closed:
-            msg = "GraphReFly graph is closed"
-            raise GraphReflyRuntimeError(msg)
+            raise GraphReflyRuntimeError(self._lifetime.closed_message)
 
 
 def version() -> str:
@@ -484,6 +568,18 @@ def version() -> str:
         return metadata.version("graphrefly")
     except PackageNotFoundError:
         return _VERSION
+
+
+def _poison_on_fatal(lifetime: _GraphLifetime, error: BaseException) -> NoReturn:
+    if not isinstance(error, Exception):
+        lifetime.poison()
+    raise error
+
+
+def _reject_non_string_lock_id(lock_id: str) -> None:
+    if not isinstance(lock_id, str):
+        msg = "pause/resume lock_id must be a str in the Python facade"
+        raise GraphReflyValueError(msg)
 
 
 def _reject_awaitable(value: object) -> None:

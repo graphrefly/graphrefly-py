@@ -6,12 +6,14 @@ import pytest
 import graphrefly
 from graphrefly import (
     CallbackError,
+    ControlMessage,
     DataMessage,
     ErrorMessage,
     Graph,
     GraphEvent,
     GraphReflyNoDataError,
     GraphReflyRuntimeError,
+    GraphReflyValueError,
     Message,
     SubscriberCallbackError,
 )
@@ -200,8 +202,30 @@ def test_subscriber_fatal_base_exception_propagates_without_boundary_wrapping():
     observer = graph.observe(events.append)
     with pytest.raises(SystemExit, match="exit"):
         source.subscribe(subscriber)
-    observer.unsubscribe()
 
+    assert graph.closed is True
+    assert observer.closed is True
+    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
+        source.cache()
+    assert not any(isinstance(event.message, ErrorMessage) for event in events)
+
+
+def test_subscriber_keyboard_interrupt_propagates_without_boundary_wrapping():
+    graph = Graph("py-subscriber-keyboard-interrupt-smoke")
+    source = graph.state(1, name="source")
+    events: list[GraphEvent] = []
+
+    def subscriber(_msg: Message[int]) -> None:
+        raise KeyboardInterrupt
+
+    observer = graph.observe(events.append)
+    with pytest.raises(KeyboardInterrupt):
+        source.subscribe(subscriber)
+
+    assert graph.closed is True
+    assert observer.closed is True
+    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
+        source.cache()
     assert not any(isinstance(event.message, ErrorMessage) for event in events)
 
 
@@ -243,6 +267,25 @@ def test_subscriber_on_error_failures_are_captured_at_python_boundary():
     sub.unsubscribe()
 
 
+def test_observe_callback_errors_are_captured_at_python_boundary():
+    graph = Graph("py-observe-error-smoke")
+    source = graph.state(1, name="source")
+    captured: list[SubscriberCallbackError] = []
+
+    def observer(event: GraphEvent) -> None:
+        if event.message == DataMessage(2):
+            raise ValueError("observe boom")
+
+    sub = graph.observe(observer, on_error=captured.append)
+    source.set(2)
+
+    assert captured
+    assert sub.callback_errors == tuple(captured)
+    assert isinstance(captured[0].original, ValueError)
+    assert captured[0].original.__traceback__ is None
+    sub.unsubscribe()
+
+
 def test_observe_fatal_base_exception_propagates_to_initiating_call():
     graph = Graph("py-observe-fatal-smoke")
     source = graph.state(1, name="source")
@@ -254,10 +297,14 @@ def test_observe_fatal_base_exception_propagates_to_initiating_call():
     sub = graph.observe(observer)
     with pytest.raises(SystemExit, match="observe exit"):
         source.set(2)
-    sub.unsubscribe()
+
+    assert graph.closed is True
+    assert sub.closed is True
+    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
+        source.cache()
 
 
-def test_observe_fatal_during_registration_propagates_without_leaking_observer():
+def test_observe_fatal_during_registration_propagates_without_graph_error():
     graph = Graph("py-observe-eager-fatal-smoke")
     source = graph.state(1, name="source")
     source.subscribe(lambda _msg: None)
@@ -271,9 +318,10 @@ def test_observe_fatal_during_registration_propagates_without_leaking_observer()
     with pytest.raises(SystemExit, match="observe eager exit"):
         graph.observe(observer)
 
-    calls_after_registration = calls
-    source.set(2)
-    assert calls == calls_after_registration
+    assert graph.closed is True
+    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
+        source.cache()
+    assert calls == 1
 
 
 def test_graph_observe_uses_typed_message_shape():
@@ -322,6 +370,31 @@ def test_public_value_and_runtime_errors_are_facade_exceptions():
         derived.set(3)
 
 
+def test_public_control_facade_is_graph_owned_and_validates_lock_id():
+    graph = Graph("py-control-facade-smoke")
+    other_graph = Graph("py-control-other-graph")
+    source = graph.state(1, name="source")
+    other_source = other_graph.state(1, name="other_source")
+    derived = graph.derived([source], lambda value: value + 1, name="derived")
+    seen: list[Message[int]] = []
+
+    with derived.subscribe(seen.append):
+        assert derived.cache() == 2
+        graph.pause(derived, "lock")
+        source.set(2)
+        assert derived.cache() == 2
+        graph.resume(derived, "lock")
+        assert derived.cache() == 3
+        seen.clear()
+        graph.invalidate(derived)
+
+    assert ControlMessage("INVALIDATE") in seen
+    with pytest.raises(GraphReflyRuntimeError, match="must belong"):
+        graph.invalidate(other_source)
+    with pytest.raises(GraphReflyValueError, match="lock_id must be a str"):
+        graph.pause(derived, object())  # type: ignore[arg-type]
+
+
 def test_graph_callback_fatal_base_exception_propagates_without_graph_error():
     graph = Graph("py-graph-fatal-smoke")
     source = graph.state(1, name="source")
@@ -333,7 +406,25 @@ def test_graph_callback_fatal_base_exception_propagates_without_graph_error():
     with pytest.raises(SystemExit, match="graph exit"):
         bad.subscribe(lambda _msg: None)
 
-    assert bad.status != "errored"
+    assert graph.closed is True
+    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
+        bad.cache(default=None)
+
+
+def test_graph_callback_keyboard_interrupt_propagates_without_graph_error():
+    graph = Graph("py-graph-keyboard-interrupt-smoke")
+    source = graph.state(1, name="source")
+
+    def boom(_value: int) -> int:
+        raise KeyboardInterrupt
+
+    bad = graph.derived([source], boom, name="bad")
+    with pytest.raises(KeyboardInterrupt):
+        bad.subscribe(lambda _msg: None)
+
+    assert graph.closed is True
+    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
+        bad.cache(default=None)
 
 
 def test_graph_callback_fatal_during_batch_commit_propagates_without_graph_error():
@@ -350,7 +441,29 @@ def test_graph_callback_fatal_during_batch_commit_propagates_without_graph_error
     with pytest.raises(SystemExit, match="batch commit exit"), bad.subscribe(seen.append):
         graph.batch(lambda: source.set(1))
 
-    assert bad.status != "errored"
+    assert graph.closed is True
+    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
+        bad.cache(default=None)
+    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
+
+
+def test_graph_callback_keyboard_interrupt_during_batch_commit_stays_fatal():
+    graph = Graph("py-batch-commit-keyboard-interrupt-smoke")
+    source = graph.state(0, name="source")
+    seen: list[Message[object]] = []
+
+    def boom(value: int) -> int:
+        if value == 1:
+            raise KeyboardInterrupt
+        return value
+
+    bad = graph.derived([source], boom, name="bad")
+    with pytest.raises(KeyboardInterrupt), bad.subscribe(seen.append):
+        graph.batch(lambda: source.set(1))
+
+    assert graph.closed is True
+    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
+        bad.cache(default=None)
     assert not any(isinstance(msg, ErrorMessage) for msg in seen)
 
 

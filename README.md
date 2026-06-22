@@ -29,6 +29,7 @@ The Python-owned facade exposes:
 - synchronous `Graph.state`, `Graph.producer`, `Graph.derived`, `Graph.effect`, and `Graph.batch`
 - explicit-Graph decorator sugar for `producer`, `derived`, and `effect`
 - `Node.set`, `Node.cache(default=...)`, `Node.has_value`, `Node.status`, `Node.subscribe`
+- graph-owned control convenience: `Graph.pause(node, lock_id)`, `Graph.resume(node, lock_id)`, and `Graph.invalidate(node)`
 - `Graph.describe` and `Graph.observe`
 - `Graph.close`, `Graph.closed`, and `Subscription.closed`
 
@@ -39,10 +40,10 @@ The Python-owned facade exposes:
 - Python values are held as strong object references by the native engine. No serialization, copy, or immutability promise is made yet.
 - `None` is valid Python DATA. Absence of DATA is represented by private native presence flags, not by a public `None` sentinel.
 - `Node.cache()` returns cached DATA, including `None`, or raises `GraphReflyNoDataError` when no DATA is present. Use `Node.cache(default=...)` or `Node.has_value` for non-exceptional absence handling.
-- `Graph.close()` and `with Graph(...)` are Python host lifetime scopes. They release facade-created subscriptions/observers and reject later facade use without emitting protocol `TEARDOWN` or `COMPLETE`.
+- `Graph.close()` and `with Graph(...)` are Python host lifetime scopes. They release facade-created subscriptions/observers and reject later facade use without emitting protocol `TEARDOWN` or `COMPLETE`. Fatal host-boundary aborts automatically close/poison the facade after propagating the original fatal exception.
 - Async callbacks are not accepted in the sync core. Asyncio/trio adapters are deferred to later CSP-7 slices.
 - Node callback failures become graph `ERROR` observations wrapped as `GraphCallbackError`. Subscribe/observe callback failures stay at the Python observer boundary as `SubscriberCallbackError`. Public API value/runtime failures use `GraphReflyValueError` and `GraphReflyRuntimeError`.
-- Fatal Python `BaseException` process-control failures such as `KeyboardInterrupt`, `SystemExit`, and `GeneratorExit` propagate back to the initiating Python caller instead of becoming graph `ERROR` or `SubscriberCallbackError`. Per D431, a fatal first observed after native batch commit has begun aborts the host boundary but does not claim full transactional rollback of graph effects already committed; callers that catch such a fatal should close or discard the graph facade.
+- Fatal Python `BaseException` process-control failures such as `KeyboardInterrupt`, `SystemExit`, and `GeneratorExit` propagate back to the initiating Python caller instead of becoming graph `ERROR` or `SubscriberCallbackError`. Per D431/D436, a fatal first observed after native batch commit has begun aborts the host boundary but does not claim full transactional rollback of graph effects already committed; the facade is then closed/poisoned and later use is rejected.
 - `DataIssue` is a reserved passive DATA envelope for future domain/material issue payloads; this slice does not emit it and does not change protocol `ERROR` semantics.
 
 ## Local Development
