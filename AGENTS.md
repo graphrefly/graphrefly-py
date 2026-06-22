@@ -30,9 +30,12 @@ Current Python value/message boundary:
 
 - `None` is valid Python DATA.
 - No-DATA is a private native presence state, not a public `None` sentinel.
+- Public `Node.cache()` raises `GraphReflyNoDataError` when no DATA is present; `cache(default=...)` is the explicit fallback path.
 - Public observations use `DataMessage`, `ErrorMessage`, and `ControlMessage`.
 - Node callback failures become graph `ERROR` payloads wrapped as `GraphCallbackError`.
 - Subscribe/observe callback failures are Python observer-boundary failures captured as `SubscriberCallbackError`.
+- Fatal Python `BaseException` process-control failures must propagate to the Python caller, not become graph `ERROR` or `SubscriberCallbackError`. D431 narrows the native batch edge: batch-body rollback remains normal, but a fatal first observed after native commit has begun is a host-boundary abort without a full transactional rollback claim.
+- `Graph.close()` / context managers are Python host lifetime scopes only: release facade-created subscriptions/observers and reject later facade use without protocol `TEARDOWN`/`COMPLETE`.
 
 ## Clean-Slate Floor
 

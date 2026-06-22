@@ -9,11 +9,13 @@ from importlib.metadata import PackageNotFoundError
 from inspect import isawaitable, iscoroutinefunction
 from threading import get_ident
 from typing import Any, Literal, TypeVar, cast, overload
+from weakref import ReferenceType, ref
 
 from graphrefly import _native
 from graphrefly.exceptions import (
     CallbackError,
     GraphCallbackError,
+    GraphReflyNoDataError,
     GraphReflyRuntimeError,
     GraphReflyValueError,
     SubscriberCallbackError,
@@ -23,6 +25,7 @@ T = TypeVar("T")
 U = TypeVar("U")
 _VERSION = "0.21.0a0"
 _MAX_CALLBACK_ERRORS = 32
+_NO_DEFAULT = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +60,37 @@ type Message[T] = DataMessage[T] | ErrorMessage | ControlMessage
 type ObserverErrorHandler = Callable[[SubscriberCallbackError], object]
 
 
+class _GraphLifetime:
+    def __init__(self, owner_thread: int) -> None:
+        self.owner_thread = owner_thread
+        self.closed = False
+        self.subscriptions: list[ReferenceType[Subscription]] = []
+
+    def register(self, subscription: Subscription) -> None:
+        if self.closed:
+            subscription._close_from_graph()
+            msg = "GraphReFly graph is closed"
+            raise GraphReflyRuntimeError(msg)
+        self.subscriptions.append(ref(subscription))
+
+    def unregister(self, subscription: Subscription) -> None:
+        self.subscriptions = [
+            item
+            for item in self.subscriptions
+            if (live := item()) is not None and live is not subscription
+        ]
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        subscriptions = tuple(item() for item in self.subscriptions)
+        self.subscriptions.clear()
+        for subscription in subscriptions:
+            if subscription is not None:
+                subscription._close_from_graph()
+
+
 @dataclass(frozen=True, slots=True)
 class GraphEvent:
     """Graph-level observation from the native engine."""
@@ -75,10 +109,12 @@ class Subscription:
         native: _native.Subscription,
         *,
         owner_thread: int,
+        lifetime: _GraphLifetime | None = None,
         callback_errors: list[SubscriberCallbackError] | None = None,
     ) -> None:
         self._native = native
         self._owner_thread = owner_thread
+        self._lifetime = lifetime
         self._callback_errors = callback_errors if callback_errors is not None else []
         self._closed = False
 
@@ -93,8 +129,9 @@ class Subscription:
     def unsubscribe(self) -> None:
         self._check_thread()
         if not self._closed:
-            self._native.unsubscribe()
-            self._closed = True
+            self._unsubscribe_native()
+            if self._lifetime is not None:
+                self._lifetime.unregister(self)
 
     def __enter__(self) -> Subscription:
         return self
@@ -107,6 +144,14 @@ class Subscription:
             msg = "GraphReFly Python subscriptions are bound to their creating thread in v0"
             raise GraphReflyRuntimeError(msg)
 
+    def _close_from_graph(self) -> None:
+        if not self._closed:
+            self._unsubscribe_native()
+
+    def _unsubscribe_native(self) -> None:
+        self._native.unsubscribe()
+        self._closed = True
+
 
 class Node[T]:
     """A typed Python handle around an opaque native node."""
@@ -116,10 +161,12 @@ class Node[T]:
         native: _native.Node,
         *,
         owner_thread: int,
+        lifetime: _GraphLifetime,
         writable: bool = False,
     ) -> None:
         self._native = native
         self._owner_thread = owner_thread
+        self._lifetime = lifetime
         self._writable = writable
 
     def set(self, value: T) -> None:
@@ -134,12 +181,27 @@ class Node[T]:
         except RuntimeError as error:
             raise GraphReflyRuntimeError(str(error)) from error
 
-    def cache(self) -> T | None:
+    @overload
+    def cache(self) -> T: ...
+
+    @overload
+    def cache(self, default: U) -> T | U: ...
+
+    def cache(self, default: object = _NO_DEFAULT) -> object:
         self._check_thread()
         has_value, value = self._native.cache_entry()
         if not has_value:
-            return None
-        return cast("T | None", value)
+            if default is _NO_DEFAULT:
+                msg = "node has no cached DATA value"
+                raise GraphReflyNoDataError(msg)
+            return default
+        return cast("T", value)
+
+    @property
+    def has_value(self) -> bool:
+        self._check_thread()
+        has_value, _value = self._native.cache_entry()
+        return has_value
 
     @property
     def status(self) -> str:
@@ -162,21 +224,27 @@ class Node[T]:
             try:
                 result = callback(_message_from_native(kind, value))
                 _reject_awaitable(result)
-            except BaseException as error:
+            except Exception as error:
                 _record_observer_error(error, callback_errors, on_error)
 
         try:
-            return Subscription(
+            subscription = Subscription(
                 self._native.subscribe(native_callback),
                 owner_thread=self._owner_thread,
+                lifetime=self._lifetime,
                 callback_errors=callback_errors,
             )
+            self._lifetime.register(subscription)
+            return subscription
         except RuntimeError as error:
             raise GraphReflyRuntimeError(str(error)) from error
 
     def _check_thread(self) -> None:
         if get_ident() != self._owner_thread:
             msg = "GraphReFly Python nodes are bound to their creating thread in v0"
+            raise GraphReflyRuntimeError(msg)
+        if self._lifetime.closed:
+            msg = "GraphReFly graph is closed"
             raise GraphReflyRuntimeError(msg)
 
 
@@ -185,6 +253,7 @@ class Graph:
 
     def __init__(self, name: str | None = None) -> None:
         self._owner_thread = get_ident()
+        self._lifetime = _GraphLifetime(self._owner_thread)
         self._native = _native.Graph(name)
 
     def __enter__(self) -> Graph:
@@ -192,7 +261,19 @@ class Graph:
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-        self._check_thread()
+        self.close()
+
+    @property
+    def closed(self) -> bool:
+        self._check_thread(allow_closed=True)
+        return self._lifetime.closed
+
+    def close(self) -> None:
+        self._check_thread(allow_closed=True)
+        try:
+            self._native.raise_pending_fatal()
+        finally:
+            self._lifetime.close()
 
     def state(self, value: T, name: str | None = None) -> Node[T]:
         self._check_thread()
@@ -200,6 +281,7 @@ class Graph:
             return Node(
                 self._native.state(value, name),
                 owner_thread=self._owner_thread,
+                lifetime=self._lifetime,
                 writable=True,
             )
         except ValueError as error:
@@ -235,6 +317,7 @@ class Graph:
             return Node(
                 self._native.producer(native_callback, name),
                 owner_thread=self._owner_thread,
+                lifetime=self._lifetime,
             )
         except RuntimeError as error:
             raise GraphReflyRuntimeError(str(error)) from error
@@ -276,6 +359,7 @@ class Graph:
             return Node(
                 self._native.derived(native_deps, native_callback, name),
                 owner_thread=self._owner_thread,
+                lifetime=self._lifetime,
             )
         except RuntimeError as error:
             raise GraphReflyRuntimeError(str(error)) from error
@@ -316,6 +400,7 @@ class Graph:
             return Node(
                 self._native.effect(native_deps, native_callback, name),
                 owner_thread=self._owner_thread,
+                lifetime=self._lifetime,
             )
         except RuntimeError as error:
             raise GraphReflyRuntimeError(str(error)) from error
@@ -361,14 +446,17 @@ class Graph:
             try:
                 result = callback(event)
                 _reject_awaitable(result)
-            except BaseException as error:
+            except Exception as error:
                 _record_observer_error(error, callback_errors, on_error)
 
-        return Subscription(
+        subscription = Subscription(
             self._native.observe(native_callback),
             owner_thread=self._owner_thread,
+            lifetime=self._lifetime,
             callback_errors=callback_errors,
         )
+        self._lifetime.register(subscription)
+        return subscription
 
     def _native_deps(self, deps: Iterable[Node[Any]]) -> list[_native.Node]:
         native_deps = []
@@ -380,9 +468,12 @@ class Graph:
             native_deps.append(dep._native)
         return native_deps
 
-    def _check_thread(self) -> None:
+    def _check_thread(self, *, allow_closed: bool = False) -> None:
         if get_ident() != self._owner_thread:
             msg = "GraphReFly Python graphs are bound to their creating thread in v0"
+            raise GraphReflyRuntimeError(msg)
+        if self._lifetime.closed and not allow_closed:
+            msg = "GraphReFly graph is closed"
             raise GraphReflyRuntimeError(msg)
 
 
@@ -430,7 +521,7 @@ def _graph_callback_error(value: object) -> GraphCallbackError:
 
 
 def _record_observer_error(
-    error: BaseException,
+    error: Exception,
     callback_errors: list[SubscriberCallbackError],
     on_error: ObserverErrorHandler | None,
 ) -> None:
@@ -444,7 +535,7 @@ def _record_observer_error(
         try:
             result = on_error(wrapped)
             _reject_awaitable(result)
-        except BaseException as handler_error:
+        except Exception as handler_error:
             _remember_callback_error(
                 callback_errors,
                 SubscriberCallbackError(_scrub_exception(handler_error)),
@@ -460,7 +551,7 @@ def _remember_callback_error(
         del callback_errors[: len(callback_errors) - _MAX_CALLBACK_ERRORS]
 
 
-def _scrub_exception(error: BaseException) -> BaseException:
+def _scrub_exception(error: Exception) -> Exception:
     error.__traceback__ = None
     error.__context__ = None
     error.__cause__ = None

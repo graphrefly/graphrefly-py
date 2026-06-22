@@ -1,3 +1,4 @@
+import gc
 from importlib import import_module
 
 import pytest
@@ -9,6 +10,7 @@ from graphrefly import (
     ErrorMessage,
     Graph,
     GraphEvent,
+    GraphReflyNoDataError,
     GraphReflyRuntimeError,
     Message,
     SubscriberCallbackError,
@@ -19,6 +21,8 @@ def test_import_package_surface():
     assert graphrefly.__version__ == "0.21.0a0"
     assert graphrefly.version() == "0.21.0a0"
     assert Graph("smoke").describe()["name"] == "smoke"
+    assert graphrefly.DataIssue("missing", "reserved").code == "missing"
+    assert issubclass(graphrefly.GraphReflyNoDataError, LookupError)
     assert hasattr(import_module("graphrefly._native"), "Graph")
 
 
@@ -128,6 +132,21 @@ def test_none_is_valid_python_data_payload():
     assert node["has_value"] is True
 
 
+def test_absent_cache_raises_without_conflating_cached_none():
+    graph = Graph("py-no-data-smoke")
+    source = graph.state(1, name="source")
+    plus_one = graph.derived([source], lambda value: value + 1, name="plus_one")
+    none_value = graph.state(None, name="none_value")
+
+    assert plus_one.has_value is False
+    with pytest.raises(GraphReflyNoDataError, match="no cached DATA"):
+        plus_one.cache()
+    assert plus_one.cache(default="missing") == "missing"
+
+    assert none_value.has_value is True
+    assert none_value.cache() is None
+
+
 def test_decorators_and_context_manager_are_explicit_graph_owned_sugar():
     with Graph("py-decorator-smoke") as graph:
         source = graph.state(1, name="source")
@@ -148,6 +167,10 @@ def test_decorators_and_context_manager_are_explicit_graph_owned_sugar():
             assert plus_one.cache() == 5
             assert effects[-1] == 5
 
+    assert graph.closed is True
+    with pytest.raises(GraphReflyRuntimeError, match="graph is closed"):
+        plus_one.cache()
+
 
 def test_subscriber_callback_errors_are_captured_at_python_boundary():
     graph = Graph("py-subscriber-error-smoke")
@@ -164,6 +187,22 @@ def test_subscriber_callback_errors_are_captured_at_python_boundary():
     assert isinstance(captured[0].original, ValueError)
     assert captured[0].original.__traceback__ is None
     sub.unsubscribe()
+
+
+def test_subscriber_fatal_base_exception_propagates_without_boundary_wrapping():
+    graph = Graph("py-subscriber-fatal-smoke")
+    source = graph.state(1, name="source")
+    events: list[GraphEvent] = []
+
+    def subscriber(_msg: Message[int]) -> None:
+        raise SystemExit("exit")
+
+    observer = graph.observe(events.append)
+    with pytest.raises(SystemExit, match="exit"):
+        source.subscribe(subscriber)
+    observer.unsubscribe()
+
+    assert not any(isinstance(event.message, ErrorMessage) for event in events)
 
 
 def test_subscriber_callback_errors_keep_bounded_history():
@@ -202,6 +241,39 @@ def test_subscriber_on_error_failures_are_captured_at_python_boundary():
     assert isinstance(sub.callback_errors[0].original, ValueError)
     assert isinstance(sub.callback_errors[1].original, RuntimeError)
     sub.unsubscribe()
+
+
+def test_observe_fatal_base_exception_propagates_to_initiating_call():
+    graph = Graph("py-observe-fatal-smoke")
+    source = graph.state(1, name="source")
+
+    def observer(event: GraphEvent) -> None:
+        if event.message == DataMessage(2):
+            raise SystemExit("observe exit")
+
+    sub = graph.observe(observer)
+    with pytest.raises(SystemExit, match="observe exit"):
+        source.set(2)
+    sub.unsubscribe()
+
+
+def test_observe_fatal_during_registration_propagates_without_leaking_observer():
+    graph = Graph("py-observe-eager-fatal-smoke")
+    source = graph.state(1, name="source")
+    source.subscribe(lambda _msg: None)
+    calls = 0
+
+    def observer(_event: GraphEvent) -> None:
+        nonlocal calls
+        calls += 1
+        raise SystemExit("observe eager exit")
+
+    with pytest.raises(SystemExit, match="observe eager exit"):
+        graph.observe(observer)
+
+    calls_after_registration = calls
+    source.set(2)
+    assert calls == calls_after_registration
 
 
 def test_graph_observe_uses_typed_message_shape():
@@ -248,6 +320,72 @@ def test_public_value_and_runtime_errors_are_facade_exceptions():
     derived = graph.derived([source], lambda value: value + 1, name="derived")
     with pytest.raises(GraphReflyRuntimeError, match="state nodes"):
         derived.set(3)
+
+
+def test_graph_callback_fatal_base_exception_propagates_without_graph_error():
+    graph = Graph("py-graph-fatal-smoke")
+    source = graph.state(1, name="source")
+
+    def boom(_value: int) -> int:
+        raise SystemExit("graph exit")
+
+    bad = graph.derived([source], boom, name="bad")
+    with pytest.raises(SystemExit, match="graph exit"):
+        bad.subscribe(lambda _msg: None)
+
+    assert bad.status != "errored"
+
+
+def test_graph_callback_fatal_during_batch_commit_propagates_without_graph_error():
+    graph = Graph("py-batch-commit-fatal-smoke")
+    source = graph.state(0, name="source")
+    seen: list[Message[object]] = []
+
+    def boom(value: int) -> int:
+        if value == 1:
+            raise SystemExit("batch commit exit")
+        return value
+
+    bad = graph.derived([source], boom, name="bad")
+    with pytest.raises(SystemExit, match="batch commit exit"), bad.subscribe(seen.append):
+        graph.batch(lambda: source.set(1))
+
+    assert bad.status != "errored"
+    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
+
+
+def test_graph_close_releases_facade_subscriptions_and_rejects_later_use():
+    graph = Graph("py-close-smoke")
+    source = graph.state(1, name="source")
+    seen: list[Message[int]] = []
+    sub = source.subscribe(seen.append)
+
+    assert sub.closed is False
+    graph.close()
+    graph.close()
+
+    assert graph.closed is True
+    assert sub.closed is True
+    sub.unsubscribe()
+    with pytest.raises(GraphReflyRuntimeError, match="graph is closed"):
+        source.cache()
+    with pytest.raises(GraphReflyRuntimeError, match="graph is closed"):
+        graph.state(2, name="after_close")
+
+
+def test_dropped_subscription_handle_releases_native_subscription():
+    graph = Graph("py-subscription-drop-smoke")
+    source = graph.state(1, name="source")
+    seen: list[Message[int]] = []
+
+    sub = source.subscribe(seen.append)
+    assert DataMessage(1) in seen
+    del sub
+    gc.collect()
+
+    source.set(2)
+
+    assert DataMessage(2) not in seen
 
 
 def test_callback_error_class_is_public_taxonomy_for_future_mapping():

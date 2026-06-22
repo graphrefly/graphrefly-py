@@ -13,6 +13,10 @@ class GraphReflyValueError(GraphReflyError, ValueError):
     """Invalid public API value for this facade slice."""
 
 
+class GraphReflyNoDataError(GraphReflyError, LookupError):
+    """A node has no cached DATA value at the public Python boundary."""
+
+
 class CallbackError(GraphReflyError):
     """A Python callback failed and is mapped into graph ERROR."""
 
@@ -30,6 +34,6 @@ class GraphCallbackError(CallbackError):
 class SubscriberCallbackError(CallbackError):
     """A subscribe/observe callback failed at the Python observer boundary."""
 
-    def __init__(self, original: BaseException) -> None:
+    def __init__(self, original: Exception) -> None:
         self.original = original
         super().__init__(str(original))
