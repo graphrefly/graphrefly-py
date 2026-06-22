@@ -34,9 +34,14 @@ Current Python value/message boundary:
 - Public observations use `DataMessage`, `ErrorMessage`, and `ControlMessage`.
 - Public advanced authoring uses `Graph.node(deps, callback, name=None)`, where
   `callback` receives a Python-owned callback-scoped `Ctx` facade. `Ctx` may expose
-  host-natural dep presence/value reads, `emit`, per-node `state`, `on_invalidate`,
-  and `on_deactivation`; it is not a raw PyO3 object and must not expose arbitrary
-  raw protocol message construction/sending.
+  host-natural dep presence/value reads, raw `wave_data`, `terminal(index)`, `emit`,
+  per-node `state`, `on_invalidate`, and `on_deactivation`; it is not a raw PyO3
+  object and must not expose arbitrary raw protocol message construction/sending.
+  `wave_data` is the only raw dep-value input surface (`dep -> waves -> values`):
+  no-wave is `[]`, RESOLVED-only is `[[]]`, INVALIDATE projects as exported
+  `graphrefly.SENTINEL`, and COMPLETE/ERROR live only in `terminal(index)`. Do not
+  add raw `latest`, `prevData`, `latestData`, `depRecords[i].latest`, or equivalent
+  parallel value aliases. `graphrefly.SENTINEL` itself is not legal DATA.
 - Public graph-owned control convenience is `Graph.pause(node, lock_id)`, `Graph.resume(node, lock_id)`, and `Graph.invalidate(node)`. Do not expose raw `Node.up(msgs)` or arbitrary public message sending.
 - Node callback failures become graph `ERROR` payloads wrapped as `GraphCallbackError`.
 - Subscribe/observe callback failures are Python observer-boundary failures captured as `SubscriberCallbackError`.

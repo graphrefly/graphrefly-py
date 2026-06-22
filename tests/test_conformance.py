@@ -1,4 +1,15 @@
-from graphrefly import ControlMessage, ErrorMessage, Graph, Message, _native
+import pytest
+
+from graphrefly import (
+    SENTINEL,
+    ControlMessage,
+    ErrorMessage,
+    Graph,
+    GraphReflyValueError,
+    Message,
+    Sentinel,
+    _native,
+)
 
 
 def test_c5_pause_lockset_multi_source_public_facade():
@@ -332,3 +343,168 @@ def test_c14_cleanup_hooks_are_per_run_and_single_run_hook_is_kept():
 
     assert single_flushes == 1
     assert single_cleanups == 1
+
+
+def test_c23_raw_ctx_wave_data_preserves_per_wave_distinctions():
+    graph = Graph("py-c23-wave-data")
+    a = graph.state(0, name="a")
+    b = graph.state("initial", name="b")
+    captures: list[list[list[list[object]]]] = []
+    terminals: list[list[object]] = []
+    alias_presence: dict[str, bool] = {}
+
+    def body(ctx) -> None:
+        nonlocal alias_presence
+        captures.append(ctx.wave_data)
+        terminals.append([ctx.terminal(0), ctx.terminal(1)])
+        alias_presence = {
+            name: hasattr(ctx, name)
+            for name in ("latest", "prevData", "latestData", "depRecords")
+        }
+
+    node = graph.node([a, b], body, name="node", partial=True)
+    with node.subscribe(lambda _msg: None):
+        captures.clear()
+        terminals.clear()
+
+        b.set("b")
+        assert captures[-1] == [[], [["b"]]]
+        assert terminals[-1] == [False, False]
+        assert alias_presence == {
+            "latest": False,
+            "prevData": False,
+            "latestData": False,
+            "depRecords": False,
+        }
+
+        a._native._up_dirty()
+        a._native._down_resolved()
+        assert captures[-1] == [[[]], []]
+        assert terminals[-1] == [False, False]
+
+        a._native._down_data_data_invalidate(1, 2)
+        assert captures[-1] == [[[1, 2, SENTINEL]], []]
+        assert captures[-1][0][0][2] is SENTINEL
+        assert terminals[-1] == [False, False]
+
+        a.set(None)
+        assert captures[-1] == [[[None]], []]
+        assert captures[-1][0][0][0] is None
+
+        a.set([])
+        assert captures[-1] == [[[[]]], []]
+
+
+def test_c23_wave_data_can_drive_quiet_unread_dep_behavior():
+    graph = Graph("py-c23-wave-data-quiet")
+    a = graph.state(1, name="a")
+    b = graph.state("initial", name="b")
+    observed: list[Message[object]] = []
+    captures: list[list[list[list[object]]]] = []
+
+    def body(ctx) -> None:
+        captures.append(ctx.wave_data)
+        if ctx.wave_data[1] and not ctx.wave_data[0]:
+            return
+        if ctx.has_data(0):
+            ctx.emit(ctx.data(0))
+
+    node = graph.node([a, b], body, name="node", partial=True)
+    with node.subscribe(observed.append):
+        observed.clear()
+        captures.clear()
+
+        b.set("b")
+
+    assert captures[-1] == [[], [["b"]]]
+    assert [msg.kind for msg in observed] == ["DIRTY", "RESOLVED"]
+
+
+def test_c23_terminal_metadata_is_separate_from_wave_data():
+    complete_graph = Graph("py-c23-complete-terminal")
+    complete_source = complete_graph.state(1, name="source")
+    complete_waves: list[list[list[list[object]]]] = []
+    complete_terminals: list[object] = []
+
+    def complete_body(ctx) -> None:
+        complete_waves.append(ctx.wave_data)
+        complete_terminals.append(ctx.terminal(0))
+
+    complete_node = complete_graph.node(
+        [complete_source],
+        complete_body,
+        name="node",
+        partial=True,
+        complete_when_deps_complete=False,
+        terminal_as_real_input=True,
+    )
+    with complete_node.subscribe(lambda _msg: None):
+        complete_waves.clear()
+        complete_terminals.clear()
+        complete_source._native._down_complete()
+
+    assert complete_waves[-1] == [[]]
+    assert complete_terminals[-1] is True
+
+    error_graph = Graph("py-c23-error-terminal")
+    error_source = error_graph.state(1, name="source")
+    error_waves: list[list[list[list[object]]]] = []
+    error_terminals: list[object] = []
+
+    def error_body(ctx) -> None:
+        error_waves.append(ctx.wave_data)
+        error_terminals.append(ctx.terminal(0))
+
+    error_node = error_graph.node(
+        [error_source],
+        error_body,
+        name="node",
+        partial=True,
+        complete_when_deps_complete=False,
+        error_when_deps_error=False,
+        terminal_as_real_input=True,
+    )
+    with error_node.subscribe(lambda _msg: None):
+        error_waves.clear()
+        error_terminals.clear()
+        error_source._native._down_error("boom")
+
+    assert error_waves[-1] == [[]]
+    assert error_terminals[-1] == "boom"
+
+
+def test_c23_python_sentinel_is_not_a_legal_data_payload():
+    assert Sentinel() is SENTINEL
+
+    graph = Graph("py-c23-sentinel-data")
+    with pytest.raises(GraphReflyValueError, match="cannot be DATA"):
+        graph.state(SENTINEL)
+
+    source = graph.state(1, name="source")
+    with pytest.raises(GraphReflyValueError, match="cannot be DATA"):
+        source.set(SENTINEL)
+
+    emit_seen: list[Message[object]] = []
+
+    def emit_sentinel(ctx) -> None:
+        ctx.emit(SENTINEL)
+
+    emit_node = graph.node([source], emit_sentinel, name="emit-sentinel", partial=True)
+    with emit_node.subscribe(emit_seen.append):
+        pass
+    assert isinstance(emit_seen[-1], ErrorMessage)
+    assert "cannot be DATA" in emit_seen[-1].error.message
+
+    producer_seen: list[Message[object]] = []
+    producer = graph.producer(lambda: SENTINEL, name="producer-sentinel")
+    with producer.subscribe(producer_seen.append):
+        pass
+    assert isinstance(producer_seen[-1], ErrorMessage)
+    assert "cannot be DATA" in producer_seen[-1].error.message
+
+    derived_seen: list[Message[object]] = []
+    derived = graph.derived([source], lambda _value: SENTINEL, name="derived-sentinel")
+    with derived.subscribe(derived_seen.append):
+        pass
+    assert isinstance(derived_seen[-1], ErrorMessage)
+    assert "cannot be DATA" in derived_seen[-1].error.message

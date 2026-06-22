@@ -8,7 +8,7 @@ from importlib import metadata
 from importlib.metadata import PackageNotFoundError
 from inspect import isawaitable, iscoroutinefunction
 from threading import get_ident
-from typing import Any, Literal, NoReturn, TypeVar, cast, overload
+from typing import Any, ClassVar, Final, Literal, NoReturn, TypeVar, cast, overload
 from weakref import ReferenceType, ref
 
 from graphrefly import _native
@@ -26,6 +26,24 @@ U = TypeVar("U")
 _VERSION = "0.21.0a0"
 _MAX_CALLBACK_ERRORS = 32
 _NO_DEFAULT = object()
+
+
+class Sentinel:
+    """Python representation of protocol SENTINEL in raw ctx wave data."""
+
+    __slots__ = ()
+    _instance: ClassVar[Sentinel | None] = None
+
+    def __new__(cls) -> Sentinel:
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        return "graphrefly.SENTINEL"
+
+
+SENTINEL: Final = Sentinel()
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,19 +104,26 @@ class _GraphLifetime:
             if (live := item()) is not None and live is not subscription
         ]
 
-    def close(self) -> None:
+    def close(self, *, suppress_errors: bool = False) -> None:
         if self.closed:
             return
         self.closed = True
         subscriptions = tuple(item() for item in self.subscriptions)
         self.subscriptions.clear()
+        first_error: BaseException | None = None
         for subscription in subscriptions:
             if subscription is not None:
-                subscription._close_from_graph()
+                try:
+                    subscription._close_from_graph()
+                except BaseException as error:
+                    if first_error is None:
+                        first_error = error
+        if first_error is not None and not suppress_errors:
+            raise first_error
 
     def poison(self) -> None:
         self.poisoned = True
-        self.close()
+        self.close(suppress_errors=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,8 +255,30 @@ class Ctx:
             return default
         return value
 
+    @property
+    def wave_data(self) -> list[list[list[object]]]:
+        self._check_thread()
+        try:
+            return self._native.wave_data(SENTINEL)
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+
+    def terminal(self, index: int) -> bool | object:
+        self._check_thread()
+        try:
+            return self._native.terminal(index)
+        except IndexError:
+            raise
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+
     def emit(self, value: object) -> None:
         self._check_thread()
+        _reject_sentinel_data(value)
         try:
             self._native.emit(value)
         except RuntimeError as error:
@@ -339,6 +386,7 @@ class Node[T]:
         if not self._writable:
             msg = "set() is only available on state nodes in the v0 Python facade"
             raise GraphReflyRuntimeError(msg)
+        _reject_sentinel_data(value)
         try:
             self._native.set(value)
         except ValueError as error:
@@ -462,6 +510,7 @@ class Graph:
 
     def state(self, value: T, name: str | None = None) -> Node[T]:
         self._check_thread()
+        _reject_sentinel_data(value)
         try:
             return Node(
                 self._native.state(value, name),
@@ -498,6 +547,7 @@ class Graph:
         def native_callback() -> T:
             value = callback()
             _reject_awaitable(value)
+            _reject_sentinel_data(value)
             return value
 
         try:
@@ -542,6 +592,7 @@ class Graph:
         def native_callback(*values: object) -> U:
             value = callback(*values)
             _reject_awaitable(value)
+            _reject_sentinel_data(value)
             return value
 
         try:
@@ -561,6 +612,11 @@ class Graph:
         deps: Iterable[Node[Any]],
         callback: Callable[[Ctx], object],
         name: str | None = None,
+        *,
+        partial: bool = False,
+        complete_when_deps_complete: bool = True,
+        error_when_deps_error: bool = True,
+        terminal_as_real_input: bool = False,
     ) -> Node[object]: ...
 
     @overload
@@ -569,6 +625,11 @@ class Graph:
         deps: Iterable[Node[Any]],
         callback: None = None,
         name: str | None = None,
+        *,
+        partial: bool = False,
+        complete_when_deps_complete: bool = True,
+        error_when_deps_error: bool = True,
+        terminal_as_real_input: bool = False,
     ) -> Callable[[Callable[[Ctx], object]], Node[object]]: ...
 
     def node(
@@ -576,11 +637,29 @@ class Graph:
         deps: Iterable[Node[Any]],
         callback: Callable[[Ctx], object] | None = None,
         name: str | None = None,
+        *,
+        partial: bool = False,
+        complete_when_deps_complete: bool = True,
+        error_when_deps_error: bool = True,
+        terminal_as_real_input: bool = False,
     ) -> Node[object] | Callable[[Callable[[Ctx], object]], Node[object]]:
         self._check_thread()
         deps = list(deps)
+        _reject_non_bool("partial", partial)
+        _reject_non_bool("complete_when_deps_complete", complete_when_deps_complete)
+        _reject_non_bool("error_when_deps_error", error_when_deps_error)
+        _reject_non_bool("terminal_as_real_input", terminal_as_real_input)
         if callback is None:
-            return lambda fn: self.node(deps, fn, name or fn.__name__)
+            return lambda fn: self.node(
+                deps,
+                fn,
+                name or fn.__name__,
+                partial=partial,
+                complete_when_deps_complete=complete_when_deps_complete,
+                error_when_deps_error=error_when_deps_error,
+                terminal_as_real_input=terminal_as_real_input,
+            )
+        _reject_async_callable(callback)
         native_deps = self._native_deps(deps)
 
         def native_callback(native_ctx: _native.Ctx) -> None:
@@ -595,7 +674,15 @@ class Graph:
 
         try:
             return Node(
-                self._native.node(native_deps, native_callback, name),
+                self._native.node(
+                    native_deps,
+                    native_callback,
+                    name,
+                    partial,
+                    complete_when_deps_complete,
+                    error_when_deps_error,
+                    terminal_as_real_input,
+                ),
                 owner_thread=self._owner_thread,
                 lifetime=self._lifetime,
             )
@@ -783,6 +870,18 @@ def _poison_on_fatal(lifetime: _GraphLifetime, error: BaseException) -> NoReturn
 def _reject_non_string_lock_id(lock_id: str) -> None:
     if not isinstance(lock_id, str):
         msg = "pause/resume lock_id must be a str in the Python facade"
+        raise GraphReflyValueError(msg)
+
+
+def _reject_non_bool(name: str, value: bool) -> None:
+    if not isinstance(value, bool):
+        msg = f"{name} must be a bool in the Python facade"
+        raise GraphReflyValueError(msg)
+
+
+def _reject_sentinel_data(value: object) -> None:
+    if value is SENTINEL:
+        msg = "graphrefly.SENTINEL is a protocol absence marker and cannot be DATA"
         raise GraphReflyValueError(msg)
 
 

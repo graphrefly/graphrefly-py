@@ -186,6 +186,130 @@ def test_advanced_ctx_dep_presence_does_not_conflate_none_with_absence():
     assert seen == [(True, None, 1), (False, "missing", 2)]
 
 
+def test_advanced_node_decorator_form_uses_function_name_and_ctx():
+    graph = Graph("py-node-decorator-smoke")
+    source = graph.state(1, name="source")
+
+    @graph.node([source])
+    def plus_ten(ctx: Ctx) -> None:
+        ctx.emit(ctx.data(0) + 10)
+
+    with plus_ten.subscribe(lambda _msg: None):
+        assert plus_ten.cache() == 11
+
+    entry = next(node for node in graph.describe()["nodes"] if node["name"] == "plus_ten")
+    assert entry["factory"] == "node"
+
+
+def test_advanced_ctx_state_none_does_not_conflate_absence_when_has_state_is_checked():
+    graph = Graph("py-node-state-none-smoke")
+    source = graph.state(1, name="source")
+    seen: list[tuple[bool, object | None]] = []
+
+    def body(ctx: Ctx) -> None:
+        seen.append((ctx.has_state, ctx.state))
+        ctx.state = None
+        ctx.emit(seen[-1])
+
+    node = graph.node([source], body, name="state_none")
+    with node.subscribe(lambda _msg: None):
+        assert node.cache() == (False, None)
+        source.set(2)
+        assert node.cache() == (True, None)
+
+    assert seen == [(False, None), (True, None)]
+
+
+def test_advanced_node_async_callback_is_rejected_at_registration():
+    graph = Graph("py-node-async-registration-smoke")
+    source = graph.state(1, name="source")
+
+    async def async_body(_ctx: Ctx) -> None:
+        return None
+
+    with pytest.raises(GraphReflyRuntimeError, match="async callbacks are deferred"):
+        graph.node([source], async_body, name="async_node")
+
+    with pytest.raises(GraphReflyRuntimeError, match="async callbacks are deferred"):
+        @graph.node([source])
+        async def async_decorated(_ctx: Ctx) -> None:
+            return None
+
+
+def test_advanced_ctx_multiple_emit_order_is_preserved():
+    graph = Graph("py-node-multi-emit-smoke")
+    source = graph.state(1, name="source")
+    seen: list[Message[object]] = []
+
+    def body(ctx: Ctx) -> None:
+        ctx.emit(("first", ctx.data(0)))
+        ctx.emit(("second", ctx.data(0)))
+
+    node = graph.node([source], body, name="multi_emit")
+    with node.subscribe(seen.append):
+        assert node.cache() == ("second", 1)
+
+    assert [msg.value for msg in seen if isinstance(msg, DataMessage)] == [
+        ("first", 1),
+        ("second", 1),
+    ]
+
+
+def test_advanced_ctx_index_out_of_range_raises_index_error():
+    graph = Graph("py-node-index-error-smoke")
+    source = graph.state(1, name="source")
+    checked = False
+
+    def body(ctx: Ctx) -> None:
+        nonlocal checked
+        with pytest.raises(IndexError):
+            ctx.has_data(1)
+        with pytest.raises(IndexError):
+            ctx.data(1)
+        checked = True
+        ctx.emit(ctx.data(0))
+
+    node = graph.node([source], body, name="index_error")
+    with node.subscribe(lambda _msg: None):
+        assert node.cache() == 1
+
+    assert checked is True
+
+
+def test_advanced_ctx_hook_async_callback_becomes_graph_error_without_leaking_coroutine(
+    recwarn: pytest.WarningsRecorder,
+):
+    graph = Graph("py-node-async-hook-smoke")
+    source = graph.state(1, name="source")
+    seen: list[Message[object]] = []
+
+    async def async_cleanup() -> None:
+        return None
+
+    def cleanup() -> object:
+        return async_cleanup()
+
+    def body(ctx: Ctx) -> None:
+        ctx.on_invalidate(cleanup)
+        ctx.emit(ctx.data(0))
+
+    node = graph.node([source], body, name="async_hook")
+    with node.subscribe(seen.append):
+        seen.clear()
+        graph.invalidate(source)
+
+    gc.collect()
+    assert any(
+        isinstance(msg, ErrorMessage) and "async callbacks are deferred" in msg.error.message
+        for msg in seen
+    )
+    assert not [
+        warning
+        for warning in recwarn
+        if issubclass(warning.category, RuntimeWarning) and "never awaited" in str(warning.message)
+    ]
+
+
 def test_advanced_node_callback_exception_becomes_graph_error_observation():
     graph = Graph("py-node-error-smoke")
     source = graph.state(1, name="source")
@@ -345,6 +469,33 @@ def test_advanced_node_fatal_during_batch_commit_propagates_without_graph_error(
     with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
         bad.cache(default=None)
     assert not any(isinstance(msg, ErrorMessage) for msg in seen)
+
+
+def test_fatal_poison_preserves_original_exception_when_teardown_also_fails():
+    graph = Graph("py-fatal-teardown-mask-smoke")
+    source = graph.state(1, name="source")
+
+    def cleanup() -> None:
+        raise SystemExit("cleanup exit")
+
+    def cleanup_body(ctx: Ctx) -> None:
+        ctx.on_deactivation(cleanup)
+        ctx.emit(ctx.data(0))
+
+    cleanup_node = graph.node([source], cleanup_body, name="cleanup")
+    cleanup_subscription = cleanup_node.subscribe(lambda _msg: None)
+
+    def original(_ctx: Ctx) -> None:
+        raise SystemExit("original exit")
+
+    fatal_node = graph.node([source], original, name="fatal")
+    with pytest.raises(SystemExit, match="original exit"):
+        fatal_node.subscribe(lambda _msg: None)
+
+    assert graph.closed is True
+    assert cleanup_subscription.closed is True
+    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
+        source.cache()
 
 
 def test_decorators_and_context_manager_are_explicit_graph_owned_sugar():

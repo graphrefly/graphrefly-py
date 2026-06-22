@@ -2,6 +2,7 @@
 
 from graphrefly._facade import (
     _VERSION,
+    SENTINEL,
     ControlMessage,
     Ctx,
     DataMessage,
@@ -10,6 +11,7 @@ from graphrefly._facade import (
     GraphEvent,
     Message,
     Node,
+    Sentinel,
     Subscription,
     version,
 )
@@ -40,6 +42,8 @@ __all__ = [
     "GraphReflyValueError",
     "Message",
     "Node",
+    "SENTINEL",
+    "Sentinel",
     "Subscription",
     "SubscriberCallbackError",
     "__version__",
