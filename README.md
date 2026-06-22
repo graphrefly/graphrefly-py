@@ -33,12 +33,13 @@ The Python-owned facade exposes:
 - `Graph`
 - `Node[T]`
 - `Ctx`
+- `PullContext`
 - `Subscription`
 - `DataMessage[T]`, `ErrorMessage`, `ControlMessage`, `Message[T]`, and `GraphEvent`
 - `SENTINEL`, the Python protocol marker used inside raw ctx `wave_data` for INVALIDATE/no-DATA projection
 - synchronous `Graph.state`, `Graph.producer`, `Graph.node`, `Graph.derived`, `Graph.effect`, and `Graph.batch`
 - explicit-Graph decorator sugar for `producer`, `derived`, and `effect`
-- advanced `Ctx` helpers for dep DATA presence/value reads, raw `wave_data`, `terminal(index)`, `emit`, per-node `state`, `on_invalidate`, and `on_deactivation`
+- advanced `Ctx` helpers for dep DATA presence/value reads, raw `wave_data`, `terminal(index)`, `emit`, per-node `state`, `on_invalidate`, `on_deactivation`, read-only `pull` / `pull_params()`, and narrow `request_pull(...)` / `request_pull_next(...)`
 - `Node.set`, `Node.cache(default=...)`, `Node.has_value`, `Node.status`, `Node.subscribe`
 - graph-owned control convenience: `Graph.pause(node, lock_id)`, `Graph.resume(node, lock_id)`, and `Graph.invalidate(node)`
 - `Graph.describe` and `Graph.observe`
@@ -51,13 +52,14 @@ The Python-owned facade exposes:
 - Python values are held as strong object references by the native engine. No serialization, copy, or immutability promise is made yet.
 - `None` is valid Python DATA. Absence of DATA is represented by private native presence flags, not by a public `None` sentinel.
 - Raw advanced ctx input is `ctx.wave_data`: `dep -> waves -> values`, where `[]` means no wave for that dep, `[[]]` means a RESOLVED-only wave, DATA payloads appear directly, and INVALIDATE appears as the exported `graphrefly.SENTINEL` object. `ctx.terminal(index)` is separate metadata: `False` for no terminal, `True` for COMPLETE, or an ERROR diagnostic payload. Ergonomic `ctx.data()` / `ctx.has_data()` are derived helpers, not the raw protocol shape. `graphrefly.SENTINEL` itself is not legal DATA.
+- Pull-mode nodes use `Graph.node(..., pull_id="name", pausable=True | "resumeAll")`. During a PULL invocation, `ctx.pull` is a read-only `PullContext` and `ctx.pull_params(default=None)` reads the demand params. Downstream nodes may issue only narrow PULL demand via `ctx.request_pull(...)` or boundary-deferred `ctx.request_pull_next(...)`; these helpers do not expose arbitrary message construction.
 - `Node.cache()` returns cached DATA, including `None`, or raises `GraphReflyNoDataError` when no DATA is present. Use `Node.cache(default=...)` or `Node.has_value` for non-exceptional absence handling.
 - `Graph.close()` and `with Graph(...)` are Python host lifetime scopes. They release facade-created subscriptions/observers and reject later facade use without emitting protocol `TEARDOWN` or `COMPLETE`. Fatal host-boundary aborts automatically close/poison the facade after propagating the original fatal exception.
 - Async callbacks are not accepted in the sync core. Asyncio/trio adapters are deferred to later CSP-7 slices.
 - Node callback failures become graph `ERROR` observations wrapped as `GraphCallbackError`. Subscribe/observe callback failures stay at the Python observer boundary as `SubscriberCallbackError`. Public API value/runtime failures use `GraphReflyValueError` and `GraphReflyRuntimeError`.
 - Fatal Python `BaseException` process-control failures such as `KeyboardInterrupt`, `SystemExit`, and `GeneratorExit` propagate back to the initiating Python caller instead of becoming graph `ERROR` or `SubscriberCallbackError`. Per D431/D436, a fatal first observed after native batch commit has begun aborts the host boundary but does not claim full transactional rollback of graph effects already committed; the facade is then closed/poisoned and later use is rejected.
 - `DataIssue` is a reserved passive DATA envelope for future domain/material issue payloads; this slice does not emit it and does not change protocol `ERROR` semantics.
-- Public Python does not expose raw `Node.up(msgs)`, arbitrary message construction/sending, raw PyO3 handles, or parallel raw value aliases such as `latest`, `prevData`, `latestData`, or `depRecords[i].latest`.
+- Public Python does not expose raw `Node.up(msgs)`, raw `Node.down(msgs)`, arbitrary message construction/sending, raw `ctx.up(msgs)`, raw PyO3 handles, or parallel raw value aliases such as `latest`, `prevData`, `latestData`, or `depRecords[i].latest`.
 
 ## Local Development
 

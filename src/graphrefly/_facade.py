@@ -76,6 +76,7 @@ class ControlMessage:
 
 type Message[T] = DataMessage[T] | ErrorMessage | ControlMessage
 type ObserverErrorHandler = Callable[[SubscriberCallbackError], object]
+type PausableMode = bool | Literal["resumeAll"]
 
 
 class _GraphLifetime:
@@ -134,6 +135,14 @@ class GraphEvent:
     message: Message[Any]
     tier: int
     seq: int
+
+
+@dataclass(frozen=True, slots=True)
+class PullContext:
+    """Read-only PULL demand context visible during a pull-holder invocation."""
+
+    pull_id: str
+    params: object | None = None
 
 
 class Subscription:
@@ -276,6 +285,32 @@ class Ctx:
         except BaseException as error:
             _poison_on_fatal(self._lifetime, error)
 
+    @property
+    def pull(self) -> PullContext | None:
+        self._check_thread()
+        try:
+            native_pull = self._native._pull_context()
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+        if native_pull is None:
+            return None
+        pull_id, params = native_pull
+        return PullContext(pull_id=pull_id, params=params)
+
+    @overload
+    def pull_params(self) -> object | None: ...
+
+    @overload
+    def pull_params(self, default: U) -> object | U: ...
+
+    def pull_params(self, default: object = None) -> object:
+        pull = self.pull
+        if pull is None or pull.params is None:
+            return default
+        return pull.params
+
     def emit(self, value: object) -> None:
         self._check_thread()
         _reject_sentinel_data(value)
@@ -357,12 +392,59 @@ class Ctx:
         except BaseException as error:
             _poison_on_fatal(self._lifetime, error)
 
+    def request_pull(
+        self,
+        pull_id: str,
+        params: object | None = None,
+        *,
+        toward_dep: int | None = None,
+    ) -> None:
+        self._check_thread()
+        _reject_non_string_pull_id(pull_id)
+        _reject_sentinel_data(params)
+        toward_dep = _normalize_toward_dep(toward_dep)
+        self._reject_unknown_toward_dep(toward_dep)
+        try:
+            self._native._up_pull(pull_id, params, toward_dep)
+        except IndexError:
+            raise
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+
+    def request_pull_next(
+        self,
+        pull_id: str,
+        params: object | None = None,
+        *,
+        toward_dep: int | None = None,
+    ) -> None:
+        self._check_thread()
+        _reject_non_string_pull_id(pull_id)
+        _reject_sentinel_data(params)
+        toward_dep = _normalize_toward_dep(toward_dep)
+        self._reject_unknown_toward_dep(toward_dep)
+        try:
+            self._native._up_next_pull(pull_id, params, toward_dep)
+        except IndexError:
+            raise
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+
     def _check_thread(self) -> None:
         if get_ident() != self._owner_thread:
             msg = "GraphReFly Python ctx objects are bound to their creating thread in v0"
             raise GraphReflyRuntimeError(msg)
         if self._lifetime.closed:
             raise GraphReflyRuntimeError(self._lifetime.closed_message)
+
+    def _reject_unknown_toward_dep(self, toward_dep: int | None) -> None:
+        if toward_dep is not None and toward_dep >= self.dep_len:
+            msg = "toward_dep must reference an existing dependency in the Python facade"
+            raise GraphReflyValueError(msg)
 
 
 class Node[T]:
@@ -617,6 +699,8 @@ class Graph:
         complete_when_deps_complete: bool = True,
         error_when_deps_error: bool = True,
         terminal_as_real_input: bool = False,
+        pausable: PausableMode = True,
+        pull_id: str | None = None,
     ) -> Node[object]: ...
 
     @overload
@@ -630,6 +714,8 @@ class Graph:
         complete_when_deps_complete: bool = True,
         error_when_deps_error: bool = True,
         terminal_as_real_input: bool = False,
+        pausable: PausableMode = True,
+        pull_id: str | None = None,
     ) -> Callable[[Callable[[Ctx], object]], Node[object]]: ...
 
     def node(
@@ -642,6 +728,8 @@ class Graph:
         complete_when_deps_complete: bool = True,
         error_when_deps_error: bool = True,
         terminal_as_real_input: bool = False,
+        pausable: PausableMode = True,
+        pull_id: str | None = None,
     ) -> Node[object] | Callable[[Callable[[Ctx], object]], Node[object]]:
         self._check_thread()
         deps = list(deps)
@@ -649,6 +737,12 @@ class Graph:
         _reject_non_bool("complete_when_deps_complete", complete_when_deps_complete)
         _reject_non_bool("error_when_deps_error", error_when_deps_error)
         _reject_non_bool("terminal_as_real_input", terminal_as_real_input)
+        native_pausable = _native_pausable(pausable)
+        if pull_id is not None:
+            _reject_non_string_pull_id(pull_id)
+        if pull_id is not None and pausable is False:
+            msg = "pull_id nodes cannot use pausable=False in the Python facade"
+            raise GraphReflyValueError(msg)
         if callback is None:
             return lambda fn: self.node(
                 deps,
@@ -658,6 +752,8 @@ class Graph:
                 complete_when_deps_complete=complete_when_deps_complete,
                 error_when_deps_error=error_when_deps_error,
                 terminal_as_real_input=terminal_as_real_input,
+                pausable=pausable,
+                pull_id=pull_id,
             )
         _reject_async_callable(callback)
         native_deps = self._native_deps(deps)
@@ -682,6 +778,8 @@ class Graph:
                     complete_when_deps_complete,
                     error_when_deps_error,
                     terminal_as_real_input,
+                    native_pausable,
+                    pull_id,
                 ),
                 owner_thread=self._owner_thread,
                 lifetime=self._lifetime,
@@ -871,6 +969,35 @@ def _reject_non_string_lock_id(lock_id: str) -> None:
     if not isinstance(lock_id, str):
         msg = "pause/resume lock_id must be a str in the Python facade"
         raise GraphReflyValueError(msg)
+
+
+def _reject_non_string_pull_id(pull_id: str) -> None:
+    if not isinstance(pull_id, str):
+        msg = "pull_id must be a str in the Python facade"
+        raise GraphReflyValueError(msg)
+
+
+def _native_pausable(pausable: PausableMode) -> Literal["true", "resumeAll", "false"]:
+    if pausable is True:
+        return "true"
+    if pausable is False:
+        return "false"
+    if pausable == "resumeAll":
+        return "resumeAll"
+    msg = "pausable must be True, False, or 'resumeAll' in the Python facade"
+    raise GraphReflyValueError(msg)
+
+
+def _normalize_toward_dep(toward_dep: int | None) -> int | None:
+    if toward_dep is None:
+        return None
+    if isinstance(toward_dep, bool) or not isinstance(toward_dep, int):
+        msg = "toward_dep must be an int dependency index in the Python facade"
+        raise GraphReflyValueError(msg)
+    if toward_dep < 0:
+        msg = "toward_dep must be non-negative in the Python facade"
+        raise GraphReflyValueError(msg)
+    return toward_dep
 
 
 def _reject_non_bool(name: str, value: bool) -> None:

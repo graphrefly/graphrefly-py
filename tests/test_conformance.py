@@ -3,13 +3,17 @@ import pytest
 from graphrefly import (
     SENTINEL,
     ControlMessage,
+    DataMessage,
     ErrorMessage,
     Graph,
+    GraphReflyRuntimeError,
     GraphReflyValueError,
     Message,
+    PullContext,
     Sentinel,
-    _native,
 )
+from graphrefly import _conformance as conformance
+from graphrefly._conformance import ConformanceStimulus
 
 
 def test_c5_pause_lockset_multi_source_public_facade():
@@ -180,25 +184,25 @@ def test_c7_invalidate_upstream_source_and_downstream_hooks_fire_once():
 
 
 def test_c7_private_native_negative_upstream_controls_drop_at_depless_source():
-    graph = _native.Graph("py-c7-native-negative-controls")
-    source = graph.state(5, "source")
-    derived = graph.derived([source], lambda value: value, "derived")
-    seen: list[tuple[str, object]] = []
-    sub = derived.subscribe(lambda kind, value: seen.append((kind, value)))
+    graph = Graph("py-c7-native-negative-controls")
+    stimulus = ConformanceStimulus(graph)
+    source = graph.state(5, name="source")
+    derived = graph.derived([source], lambda value: value, name="derived")
+    seen: list[Message[object]] = []
 
-    assert derived.cache() == 5
-    seen.clear()
+    with derived.subscribe(seen.append):
+        assert derived.cache() == 5
+        seen.clear()
 
-    derived._up_dirty()
-    assert source.cache_entry() == (True, 5)
-    assert source.status() == "settled"
-    assert seen == []
+        stimulus.c7_send_unheld_dirty_up(derived)
+        assert source.cache() == 5
+        assert source.status == "settled"
+        assert seen == []
 
-    derived._up_teardown()
-    assert source.cache_entry() == (True, 5)
-    assert source.status() == "settled"
-    assert seen == []
-    sub.unsubscribe()
+        stimulus.c7_send_unheld_teardown_up(derived)
+        assert source.cache() == 5
+        assert source.status == "settled"
+        assert seen == []
 
 
 def test_c13_paused_invalidate_sole_dep_cancel_public_facade_regression():
@@ -349,8 +353,18 @@ def _kinds(messages: list[Message[object]]) -> list[str]:
     return [message.kind for message in messages]
 
 
+def _fresh_values(ctx, index: int) -> list[object]:
+    return [
+        value
+        for wave in ctx.wave_data[index]
+        for value in wave
+        if value is not SENTINEL
+    ]
+
+
 def test_c15_dep_complete_releases_dirty_and_joins_once():
     graph = Graph("py-c15-complete-mid-dirty")
+    stimulus = ConformanceStimulus(graph)
     b = graph.state(1, name="b")
     c = graph.state(10, name="c")
     runs = 0
@@ -375,12 +389,12 @@ def test_c15_dep_complete_releases_dirty_and_joins_once():
         runs = 0
         seen.clear()
 
-        b._native._down_dirty()
+        stimulus.c15_dep_goes_dirty(b)
         assert d.status == "dirty"
         c.set(20)
         assert runs == 0
         assert d.cache() == 11
-        b._native._down_complete()
+        stimulus.c15_dirty_dep_completes_without_data(b)
 
         assert _kinds(seen) == ["DIRTY", "DATA"]
         assert runs == 1
@@ -390,6 +404,7 @@ def test_c15_dep_complete_releases_dirty_and_joins_once():
 
 def test_c15_dep_complete_sole_dirty_contributor_un_dirties_without_data():
     graph = Graph("py-c15-sole-dirty-complete")
+    stimulus = ConformanceStimulus(graph)
     b = graph.state(1, name="b")
     c = graph.state(10, name="c")
     seen: list[Message[object]] = []
@@ -408,8 +423,8 @@ def test_c15_dep_complete_sole_dirty_contributor_un_dirties_without_data():
         assert d.cache() == 11
         seen.clear()
 
-        b._native._down_dirty()
-        b._native._down_complete()
+        stimulus.c15_dep_goes_dirty(b)
+        stimulus.c15_dirty_dep_completes_without_data(b)
 
         assert _kinds(seen) == ["DIRTY", "RESOLVED"]
         assert d.cache() == 11
@@ -419,6 +434,7 @@ def test_c15_dep_complete_sole_dirty_contributor_un_dirties_without_data():
 
 def test_c15_absorbed_error_releases_dirty_and_can_read_terminal():
     graph = Graph("py-c15-rescue-error")
+    stimulus = ConformanceStimulus(graph)
     b = graph.state(1, name="b")
     c = graph.state(10, name="c")
     seen: list[Message[object]] = []
@@ -440,8 +456,8 @@ def test_c15_absorbed_error_releases_dirty_and_can_read_terminal():
         assert d.cache() == 11
         seen.clear()
 
-        b._native._down_dirty()
-        b._native._down_error("boom")
+        stimulus.c15_dep_goes_dirty(b)
+        stimulus.c15_dirty_dep_errors_without_data(b, "boom")
 
         assert _kinds(seen) == ["DIRTY", "DATA"]
         assert not any(isinstance(message, ErrorMessage) for message in seen)
@@ -452,6 +468,7 @@ def test_c15_absorbed_error_releases_dirty_and_can_read_terminal():
 
 def test_c15_gate_holds_terminal_dirty_release_un_dirties_without_running():
     graph = Graph("py-c15-gate-holds")
+    stimulus = ConformanceStimulus(graph)
     b = graph.state(0, name="b")
     c = graph.node([], lambda _ctx: None, name="empty-c")
     runs = 0
@@ -474,10 +491,10 @@ def test_c15_gate_holds_terminal_dirty_release_un_dirties_without_running():
         assert d.has_value is False
         seen.clear()
 
-        c._native._down_dirty()
+        stimulus.c15_dep_goes_dirty(c)
         b.set(5)
         assert runs == 0
-        c._native._down_complete()
+        stimulus.c15_dirty_dep_completes_without_data(c)
 
         assert runs == 0
         assert _kinds(seen) == ["DIRTY", "RESOLVED"]
@@ -486,6 +503,7 @@ def test_c15_gate_holds_terminal_dirty_release_un_dirties_without_running():
 
 def test_c17_absorbed_error_then_complete_auto_completes():
     graph = Graph("py-c17-error-then-complete")
+    stimulus = ConformanceStimulus(graph)
     b = graph.node([], lambda _ctx: None, name="empty-b")
     c = graph.node([], lambda _ctx: None, name="empty-c")
     seen: list[Message[object]] = []
@@ -503,11 +521,11 @@ def test_c17_absorbed_error_then_complete_auto_completes():
 
     with d.subscribe(seen.append):
         seen.clear()
-        c._native._down_error("boom")
+        stimulus.c17_dep_errors(c, "boom")
         assert d.status != "completed"
         assert d.status != "errored"
 
-        b._native._down_data_complete(1)
+        stimulus.c17_dep_emits_data_then_completes(b, 1)
 
         assert _kinds(seen).count("COMPLETE") == 1
         assert d.status == "completed"
@@ -515,6 +533,7 @@ def test_c17_absorbed_error_then_complete_auto_completes():
 
 def test_c17_complete_then_absorbed_error_auto_completes_order_independent():
     graph = Graph("py-c17-complete-then-error")
+    stimulus = ConformanceStimulus(graph)
     b = graph.node([], lambda _ctx: None, name="empty-b")
     c = graph.node([], lambda _ctx: None, name="empty-c")
     seen: list[Message[object]] = []
@@ -532,12 +551,12 @@ def test_c17_complete_then_absorbed_error_auto_completes_order_independent():
 
     with d.subscribe(seen.append):
         seen.clear()
-        b._native._down_data_complete(1)
+        stimulus.c17_dep_emits_data_then_completes(b, 1)
         assert _kinds(seen).count("COMPLETE") == 0
         assert d.status != "completed"
         assert d.status != "errored"
 
-        c._native._down_error("boom")
+        stimulus.c17_dep_errors(c, "boom")
 
         assert _kinds(seen).count("COMPLETE") == 1
         assert d.status == "completed"
@@ -545,6 +564,7 @@ def test_c17_complete_then_absorbed_error_auto_completes_order_independent():
 
 def test_c17_default_error_cascade_does_not_take_absorbed_path():
     graph = Graph("py-c17-default-error-cascade")
+    stimulus = ConformanceStimulus(graph)
     b = graph.node([], lambda _ctx: None, name="empty-b")
     c = graph.node([], lambda _ctx: None, name="empty-c")
     seen: list[Message[object]] = []
@@ -557,15 +577,604 @@ def test_c17_default_error_cascade_does_not_take_absorbed_path():
 
     with d.subscribe(seen.append):
         seen.clear()
-        c._native._down_error("boom")
+        stimulus.c17_dep_errors(c, "boom")
 
         assert any(isinstance(message, ErrorMessage) for message in seen)
         assert ControlMessage("COMPLETE") not in seen
         assert d.status == "errored"
 
 
+def test_c19_undirty_resolved_timing_respects_resumeall_and_batch():
+    def sum2(ctx) -> None:
+        ctx.emit(ctx.data(0, 0) + ctx.data(1, 0))
+
+    resume_graph = Graph("py-c19-resumeall-terminal")
+    resume_stimulus = ConformanceStimulus(resume_graph)
+    rb = resume_graph.state(1, name="b")
+    rc = resume_graph.state(10, name="c")
+    rseen: list[Message[object]] = []
+    rd = resume_stimulus.node(
+        [rb, rc],
+        sum2,
+        name="d",
+        pausable="resumeAll",
+        complete_when_deps_complete=False,
+    )
+    with rd.subscribe(rseen.append):
+        assert rd.cache() == 11
+        rseen.clear()
+
+        resume_graph.pause(rd, "resumeall")
+        resume_stimulus.c15_dep_goes_dirty(rb)
+        resume_stimulus.c15_dirty_dep_completes_without_data(rb)
+
+        assert _kinds(rseen) == ["DIRTY"]
+        resume_graph.resume(rd, "resumeall")
+        assert _kinds(rseen) == ["DIRTY", "RESOLVED"]
+        assert rd.cache() == 11
+
+    batch_graph = Graph("py-c19-batch-terminal")
+    batch_stimulus = ConformanceStimulus(batch_graph)
+    bb = batch_graph.state(1, name="b")
+    bc = batch_graph.state(10, name="c")
+    bseen: list[Message[object]] = []
+    bd = batch_graph.node(
+        [bb, bc],
+        sum2,
+        name="d",
+        complete_when_deps_complete=False,
+    )
+    with bd.subscribe(bseen.append):
+        assert bd.cache() == 11
+        bseen.clear()
+
+        def batch_body() -> None:
+            batch_stimulus.c15_dep_goes_dirty(bb)
+            batch_stimulus.c15_dirty_dep_completes_without_data(bb)
+            assert _kinds(bseen) == ["DIRTY"]
+
+        batch_graph.batch(batch_body)
+        assert _kinds(bseen) == ["DIRTY", "RESOLVED"]
+
+    invalidate_resume_graph = Graph("py-c19-resumeall-invalidate")
+    invalidate_resume_stimulus = ConformanceStimulus(invalidate_resume_graph)
+    irb = invalidate_resume_graph.state(1, name="b")
+    irc = invalidate_resume_stimulus.state_empty("c")
+    irseen: list[Message[object]] = []
+    ird = invalidate_resume_stimulus.node(
+        [irb, irc],
+        sum2,
+        name="d",
+        pausable="resumeAll",
+    )
+    with ird.subscribe(irseen.append):
+        assert ird.has_value is False
+        irseen.clear()
+
+        invalidate_resume_graph.pause(ird, "resumeall-invalidate")
+        invalidate_resume_stimulus.c15_dep_goes_dirty(irb)
+        invalidate_resume_stimulus.c19_dep_invalidates_after_dirty(irb)
+
+        assert _kinds(irseen) == ["DIRTY"]
+        invalidate_resume_graph.resume(ird, "resumeall-invalidate")
+        assert _kinds(irseen) == ["DIRTY", "RESOLVED"]
+        assert ird.has_value is False
+
+    invalidate_batch_graph = Graph("py-c19-batch-invalidate")
+    invalidate_batch_stimulus = ConformanceStimulus(invalidate_batch_graph)
+    ibb = invalidate_batch_graph.state(1, name="b")
+    ibc = invalidate_batch_stimulus.state_empty("c")
+    ibseen: list[Message[object]] = []
+    ibd = invalidate_batch_graph.node([ibb, ibc], sum2, name="d")
+    with ibd.subscribe(ibseen.append):
+        assert ibd.has_value is False
+        ibseen.clear()
+
+        def invalidate_batch_body() -> None:
+            invalidate_batch_stimulus.c15_dep_goes_dirty(ibb)
+            invalidate_batch_stimulus.c19_dep_invalidates_after_dirty(ibb)
+            assert _kinds(ibseen) == ["DIRTY"]
+
+        invalidate_batch_graph.batch(invalidate_batch_body)
+        assert _kinds(ibseen) == ["DIRTY", "RESOLVED"]
+        assert ibd.has_value is False
+
+    default_graph = Graph("py-c19-default-terminal")
+    default_stimulus = ConformanceStimulus(default_graph)
+    db = default_graph.state(1, name="b")
+    dc = default_graph.state(10, name="c")
+    dseen: list[Message[object]] = []
+    dd = default_graph.node(
+        [db, dc],
+        sum2,
+        name="d",
+        complete_when_deps_complete=False,
+    )
+    with dd.subscribe(dseen.append):
+        assert dd.cache() == 11
+        dseen.clear()
+        default_graph.pause(dd, "default")
+        default_stimulus.c15_dep_goes_dirty(db)
+        default_stimulus.c15_dirty_dep_completes_without_data(db)
+        assert _kinds(dseen) == ["DIRTY", "RESOLVED"]
+
+
+def test_c20_teardown_relays_through_terminal_intermediate_without_resurrection():
+    graph = Graph("py-c20-terminal-teardown")
+    stimulus = ConformanceStimulus(graph)
+    source = graph.state(1, name="source")
+    seen: list[Message[object]] = []
+
+    def forward(ctx) -> None:
+        if ctx.has_data(0):
+            ctx.emit(ctx.data(0))
+
+    mid = graph.node(
+        [source],
+        forward,
+        name="mid",
+        complete_when_deps_complete=False,
+    )
+    with mid.subscribe(seen.append):
+        assert mid.cache() == 1
+        stimulus.c23_dep_completes(mid)
+        assert mid.status == "completed"
+        seen.clear()
+
+        source.set(2)
+        assert seen == []
+        assert mid.status == "completed"
+
+        stimulus.c20_dep_tears_down(source)
+        assert _kinds(seen) == ["TEARDOWN"]
+        assert mid.status == "completed"
+
+    live_graph = Graph("py-c20-live-teardown")
+    live_stimulus = ConformanceStimulus(live_graph)
+    live_source = live_graph.state(1, name="source")
+    live_seen: list[Message[object]] = []
+    live_mid = live_graph.node([live_source], forward, name="mid")
+    with live_mid.subscribe(live_seen.append):
+        assert live_mid.cache() == 1
+        live_seen.clear()
+        live_stimulus.c20_dep_tears_down(live_source)
+        assert _kinds(live_seen) == ["COMPLETE", "TEARDOWN"]
+        assert live_mid.status == "completed"
+
+
+def test_c16_pull_family_public_quiet_self_demand_routing_and_resumeall():
+    graph = Graph("py-c16-pull-quiet")
+    stimulus = ConformanceStimulus(graph)
+    acc = graph.state(0, name="acc")
+    delta = stimulus.state_empty("delta")
+    seen: list[Message[object]] = []
+    pull_seen: list[object | None] = []
+
+    def snapshot(ctx) -> None:
+        assert isinstance(ctx.pull, PullContext)
+        pull_seen.append(ctx.pull_params())
+        if ctx.has_data(0):
+            ctx.emit(ctx.data(0))
+
+    snap = graph.node([acc], snapshot, name="snap", pull_id="snapshot")
+
+    def consumer(ctx) -> None:
+        trigger_values = _fresh_values(ctx, 0)
+        if trigger_values:
+            ctx.request_pull_next(
+                "snapshot",
+                {"limit": trigger_values[-1]},
+                toward_dep=1,
+            )
+        snap_values = _fresh_values(ctx, 1)
+        if snap_values:
+            ctx.emit(snap_values[-1])
+
+    demand = graph.node([delta, snap], consumer, name="demand", partial=True)
+    with demand.subscribe(seen.append):
+        seen.clear()
+        acc.set(1)
+        acc.set(2)
+        assert seen == []
+
+        delta.set(1)
+        assert pull_seen[-1] == {"limit": 1}
+        assert _kinds(seen)[-2:] == ["DIRTY", "DATA"]
+        assert demand.cache() == 2
+        seen.clear()
+
+        graph.resume(snap, "snapshot")
+        assert seen == []
+
+    with pytest.raises(GraphReflyValueError, match="pull_id nodes cannot use pausable=False"):
+        graph.node([acc], snapshot, pull_id="bad", pausable=False)
+
+    routed_graph = Graph("py-c16-routed-sibling")
+    routed_stimulus = ConformanceStimulus(routed_graph)
+    routed_acc = routed_graph.state(0, name="acc")
+    routed_trigger = routed_stimulus.state_empty("trigger")
+    f_runs = 0
+    h_runs = 0
+
+    def f_snap(ctx) -> None:
+        nonlocal f_runs
+        f_runs += 1
+        if ctx.has_data(0):
+            ctx.emit(ctx.data(0))
+
+    def h_snap(ctx) -> None:
+        nonlocal h_runs
+        h_runs += 1
+        if ctx.has_data(0):
+            ctx.emit(ctx.data(0))
+
+    f = routed_graph.node([routed_acc], f_snap, name="f", pull_id="F")
+    h = routed_graph.node([routed_acc], h_snap, name="h", pull_id="H")
+    g = routed_graph.node([f, h], lambda ctx: None, name="g", partial=True)
+
+    def d(ctx) -> None:
+        if _fresh_values(ctx, 0):
+            ctx.request_pull_next("F")
+
+    d_node = routed_graph.node([routed_trigger, g], d, name="d", partial=True)
+    with d_node.subscribe(lambda _msg: None):
+        routed_acc.set(1)
+        routed_trigger.set(1)
+        assert f_runs == 1
+        assert h_runs == 0
+
+    backlog_graph = Graph("py-c16-resumeall-backlog")
+    backlog_stimulus = ConformanceStimulus(backlog_graph)
+    backlog_acc = backlog_graph.state(0, name="acc")
+    backlog_trigger = backlog_stimulus.state_empty("trigger")
+    backlog_values: list[int] = []
+
+    backlog_snap = backlog_graph.node(
+        [backlog_acc],
+        lambda ctx: ctx.emit(ctx.data(0)) if ctx.has_data(0) else None,
+        name="snap",
+        pull_id="snapshot",
+        pausable="resumeAll",
+    )
+
+    def backlog_consumer(ctx) -> None:
+        if _fresh_values(ctx, 0):
+            ctx.request_pull_next("snapshot", toward_dep=1)
+        snap_values = _fresh_values(ctx, 1)
+        if snap_values:
+            value = snap_values[-1]
+            assert isinstance(value, int)
+            backlog_values.append(value)
+            ctx.emit(value)
+
+    backlog_demand = backlog_graph.node(
+        [backlog_trigger, backlog_snap],
+        backlog_consumer,
+        name="demand",
+        partial=True,
+    )
+    with backlog_demand.subscribe(lambda _msg: None):
+        backlog_acc.set(1)
+        backlog_acc.set(2)
+        assert backlog_values == []
+        backlog_trigger.set(1)
+        assert backlog_values == [0, 1, 2]
+
+    immediate_graph = Graph("py-c16-immediate-pull-d37")
+    immediate_stimulus = ConformanceStimulus(immediate_graph)
+    immediate_acc = immediate_graph.state(1, name="acc")
+    immediate_trigger = immediate_stimulus.state_empty("trigger")
+    immediate_seen: list[Message[object]] = []
+    immediate_snap = immediate_graph.node(
+        [immediate_acc],
+        lambda ctx: ctx.emit(ctx.data(0)) if ctx.has_data(0) else None,
+        name="snap",
+        pull_id="snapshot",
+    )
+
+    def immediate_requester(ctx) -> None:
+        if _fresh_values(ctx, 0):
+            ctx.request_pull("snapshot", toward_dep=1)
+
+    immediate_bad = immediate_graph.node(
+        [immediate_trigger, immediate_snap],
+        immediate_requester,
+        name="bad",
+        partial=True,
+    )
+    with immediate_bad.subscribe(immediate_seen.append):
+        immediate_trigger.set(1)
+        errors = [msg for msg in immediate_seen if isinstance(msg, ErrorMessage)]
+        assert immediate_bad.status == "errored"
+        assert "D37" in errors[-1].error.message
+
+
+def test_c18_pull_family_public_routed_demand_over_diamond_fires_holder_once():
+    graph = Graph("py-c18-pull-diamond")
+    stimulus = ConformanceStimulus(graph)
+    acc = graph.state(0, name="acc")
+    trigger = stimulus.state_empty("trigger")
+    snap_runs = 0
+    seen_params: list[object | None] = []
+
+    def snapshot(ctx) -> None:
+        nonlocal snap_runs
+        snap_runs += 1
+        seen_params.append(ctx.pull_params())
+        if ctx.has_data(0):
+            ctx.emit(ctx.data(0))
+
+    def forward(ctx) -> None:
+        for dep_waves in ctx.wave_data:
+            for wave in dep_waves:
+                for value in wave:
+                    if value is not SENTINEL:
+                        ctx.emit(value)
+
+    snap = graph.node([acc], snapshot, name="snap", pull_id="snapshot")
+    g1 = graph.node([snap], forward, name="g1", partial=True)
+    g2 = graph.node([snap], forward, name="g2", partial=True)
+
+    def d(ctx) -> None:
+        if _fresh_values(ctx, 0):
+            ctx.request_pull_next("snapshot", {"via": "diamond"})
+
+    demand = graph.node([trigger, g1, g2], d, name="d", partial=True)
+    with demand.subscribe(lambda _msg: None):
+        acc.set(1)
+        trigger.set(1)
+        assert snap_runs == 1
+        assert seen_params == [{"via": "diamond"}]
+
+    directed_graph = Graph("py-c18-directed-prune")
+    directed_stimulus = ConformanceStimulus(directed_graph)
+    directed_acc = directed_graph.state(0, name="acc")
+    directed_trigger = directed_stimulus.state_empty("trigger")
+    left_runs = 0
+    right_runs = 0
+
+    def left_snap(ctx) -> None:
+        nonlocal left_runs
+        left_runs += 1
+        if ctx.has_data(0):
+            ctx.emit(ctx.data(0))
+
+    def right_snap(ctx) -> None:
+        nonlocal right_runs
+        right_runs += 1
+        if ctx.has_data(0):
+            ctx.emit(ctx.data(0))
+
+    left = directed_graph.node([directed_acc], left_snap, name="left", pull_id="P")
+    right = directed_graph.node([directed_acc], right_snap, name="right", pull_id="P")
+    left_mid = directed_graph.node([left], lambda _ctx: None, name="left-mid", partial=True)
+    right_mid = directed_graph.node([right], lambda _ctx: None, name="right-mid", partial=True)
+
+    def directed_d(ctx) -> None:
+        if _fresh_values(ctx, 0):
+            ctx.request_pull_next("P", toward_dep=1)
+
+    directed_demand = directed_graph.node(
+        [directed_trigger, left_mid, right_mid],
+        directed_d,
+        name="d",
+        partial=True,
+    )
+    with directed_demand.subscribe(lambda _msg: None):
+        directed_acc.set(1)
+        directed_trigger.set(1)
+        assert left_runs == 1
+        assert right_runs == 0
+
+
+def test_c26_pull_family_public_params_resume_unknown_pause_and_data_up_negative():
+    graph = Graph("py-c26-pull-explicit")
+    stimulus = ConformanceStimulus(graph)
+    a = stimulus.state_empty("a")
+    b = stimulus.state_empty("b")
+    trigger = stimulus.state_empty("trigger")
+    seen_params: list[object | None] = []
+    seen: list[Message[object]] = []
+    alias_presence: dict[str, bool] = {}
+
+    def snapshot(ctx) -> None:
+        seen_params.append(ctx.pull_params())
+        if ctx.has_data(0) and ctx.has_data(1):
+            ctx.emit(ctx.data(0) + ctx.data(1))
+
+    snap = graph.node([a, b], snapshot, name="snap", pull_id="snapshot")
+
+    def requester(ctx) -> None:
+        nonlocal alias_presence
+        alias_presence = {name: hasattr(ctx, name) for name in ("up", "down")}
+        trigger_values = _fresh_values(ctx, 0)
+        if trigger_values:
+            params = trigger_values[-1]
+            pull_id = "unknown" if params == {"pull": "unknown"} else "snapshot"
+            ctx.request_pull_next(pull_id, params, toward_dep=1)
+        snap_values = _fresh_values(ctx, 1)
+        if snap_values:
+            ctx.emit(snap_values[-1])
+
+    demand = graph.node([trigger, snap], requester, name="demand", partial=True)
+    with demand.subscribe(seen.append):
+        seen.clear()
+        a.set(1)
+        trigger.set({"cursor": 1})
+        trigger.set({"cursor": 2})
+        assert not any(isinstance(message, DataMessage) for message in seen)
+        seen.clear()
+
+        b.set(10)
+        assert seen_params[-1] == {"cursor": 2}
+        assert _kinds(seen)[-2:] == ["DIRTY", "DATA"]
+        seen.clear()
+
+        graph.resume(snap, "snapshot")
+        trigger.set({"pull": "unknown"})
+        assert not any(isinstance(message, DataMessage) for message in seen)
+        assert alias_presence == {"up": False, "down": False}
+
+    lock_graph = Graph("py-c26-pause-lock")
+    lock_source = lock_graph.state(0, name="source")
+    lock_node = lock_graph.node(
+        [lock_source],
+        lambda ctx: ctx.emit(ctx.data(0)) if ctx.has_data(0) else None,
+        name="node",
+    )
+    lock_seen: list[Message[object]] = []
+    with lock_node.subscribe(lock_seen.append):
+        lock_seen.clear()
+        lock_graph.pause(lock_node, "L")
+        lock_source.set(1)
+        assert not any(isinstance(message, DataMessage) for message in lock_seen)
+        lock_graph.resume(lock_node, "L")
+        assert isinstance(lock_seen[-1], DataMessage)
+
+    bad_index_trigger = stimulus.state_empty("bad-index-trigger")
+    bad_index = graph.node(
+        [bad_index_trigger],
+        lambda ctx: ctx.request_pull_next("snapshot", toward_dep=-1),
+        name="bad-index",
+        partial=True,
+    )
+    with bad_index.subscribe(lambda _msg: None):
+        bad_index_trigger.set(1)
+        assert bad_index.status == "errored"
+
+    bad_high_trigger = stimulus.state_empty("bad-high-trigger")
+    bad_high = graph.node(
+        [bad_high_trigger],
+        lambda ctx: ctx.request_pull_next("snapshot", toward_dep=ctx.dep_len),
+        name="bad-high",
+        partial=True,
+    )
+    bad_high_seen: list[Message[object]] = []
+    with bad_high.subscribe(bad_high_seen.append):
+        bad_high_trigger.set(1)
+        errors = [msg for msg in bad_high_seen if isinstance(msg, ErrorMessage)]
+        assert bad_high.status == "errored"
+        assert "toward_dep" in errors[-1].error.message
+
+    bad_trigger = stimulus.state_empty("bad-trigger")
+    bad = graph.node([bad_trigger], lambda ctx: conformance.up_data_forbidden(ctx, 1))
+    with bad.subscribe(lambda _msg: None):
+        bad_trigger.set(1)
+        assert bad.status == "errored"
+
+
+def test_c27_pull_family_public_no_change_params_drive_output_and_plain_silence():
+    graph = Graph("py-c27-pull-no-change")
+    stimulus = ConformanceStimulus(graph)
+    retained = graph.state(10, name="retained")
+    trigger = stimulus.state_empty("trigger")
+    seen_params: list[object | None] = []
+    seen: list[Message[object]] = []
+
+    def page(ctx) -> None:
+        params = ctx.pull_params()
+        seen_params.append(params)
+        if isinstance(params, dict) and ctx.has_data(0):
+            ctx.emit(ctx.data(0) + params["limit"])
+
+    page_node = graph.node([retained], page, name="page", pull_id="page")
+
+    def requester(ctx) -> None:
+        trigger_values = _fresh_values(ctx, 0)
+        if trigger_values:
+            ctx.request_pull_next("page", trigger_values[-1], toward_dep=1)
+        snap_values = _fresh_values(ctx, 1)
+        if snap_values:
+            ctx.emit(snap_values[-1])
+
+    demand = graph.node([trigger, page_node], requester, name="demand", partial=True)
+    with demand.subscribe(seen.append):
+        seen.clear()
+        trigger.set({"limit": 1})
+        trigger.set({"limit": 2})
+
+        data_values = [message.value for message in seen if isinstance(message, DataMessage)]
+        assert seen_params[-2:] == [{"limit": 1}, {"limit": 2}]
+        assert data_values[-2:] == [11, 12]
+        seen.clear()
+
+        graph.resume(page_node, "page")
+        assert seen == []
+
+    plain_graph = Graph("py-c27-plain-snapshot-silence")
+    plain_stimulus = ConformanceStimulus(plain_graph)
+    plain_retained = plain_graph.state(10, name="retained")
+    plain_trigger = plain_stimulus.state_empty("trigger")
+    plain_seen: list[Message[object]] = []
+    plain_invocations = 0
+
+    def plain_snapshot(ctx) -> None:
+        nonlocal plain_invocations
+        plain_invocations += 1
+        fresh_values = [
+            value
+            for waves in ctx.wave_data[:1]
+            for wave in waves
+            for value in wave
+            if value is not SENTINEL
+        ]
+        if fresh_values:
+            ctx.emit(fresh_values[-1])
+
+    plain = plain_graph.node([plain_retained], plain_snapshot, name="plain", pull_id="plain")
+
+    def plain_requester(ctx) -> None:
+        if _fresh_values(ctx, 0):
+            ctx.request_pull_next("plain", toward_dep=1)
+        snap_values = _fresh_values(ctx, 1)
+        if snap_values:
+            ctx.emit(snap_values[-1])
+
+    plain_demand = plain_graph.node(
+        [plain_trigger, plain],
+        plain_requester,
+        name="demand",
+        partial=True,
+    )
+    with plain_demand.subscribe(plain_seen.append):
+        plain_retained.set(11)
+        plain_trigger.set(1)
+        plain_trigger.set(2)
+        data_values = [
+            message.value for message in plain_seen if isinstance(message, DataMessage)
+        ]
+        assert plain_invocations == 2
+        assert data_values == [11]
+
+
+def test_d447_private_harness_preserves_facade_guards():
+    graph = Graph("py-d447-harness-guards")
+    stimulus = ConformanceStimulus(graph)
+    owned = graph.state(1, name="owned")
+    other_graph = Graph("py-d447-other-graph")
+    foreign = other_graph.state(1, name="foreign")
+
+    with pytest.raises(GraphReflyRuntimeError, match="node must belong"):
+        stimulus.node([foreign], lambda _ctx: None)
+
+    with pytest.raises(GraphReflyValueError, match="pausable"):
+        stimulus.node([owned], lambda _ctx: None, pausable="sometimes")
+
+    assert graph.state(2, name="after-value-error").cache() == 2
+
+    with pytest.raises(GraphReflyValueError, match="cannot be DATA"):
+        stimulus.c17_dep_emits_data_then_completes(owned, SENTINEL)
+
+    with pytest.raises(GraphReflyValueError, match="cannot be DATA"):
+        stimulus.c23_dep_emits_data_data_invalidate(owned, 1, SENTINEL)
+
+    with pytest.raises(GraphReflyValueError, match="cannot be DATA"):
+        stimulus.c26_send_forbidden_data_up(owned, SENTINEL)
+
+
 def test_c23_raw_ctx_wave_data_preserves_per_wave_distinctions():
     graph = Graph("py-c23-wave-data")
+    stimulus = ConformanceStimulus(graph)
     a = graph.state(0, name="a")
     b = graph.state("initial", name="b")
     captures: list[list[list[list[object]]]] = []
@@ -596,12 +1205,11 @@ def test_c23_raw_ctx_wave_data_preserves_per_wave_distinctions():
             "depRecords": False,
         }
 
-        a._native._up_dirty()
-        a._native._down_resolved()
+        stimulus.c23_dep_dirty_then_resolved(a)
         assert captures[-1] == [[[]], []]
         assert terminals[-1] == [False, False]
 
-        a._native._down_data_data_invalidate(1, 2)
+        stimulus.c23_dep_emits_data_data_invalidate(a, 1, 2)
         assert captures[-1] == [[[1, 2, SENTINEL]], []]
         assert captures[-1][0][0][2] is SENTINEL
         assert terminals[-1] == [False, False]
@@ -641,6 +1249,7 @@ def test_c23_wave_data_can_drive_quiet_unread_dep_behavior():
 
 def test_c23_terminal_metadata_is_separate_from_wave_data():
     complete_graph = Graph("py-c23-complete-terminal")
+    complete_stimulus = ConformanceStimulus(complete_graph)
     complete_source = complete_graph.state(1, name="source")
     complete_waves: list[list[list[list[object]]]] = []
     complete_terminals: list[object] = []
@@ -660,12 +1269,13 @@ def test_c23_terminal_metadata_is_separate_from_wave_data():
     with complete_node.subscribe(lambda _msg: None):
         complete_waves.clear()
         complete_terminals.clear()
-        complete_source._native._down_complete()
+        complete_stimulus.c23_dep_completes(complete_source)
 
     assert complete_waves[-1] == [[]]
     assert complete_terminals[-1] is True
 
     error_graph = Graph("py-c23-error-terminal")
+    error_stimulus = ConformanceStimulus(error_graph)
     error_source = error_graph.state(1, name="source")
     error_waves: list[list[list[list[object]]]] = []
     error_terminals: list[object] = []
@@ -686,7 +1296,7 @@ def test_c23_terminal_metadata_is_separate_from_wave_data():
     with error_node.subscribe(lambda _msg: None):
         error_waves.clear()
         error_terminals.clear()
-        error_source._native._down_error("boom")
+        error_stimulus.c23_dep_errors(error_source, "boom")
 
     assert error_waves[-1] == [[]]
     assert error_terminals[-1] == "boom"
@@ -702,6 +1312,23 @@ def test_c23_python_sentinel_is_not_a_legal_data_payload():
     source = graph.state(1, name="source")
     with pytest.raises(GraphReflyValueError, match="cannot be DATA"):
         source.set(SENTINEL)
+
+    stimulus = ConformanceStimulus(graph)
+    trigger = stimulus.state_empty("pull-trigger")
+    pull_seen: list[Message[object]] = []
+    pull_node = graph.node(
+        [trigger],
+        lambda ctx: ctx.request_pull_next("missing", SENTINEL),
+        name="pull-sentinel",
+        partial=True,
+    )
+    with pull_node.subscribe(pull_seen.append):
+        trigger.set(1)
+        assert isinstance(pull_seen[-1], ErrorMessage)
+        assert "cannot be DATA" in pull_seen[-1].error.message
+
+    with pytest.raises(GraphReflyValueError, match="cannot be DATA"):
+        stimulus.c16_pull(pull_node, "missing", SENTINEL)
 
     emit_seen: list[Message[object]] = []
 
