@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import AsyncIterable, Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from importlib import metadata
 from importlib.metadata import PackageNotFoundError
 from inspect import isawaitable, iscoroutine, iscoroutinefunction
-from threading import get_ident
+from threading import Lock, get_ident
 from typing import Any, ClassVar, Final, Literal, NoReturn, Protocol, TypeVar, cast, overload
 from weakref import ReferenceType, ref
 
@@ -26,6 +27,7 @@ U = TypeVar("U")
 _VERSION = "0.21.0a0"
 _MAX_CALLBACK_ERRORS = 32
 _NO_DEFAULT = object()
+_GRAPH_REENTRY_QUEUE_TOKEN = object()
 
 
 class Sentinel:
@@ -79,6 +81,7 @@ type ObserverErrorHandler = Callable[[SubscriberCallbackError], object]
 type PausableMode = bool | Literal["resumeAll"]
 type NodeCallback = Callable[["Ctx"], object]
 type AsyncJobFactory = Callable[[], Awaitable[None]]
+type _CompletionPredicate = Callable[[], bool]
 
 
 class AsyncRunner(Protocol):
@@ -90,10 +93,12 @@ class AsyncRunner(Protocol):
 class _GraphLifetime:
     def __init__(self, owner_thread: int) -> None:
         self.owner_thread = owner_thread
+        self._lock = Lock()
         self.closed = False
         self.poisoned = False
         self.subscriptions: list[ReferenceType[Subscription]] = []
         self.async_jobs: list[ReferenceType[_AsyncJob]] = []
+        self.reentry_queues: list[ReferenceType[GraphReentryQueue]] = []
 
     @property
     def closed_message(self) -> str:
@@ -102,36 +107,70 @@ class _GraphLifetime:
         return "GraphReFly graph is closed"
 
     def register(self, subscription: Subscription) -> None:
-        if self.closed:
+        should_close = False
+        with self._lock:
+            if self.closed:
+                should_close = True
+            else:
+                self.subscriptions.append(ref(subscription))
+        if should_close:
             subscription._close_from_graph()
             raise GraphReflyRuntimeError(self.closed_message)
-        self.subscriptions.append(ref(subscription))
 
     def unregister(self, subscription: Subscription) -> None:
-        self.subscriptions = [
-            item
-            for item in self.subscriptions
-            if (live := item()) is not None and live is not subscription
-        ]
+        with self._lock:
+            self.subscriptions = [
+                item
+                for item in self.subscriptions
+                if (live := item()) is not None and live is not subscription
+            ]
 
     def register_async_job(self, job: _AsyncJob) -> None:
-        if self.closed:
+        cancel = False
+        with self._lock:
+            if self.closed:
+                cancel = True
+            else:
+                self.async_jobs.append(ref(job))
+        if cancel:
             job.cancel()
-            return
-        self.async_jobs.append(ref(job))
 
     def unregister_async_job(self, job: _AsyncJob) -> None:
-        self.async_jobs = [
-            item for item in self.async_jobs if (live := item()) is not None and live is not job
-        ]
+        with self._lock:
+            self.async_jobs = [
+                item
+                for item in self.async_jobs
+                if (live := item()) is not None and live is not job
+            ]
+
+    def register_reentry_queue(self, queue: GraphReentryQueue) -> None:
+        with self._lock:
+            if self.closed:
+                queue._close_from_graph()
+                raise GraphReflyRuntimeError(self.closed_message)
+            self.reentry_queues.append(ref(queue))
+
+    def unregister_reentry_queue(self, queue: GraphReentryQueue) -> None:
+        with self._lock:
+            self.reentry_queues = [
+                item
+                for item in self.reentry_queues
+                if (live := item()) is not None and live is not queue
+            ]
 
     def close(self, *, suppress_errors: bool = False) -> None:
-        if self.closed:
-            return
-        self.closed = True
-        self._cancel_async_jobs()
-        subscriptions = tuple(item() for item in self.subscriptions)
-        self.subscriptions.clear()
+        with self._lock:
+            if self.closed:
+                return
+            self.closed = True
+            queues = tuple(item() for item in self.reentry_queues)
+            jobs = tuple(item() for item in self.async_jobs)
+            subscriptions = tuple(item() for item in self.subscriptions)
+            self.reentry_queues.clear()
+            self.async_jobs.clear()
+            self.subscriptions.clear()
+        self._close_reentry_queues(queues)
+        self._cancel_async_jobs(jobs)
         first_error: BaseException | None = None
         for subscription in subscriptions:
             if subscription is not None:
@@ -144,15 +183,23 @@ class _GraphLifetime:
             raise first_error
 
     def poison(self) -> None:
-        self.poisoned = True
+        with self._lock:
+            self.poisoned = True
         self.close(suppress_errors=True)
 
-    def _cancel_async_jobs(self) -> None:
-        jobs = tuple(item() for item in self.async_jobs)
-        self.async_jobs.clear()
+    def is_closed(self) -> bool:
+        with self._lock:
+            return self.closed
+
+    def _cancel_async_jobs(self, jobs: tuple[_AsyncJob | None, ...]) -> None:
         for job in jobs:
             if job is not None:
                 job.cancel()
+
+    def _close_reentry_queues(self, queues: tuple[GraphReentryQueue | None, ...]) -> None:
+        for queue in queues:
+            if queue is not None:
+                queue._close_from_graph()
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +218,221 @@ class PullContext:
 
     pull_id: str
     params: object | None = None
+
+
+class GraphReentryQueue:
+    """Owner-thread drain gate for GraphReFly-owned async completions."""
+
+    def __init__(
+        self,
+        *,
+        owner_thread: int,
+        lifetime: _GraphLifetime,
+        _token: object | None = None,
+    ) -> None:
+        if _token is not _GRAPH_REENTRY_QUEUE_TOKEN:
+            msg = "GraphReentryQueue objects must be created by Graph.reentry_queue()"
+            raise GraphReflyRuntimeError(msg)
+        self._owner_thread = owner_thread
+        self._lifetime = lifetime
+        self._items: deque[_GraphReentryCompletion] = deque()
+        self._gates: dict[int, _AsyncCompletionGate] = {}
+        self._jobs: list[ReferenceType[_AsyncJob]] = []
+        self._next_gate_id = 0
+        self._lock = Lock()
+        self._closed = False
+        lifetime.register_reentry_queue(self)
+
+    @property
+    def closed(self) -> bool:
+        with self._lock:
+            return self._closed
+
+    @property
+    def pending_count(self) -> int:
+        with self._lock:
+            return len(self._items)
+
+    def wrap_runner(self, runner: AsyncRunner) -> AsyncRunner:
+        """Return an AsyncRunner adapter whose completions are drained by this queue."""
+
+        self._check_owner_thread()
+        self._check_open()
+        _validate_runner(runner)
+        return _GraphReentryRunner(runner, self)
+
+    def drain(self, max_items: int | None = None) -> int:
+        """Drain queued private completions on the graph owner thread."""
+
+        self._check_owner_thread()
+        self._check_open()
+        if max_items is not None:
+            if isinstance(max_items, bool) or not isinstance(max_items, int):
+                msg = "max_items must be an int or None"
+                raise GraphReflyValueError(msg)
+            if max_items < 0:
+                msg = "max_items must be non-negative"
+                raise GraphReflyValueError(msg)
+        drained = 0
+        first_error: BaseException | None = None
+        while max_items is None or drained < max_items:
+            item = self._pop()
+            if item is None:
+                break
+            try:
+                self._apply(item)
+            except BaseException as error:
+                if first_error is None:
+                    first_error = error
+            drained += 1
+        if first_error is not None:
+            raise first_error
+        return drained
+
+    def close(self) -> None:
+        self._check_owner_thread()
+        self._close_from_graph()
+        self._lifetime.unregister_reentry_queue(self)
+
+    def _enqueue(self, item: _GraphReentryCompletion) -> bool:
+        if self._lifetime.is_closed():
+            return False
+        with self._lock:
+            if self._closed:
+                return False
+            self._items.append(item)
+            return True
+
+    def _register_job(self, job: _AsyncJob) -> None:
+        if self._lifetime.is_closed():
+            job.cancel()
+            return
+        cancel = False
+        with self._lock:
+            if self._closed:
+                cancel = True
+            else:
+                self._jobs.append(ref(job))
+        if cancel:
+            job.cancel()
+
+    def _unregister_job(self, job: _AsyncJob) -> None:
+        with self._lock:
+            self._jobs = [
+                item for item in self._jobs if (live := item()) is not None and live is not job
+            ]
+
+    def _register_gate(self, gate: _AsyncCompletionGate) -> int:
+        if self._lifetime.is_closed():
+            return -1
+        with self._lock:
+            if self._closed:
+                return -1
+            gate_id = self._next_gate_id
+            self._next_gate_id += 1
+            self._gates[gate_id] = gate
+            return gate_id
+
+    def _unregister_gate(self, gate_id: int) -> None:
+        if gate_id < 0:
+            return
+        with self._lock:
+            self._gates.pop(gate_id, None)
+
+    def _apply(self, item: _GraphReentryCompletion) -> None:
+        gate = self._gate(item.gate_id)
+        if gate is None:
+            return
+        try:
+            if item.op == "emit":
+                gate._emit_now(item.value, item.should_apply, final=item.final)
+            elif item.op == "complete":
+                gate._complete_now(item.should_apply, final=item.final)
+            elif item.op == "resolve":
+                gate._resolve_now(item.value, item.should_apply, final=item.final)
+            elif item.op == "error":
+                assert isinstance(item.value, BaseException)
+                gate._error_now(item.value, item.should_apply, final=item.final)
+            else:
+                assert isinstance(item.value, BaseException)
+                gate._fatal_now(item.value, item.should_apply, final=item.final)
+        finally:
+            if item.final:
+                self._unregister_gate(item.gate_id)
+
+    def _gate(self, gate_id: int) -> _AsyncCompletionGate | None:
+        with self._lock:
+            return self._gates.get(gate_id)
+
+    def _pop(self) -> _GraphReentryCompletion | None:
+        with self._lock:
+            if not self._items:
+                return None
+            return self._items.popleft()
+
+    def _close_from_graph(self) -> None:
+        with self._lock:
+            self._closed = True
+            self._items.clear()
+            self._gates.clear()
+            jobs = tuple(item() for item in self._jobs)
+            self._jobs.clear()
+        for job in jobs:
+            if job is not None:
+                job.cancel()
+
+    def _can_accept_activation(self) -> bool:
+        if self._lifetime.is_closed():
+            return False
+        with self._lock:
+            return not self._closed
+
+    def _check_owner_thread(self) -> None:
+        if get_ident() != self._owner_thread:
+            msg = "GraphReFly reentry queues may only be drained by the graph owner thread"
+            raise GraphReflyRuntimeError(msg)
+
+    def _check_open(self) -> None:
+        if self._lifetime.is_closed():
+            raise GraphReflyRuntimeError(self._lifetime.closed_message)
+        if self._closed:
+            msg = "GraphReFly reentry queue is closed"
+            raise GraphReflyRuntimeError(msg)
+
+
+class _GraphReentryRunner:
+    def __init__(self, runner: AsyncRunner, queue: GraphReentryQueue) -> None:
+        self._runner = runner
+        self._queue = queue
+
+    def spawn(self, job: AsyncJobFactory) -> object:
+        return self._runner.spawn(job)
+
+    def cancel(self, task: object | None) -> None:
+        runner_cancel = getattr(self._runner, "cancel", None)
+        if callable(runner_cancel):
+            result = runner_cancel(task)
+            if isawaitable(result):
+                close = getattr(result, "close", None)
+                if callable(close):
+                    close()
+            return
+        task_cancel = getattr(task, "cancel", None)
+        if callable(task_cancel):
+            result = task_cancel()
+            if isawaitable(result):
+                close = getattr(result, "close", None)
+                if callable(close):
+                    close()
+
+
+@dataclass(slots=True)
+class _GraphReentryCompletion:
+    gate_id: int
+    op: Literal["emit", "complete", "resolve", "error", "fatal"]
+    value: object | BaseException | None = None
+    should_apply: _CompletionPredicate | None = None
+    final: bool = True
 
 
 class Subscription:
@@ -242,67 +504,194 @@ class _AsyncCompletionGate:
         *,
         owner_thread: int,
         lifetime: _GraphLifetime,
+        reentry_queue: GraphReentryQueue | None = None,
     ) -> None:
         self._native = native
         self._owner_thread = owner_thread
         self._lifetime = lifetime
+        self._reentry_queue = reentry_queue
+        self._reentry_gate_id = (
+            reentry_queue._register_gate(self) if reentry_queue is not None else -1
+        )
+        self._closed = False
+
+    def queued_proxy(self) -> _QueuedCompletionGate:
+        if self._reentry_queue is None or self._reentry_gate_id < 0:
+            msg = "async completion gate is not registered with a reentry queue"
+            raise GraphReflyRuntimeError(msg)
+        return _QueuedCompletionGate(
+            queue=self._reentry_queue,
+            gate_id=self._reentry_gate_id,
+        )
 
     def register_deactivation(self, callback: Callable[[], object]) -> None:
-        self._native.on_deactivation(callback)
+        def native_callback() -> None:
+            self.close()
+            callback()
 
-    def emit(self, value: object) -> bool:
-        if not self._can_reenter():
-            return False
+        self._native.on_deactivation(native_callback)
+
+    def emit(
+        self,
+        value: object,
+        should_apply: _CompletionPredicate | None = None,
+        *,
+        final: bool = False,
+    ) -> bool:
         _reject_awaitable(value)
         _reject_sentinel_data(value)
-        try:
-            self._native.emit(value)
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-        return True
+        if self._should_queue():
+            return self._queue("emit", value, should_apply, final=final)
+        return self._emit_now(value, should_apply, final=final)
 
-    def complete(self) -> bool:
-        if not self._can_reenter():
-            return False
-        try:
-            self._native.complete()
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-        return True
+    def complete(self, should_apply: _CompletionPredicate | None = None) -> bool:
+        if self._should_queue():
+            return self._queue("complete", None, should_apply, final=True)
+        return self._complete_now(should_apply, final=True)
 
-    def resolve(self, value: object) -> bool:
-        if not self._can_reenter():
-            return False
+    def resolve(self, value: object, should_apply: _CompletionPredicate | None = None) -> bool:
         _reject_awaitable(value)
         _reject_sentinel_data(value)
+        if self._should_queue():
+            return self._queue("resolve", value, should_apply, final=True)
+        return self._resolve_now(value, should_apply, final=True)
+
+    def error(
+        self,
+        error: BaseException,
+        should_apply: _CompletionPredicate | None = None,
+    ) -> bool:
+        if self._should_queue():
+            return self._queue("error", error, should_apply, final=True)
+        return self._error_now(error, should_apply, final=True)
+
+    def fatal(
+        self,
+        error: BaseException,
+        should_apply: _CompletionPredicate | None = None,
+    ) -> bool:
+        if self._should_queue():
+            return self._queue("fatal", error, should_apply, final=True)
+        return self._fatal_now(error, should_apply, final=True)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._reentry_queue is not None:
+            self._reentry_queue._unregister_gate(self._reentry_gate_id)
+
+    def _emit_now(
+        self,
+        value: object,
+        should_apply: _CompletionPredicate | None = None,
+        *,
+        final: bool = False,
+    ) -> bool:
         try:
-            self._native.resolve(value)
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
+            if not self._can_reenter(should_apply):
+                return False
+            _reject_awaitable(value)
+            _reject_sentinel_data(value)
+            try:
+                self._native.emit(value)
+            except RuntimeError as error:
+                raise GraphReflyRuntimeError(str(error)) from error
+            except BaseException as error:
+                _poison_on_fatal(self._lifetime, error)
+            return True
+        finally:
+            if final:
+                self.close()
+
+    def _complete_now(
+        self,
+        should_apply: _CompletionPredicate | None = None,
+        *,
+        final: bool = True,
+    ) -> bool:
+        try:
+            if not self._can_reenter(should_apply):
+                return False
+            try:
+                self._native.complete()
+            except RuntimeError as error:
+                raise GraphReflyRuntimeError(str(error)) from error
+            except BaseException as error:
+                _poison_on_fatal(self._lifetime, error)
+            return True
+        finally:
+            if final:
+                self.close()
+
+    def _resolve_now(
+        self,
+        value: object,
+        should_apply: _CompletionPredicate | None = None,
+        *,
+        final: bool = True,
+    ) -> bool:
+        try:
+            if not self._can_reenter(should_apply):
+                return False
+            _reject_awaitable(value)
+            _reject_sentinel_data(value)
+            try:
+                self._native.resolve(value)
+            except RuntimeError as error:
+                raise GraphReflyRuntimeError(str(error)) from error
+            except BaseException as error:
+                _poison_on_fatal(self._lifetime, error)
+            return True
+        finally:
+            if final:
+                self.close()
+
+    def _error_now(
+        self,
+        error: BaseException,
+        should_apply: _CompletionPredicate | None = None,
+        *,
+        final: bool = True,
+    ) -> bool:
+        try:
+            if not self._can_reenter(should_apply):
+                return False
+            try:
+                self._native.error(_format_async_error(error))
+            except RuntimeError as native_error:
+                raise GraphReflyRuntimeError(str(native_error)) from native_error
+            except BaseException as native_error:
+                _poison_on_fatal(self._lifetime, native_error)
+            return True
+        finally:
+            if final:
+                self.close()
+
+    def _fatal_now(
+        self,
+        error: BaseException,
+        should_apply: _CompletionPredicate | None = None,
+        *,
+        final: bool = True,
+    ) -> bool:
+        try:
+            if not self._can_reenter(should_apply):
+                return False
             _poison_on_fatal(self._lifetime, error)
-        return True
+        finally:
+            if final:
+                self.close()
 
-    def error(self, error: BaseException) -> bool:
-        if not self._can_reenter():
-            return False
-        try:
-            self._native.error(_format_async_error(error))
-        except RuntimeError as native_error:
-            raise GraphReflyRuntimeError(str(native_error)) from native_error
-        except BaseException as native_error:
-            _poison_on_fatal(self._lifetime, native_error)
-        return True
-
-    def _can_reenter(self) -> bool:
+    def _can_reenter(self, should_apply: _CompletionPredicate | None = None) -> bool:
         if get_ident() != self._owner_thread:
             msg = "async runner completion must re-enter GraphReFly on the graph owner thread"
             raise GraphReflyRuntimeError(msg)
-        if self._lifetime.closed:
+        if self._closed:
+            return False
+        if self._lifetime.is_closed():
+            return False
+        if should_apply is not None and not should_apply():
             return False
         try:
             return bool(self._native.is_live())
@@ -311,23 +700,137 @@ class _AsyncCompletionGate:
         except BaseException as error:
             _poison_on_fatal(self._lifetime, error)
 
+    def _should_queue(self) -> bool:
+        return self._reentry_queue is not None and get_ident() != self._owner_thread
+
+    def _queue(
+        self,
+        op: Literal["emit", "complete", "resolve", "error", "fatal"],
+        value: object | BaseException | None,
+        should_apply: _CompletionPredicate | None,
+        *,
+        final: bool,
+    ) -> bool:
+        if self._closed or self._lifetime.is_closed():
+            return False
+        if should_apply is not None and not should_apply():
+            return False
+        if self._reentry_queue is None or self._reentry_gate_id < 0:
+            return False
+        return self._reentry_queue._enqueue(
+            _GraphReentryCompletion(
+                gate_id=self._reentry_gate_id,
+                op=op,
+                value=value,
+                should_apply=should_apply,
+                final=final,
+            )
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _QueuedCompletionGate:
+    queue: GraphReentryQueue
+    gate_id: int
+
+    def emit(
+        self,
+        value: object,
+        should_apply: _CompletionPredicate | None = None,
+        *,
+        final: bool = False,
+    ) -> bool:
+        _reject_awaitable(value)
+        _reject_sentinel_data(value)
+        return self._queue("emit", value, should_apply, final=final)
+
+    def complete(self, should_apply: _CompletionPredicate | None = None) -> bool:
+        return self._queue("complete", None, should_apply, final=True)
+
+    def resolve(
+        self,
+        value: object,
+        should_apply: _CompletionPredicate | None = None,
+    ) -> bool:
+        _reject_awaitable(value)
+        _reject_sentinel_data(value)
+        return self._queue("resolve", value, should_apply, final=True)
+
+    def error(
+        self,
+        error: BaseException,
+        should_apply: _CompletionPredicate | None = None,
+    ) -> bool:
+        return self._queue("error", error, should_apply, final=True)
+
+    def fatal(
+        self,
+        error: BaseException,
+        should_apply: _CompletionPredicate | None = None,
+    ) -> bool:
+        return self._queue("fatal", error, should_apply, final=True)
+
+    def _queue(
+        self,
+        op: Literal["emit", "complete", "resolve", "error", "fatal"],
+        value: object | BaseException | None,
+        should_apply: _CompletionPredicate | None,
+        *,
+        final: bool,
+    ) -> bool:
+        if should_apply is not None and not should_apply():
+            if final:
+                self.queue._unregister_gate(self.gate_id)
+            return False
+        return self.queue._enqueue(
+            _GraphReentryCompletion(
+                gate_id=self.gate_id,
+                op=op,
+                value=value,
+                should_apply=should_apply,
+                final=final,
+            )
+        )
+
 
 class _AsyncJob:
-    def __init__(self, runner: AsyncRunner, lifetime: _GraphLifetime) -> None:
+    def __init__(
+        self,
+        runner: AsyncRunner,
+        lifetime: _GraphLifetime,
+        reentry_queue: GraphReentryQueue | None = None,
+    ) -> None:
         self._runner = runner
         self._lifetime = lifetime
+        self._reentry_queue = reentry_queue
+        self._lock = Lock()
         self._task: object | None = None
         self._cancel_requested = False
         self._done = False
         lifetime.register_async_job(self)
+        if reentry_queue is not None:
+            reentry_queue._register_job(self)
 
     @property
     def cancel_requested(self) -> bool:
-        return self._cancel_requested
+        with self._lock:
+            return self._cancel_requested
 
     @property
     def active(self) -> bool:
-        return not self._done and not self._cancel_requested and not self._lifetime.closed
+        with self._lock:
+            return (
+                not self._done
+                and not self._cancel_requested
+                and not self._lifetime.is_closed()
+            )
+
+    def is_active(self) -> bool:
+        return self.active
+
+    def can_apply_completion(self) -> bool:
+        with self._lock:
+            return not self._cancel_requested and not self._lifetime.is_closed()
 
     def start(self, body: AsyncJobFactory) -> None:
         try:
@@ -335,22 +838,32 @@ class _AsyncJob:
         except Exception:
             self.finish()
             raise
-        self._task = task
-        if self._cancel_requested or self._done or self._lifetime.closed:
+        with self._lock:
+            self._task = task
+            should_cancel = (
+                self._cancel_requested or self._done or self._lifetime.is_closed()
+            )
+        if should_cancel:
             _cancel_runner_task(self._runner, task)
             self.finish()
 
     def cancel(self) -> None:
-        if self._done:
-            return
-        self._cancel_requested = True
-        _cancel_runner_task(self._runner, self._task)
+        with self._lock:
+            self._cancel_requested = True
+            if self._done:
+                return
+            task = self._task
+        _cancel_runner_task(self._runner, task)
         self.finish()
 
     def finish(self) -> None:
-        if not self._done:
+        with self._lock:
+            if self._done:
+                return
             self._done = True
-            self._lifetime.unregister_async_job(self)
+        if self._reentry_queue is not None:
+            self._reentry_queue._unregister_job(self)
+        self._lifetime.unregister_async_job(self)
 
 
 class _AsyncioRunner:
@@ -821,6 +1334,7 @@ class Graph:
         self._owner_thread = get_ident()
         self._lifetime = _GraphLifetime(self._owner_thread)
         self._native = _native.Graph(name)
+        self._reentry_queue: GraphReentryQueue | None = None
 
     def __enter__(self) -> Graph:
         self._check_thread()
@@ -832,7 +1346,7 @@ class Graph:
     @property
     def closed(self) -> bool:
         self._check_thread(allow_closed=True)
-        return self._lifetime.closed
+        return self._lifetime.is_closed()
 
     def close(self) -> None:
         self._check_thread(allow_closed=True)
@@ -842,6 +1356,18 @@ class Graph:
             _poison_on_fatal(self._lifetime, error)
         finally:
             self._lifetime.close()
+
+    def reentry_queue(self) -> GraphReentryQueue:
+        """Return this graph's explicit owner-thread async re-entry queue."""
+
+        self._check_thread()
+        if self._reentry_queue is None or self._reentry_queue.closed:
+            self._reentry_queue = GraphReentryQueue(
+                owner_thread=self._owner_thread,
+                lifetime=self._lifetime,
+                _token=_GRAPH_REENTRY_QUEUE_TOKEN,
+            )
+        return self._reentry_queue
 
     def state(self, value: T, name: str | None = None) -> Node[T]:
         self._check_thread()
@@ -1203,7 +1729,7 @@ class Graph:
         if get_ident() != self._owner_thread:
             msg = "GraphReFly Python graphs are bound to their creating thread in v0"
             raise GraphReflyRuntimeError(msg)
-        if self._lifetime.closed and not allow_closed:
+        if self._lifetime.is_closed() and not allow_closed:
             raise GraphReflyRuntimeError(self._lifetime.closed_message)
 
 
@@ -1219,15 +1745,25 @@ def from_awaitable[T](
 
     _validate_async_source_args(graph, runner, factory)
     native_pausable = _native_pausable(pausable)
+    reentry_queue = _runner_reentry_queue(graph, runner)
 
     def activate(native_ctx: Any) -> None:
-        gate = _AsyncCompletionGate(
+        if reentry_queue is not None and not reentry_queue._can_accept_activation():
+            return
+        native_gate = _AsyncCompletionGate(
             native_ctx,
             owner_thread=graph._owner_thread,
             lifetime=graph._lifetime,
+            reentry_queue=reentry_queue,
         )
-        job = _AsyncJob(runner, graph._lifetime)
-        gate.register_deactivation(job.cancel)
+        job = _AsyncJob(runner, graph._lifetime, reentry_queue)
+        if not job.active:
+            native_gate.close()
+            return
+        native_gate.register_deactivation(job.cancel)
+        completion_gate = (
+            native_gate.queued_proxy() if reentry_queue is not None else native_gate
+        )
 
         async def run() -> None:
             try:
@@ -1238,14 +1774,12 @@ def from_awaitable[T](
                     msg = "from_awaitable factory must return an awaitable"
                     raise GraphReflyRuntimeError(msg)
                 value = await awaitable
-                if job.active:
-                    gate.resolve(value)
+                completion_gate.resolve(value, job.can_apply_completion)
             except Exception as error:
-                if job.active:
-                    gate.error(error)
+                completion_gate.error(error, job.can_apply_completion)
             except BaseException as error:
                 if not (job.cancel_requested or _is_cancellation_error(error)):
-                    raise
+                    completion_gate.fatal(error, job.can_apply_completion)
             finally:
                 job.finish()
 
@@ -1275,15 +1809,25 @@ def from_async_iter[T](
 
     _validate_async_source_args(graph, runner, factory)
     native_pausable = _native_pausable(pausable)
+    reentry_queue = _runner_reentry_queue(graph, runner)
 
     def activate(native_ctx: Any) -> None:
-        gate = _AsyncCompletionGate(
+        if reentry_queue is not None and not reentry_queue._can_accept_activation():
+            return
+        native_gate = _AsyncCompletionGate(
             native_ctx,
             owner_thread=graph._owner_thread,
             lifetime=graph._lifetime,
+            reentry_queue=reentry_queue,
         )
-        job = _AsyncJob(runner, graph._lifetime)
-        gate.register_deactivation(job.cancel)
+        job = _AsyncJob(runner, graph._lifetime, reentry_queue)
+        if not job.active:
+            native_gate.close()
+            return
+        native_gate.register_deactivation(job.cancel)
+        completion_gate = (
+            native_gate.queued_proxy() if reentry_queue is not None else native_gate
+        )
 
         async def run() -> None:
             try:
@@ -1296,15 +1840,13 @@ def from_async_iter[T](
                 async for value in iterable:
                     if not job.active:
                         return
-                    gate.emit(value)
-                if job.active:
-                    gate.complete()
+                    completion_gate.emit(value, job.can_apply_completion)
+                completion_gate.complete(job.can_apply_completion)
             except Exception as error:
-                if job.active:
-                    gate.error(error)
+                completion_gate.error(error, job.can_apply_completion)
             except BaseException as error:
                 if not (job.cancel_requested or _is_cancellation_error(error)):
-                    raise
+                    completion_gate.fatal(error, job.can_apply_completion)
             finally:
                 job.finish()
 
@@ -1342,22 +1884,32 @@ def async_node[T](
     _validate_runner(runner)
     native_deps = graph._native_deps(deps)
     native_pausable = _native_pausable(pausable)
+    reentry_queue = _runner_reentry_queue(graph, runner)
     generation = 0
 
     def activate(native_ctx: Any, *values: object) -> None:
         nonlocal generation
+        if reentry_queue is not None and not reentry_queue._can_accept_activation():
+            return
         generation += 1
         invocation_generation = generation
-        gate = _AsyncCompletionGate(
+        native_gate = _AsyncCompletionGate(
             native_ctx,
             owner_thread=graph._owner_thread,
             lifetime=graph._lifetime,
+            reentry_queue=reentry_queue,
         )
-        job = _AsyncJob(runner, graph._lifetime)
-        gate.register_deactivation(job.cancel)
+        job = _AsyncJob(runner, graph._lifetime, reentry_queue)
+        if not job.active:
+            native_gate.close()
+            return
+        native_gate.register_deactivation(job.cancel)
+        completion_gate = (
+            native_gate.queued_proxy() if reentry_queue is not None else native_gate
+        )
 
         def is_current() -> bool:
-            return invocation_generation == generation and job.active
+            return invocation_generation == generation and job.can_apply_completion()
 
         async def run() -> None:
             try:
@@ -1368,14 +1920,12 @@ def async_node[T](
                     msg = "async_node callback must return an awaitable"
                     raise GraphReflyRuntimeError(msg)
                 value = await awaitable
-                if is_current():
-                    gate.emit(value)
+                completion_gate.emit(value, is_current, final=True)
             except Exception as error:
-                if is_current():
-                    gate.error(error)
+                completion_gate.error(error, is_current)
             except BaseException as error:
                 if not (job.cancel_requested or _is_cancellation_error(error)):
-                    raise
+                    completion_gate.fatal(error, is_current)
             finally:
                 job.finish()
 
@@ -1426,6 +1976,18 @@ def _validate_runner(runner: AsyncRunner) -> None:
     if not callable(spawn):
         msg = "AsyncRunner must provide spawn(job)"
         raise GraphReflyValueError(msg)
+
+
+def _runner_reentry_queue(graph: Graph, runner: AsyncRunner) -> GraphReentryQueue | None:
+    if isinstance(runner, _GraphReentryRunner):
+        if runner._queue._lifetime is not graph._lifetime:
+            msg = "wrapped AsyncRunner reentry queue must belong to the target Graph"
+            raise GraphReflyRuntimeError(msg)
+        if runner._queue.closed:
+            msg = "wrapped AsyncRunner reentry queue is closed"
+            raise GraphReflyRuntimeError(msg)
+        return runner._queue
+    return None
 
 
 def _reject_async_factory_instance(factory: object) -> None:
