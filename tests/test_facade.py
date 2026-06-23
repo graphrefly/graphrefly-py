@@ -70,22 +70,15 @@ def test_callback_exception_becomes_graph_error_observation():
     )
 
 
-def test_async_callback_is_reported_as_graph_error():
-    seen: list[Message[object]] = []
+def test_derived_async_callback_is_rejected_at_registration():
     graph = Graph("py-async-error-smoke")
     source = graph.state(1, name="source")
 
     async def async_callback(_value: int) -> int:
         return 2
 
-    bad = graph.derived([source], async_callback, name="bad_async")
-    with bad.subscribe(seen.append):
-        pass
-
-    assert any(
-        isinstance(msg, ErrorMessage) and "async callbacks are deferred" in msg.error.message
-        for msg in seen
-    )
+    with pytest.raises(GraphReflyRuntimeError, match="async callbacks are deferred"):
+        graph.derived([source], async_callback, name="bad_async")
 
 
 def test_batch_callback_exception_rolls_back_and_reraises_original_exception():

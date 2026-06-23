@@ -3,6 +3,7 @@
 from graphrefly._facade import (
     _VERSION,
     SENTINEL,
+    AsyncRunner,
     ControlMessage,
     Ctx,
     DataMessage,
@@ -15,6 +16,10 @@ from graphrefly._facade import (
     RewireNext,
     Sentinel,
     Subscription,
+    async_node,
+    asyncio_runner,
+    from_async_iter,
+    from_awaitable,
     version,
 )
 from graphrefly.exceptions import (
@@ -30,6 +35,7 @@ from graphrefly.issues import DataIssue
 
 __all__ = [
     "CallbackError",
+    "AsyncRunner",
     "ControlMessage",
     "Ctx",
     "DataMessage",
@@ -51,6 +57,10 @@ __all__ = [
     "Subscription",
     "SubscriberCallbackError",
     "__version__",
+    "async_node",
+    "asyncio_runner",
+    "from_async_iter",
+    "from_awaitable",
     "version",
 ]
 

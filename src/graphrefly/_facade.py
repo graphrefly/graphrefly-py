@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import AsyncIterable, Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from importlib import metadata
 from importlib.metadata import PackageNotFoundError
-from inspect import isawaitable, iscoroutinefunction
+from inspect import isawaitable, iscoroutine, iscoroutinefunction
 from threading import get_ident
-from typing import Any, ClassVar, Final, Literal, NoReturn, TypeVar, cast, overload
+from typing import Any, ClassVar, Final, Literal, NoReturn, Protocol, TypeVar, cast, overload
 from weakref import ReferenceType, ref
 
 from graphrefly import _native
@@ -78,6 +78,13 @@ type Message[T] = DataMessage[T] | ErrorMessage | ControlMessage
 type ObserverErrorHandler = Callable[[SubscriberCallbackError], object]
 type PausableMode = bool | Literal["resumeAll"]
 type NodeCallback = Callable[["Ctx"], object]
+type AsyncJobFactory = Callable[[], Awaitable[None]]
+
+
+class AsyncRunner(Protocol):
+    """Framework-neutral async job runner supplied explicitly by the host."""
+
+    def spawn(self, job: AsyncJobFactory) -> object: ...
 
 
 class _GraphLifetime:
@@ -86,6 +93,7 @@ class _GraphLifetime:
         self.closed = False
         self.poisoned = False
         self.subscriptions: list[ReferenceType[Subscription]] = []
+        self.async_jobs: list[ReferenceType[_AsyncJob]] = []
 
     @property
     def closed_message(self) -> str:
@@ -106,10 +114,22 @@ class _GraphLifetime:
             if (live := item()) is not None and live is not subscription
         ]
 
+    def register_async_job(self, job: _AsyncJob) -> None:
+        if self.closed:
+            job.cancel()
+            return
+        self.async_jobs.append(ref(job))
+
+    def unregister_async_job(self, job: _AsyncJob) -> None:
+        self.async_jobs = [
+            item for item in self.async_jobs if (live := item()) is not None and live is not job
+        ]
+
     def close(self, *, suppress_errors: bool = False) -> None:
         if self.closed:
             return
         self.closed = True
+        self._cancel_async_jobs()
         subscriptions = tuple(item() for item in self.subscriptions)
         self.subscriptions.clear()
         first_error: BaseException | None = None
@@ -126,6 +146,13 @@ class _GraphLifetime:
     def poison(self) -> None:
         self.poisoned = True
         self.close(suppress_errors=True)
+
+    def _cancel_async_jobs(self) -> None:
+        jobs = tuple(item() for item in self.async_jobs)
+        self.async_jobs.clear()
+        for job in jobs:
+            if job is not None:
+                job.cancel()
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +231,151 @@ class Subscription:
                 _poison_on_fatal(self._lifetime, error)
             raise
         self._closed = True
+
+
+class _AsyncCompletionGate:
+    """Owner-thread gate around the hidden native async completion handle."""
+
+    def __init__(
+        self,
+        native: Any,
+        *,
+        owner_thread: int,
+        lifetime: _GraphLifetime,
+    ) -> None:
+        self._native = native
+        self._owner_thread = owner_thread
+        self._lifetime = lifetime
+
+    def register_deactivation(self, callback: Callable[[], object]) -> None:
+        self._native.on_deactivation(callback)
+
+    def emit(self, value: object) -> bool:
+        if not self._can_reenter():
+            return False
+        _reject_awaitable(value)
+        _reject_sentinel_data(value)
+        try:
+            self._native.emit(value)
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+        return True
+
+    def complete(self) -> bool:
+        if not self._can_reenter():
+            return False
+        try:
+            self._native.complete()
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+        return True
+
+    def resolve(self, value: object) -> bool:
+        if not self._can_reenter():
+            return False
+        _reject_awaitable(value)
+        _reject_sentinel_data(value)
+        try:
+            self._native.resolve(value)
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+        return True
+
+    def error(self, error: BaseException) -> bool:
+        if not self._can_reenter():
+            return False
+        try:
+            self._native.error(_format_async_error(error))
+        except RuntimeError as native_error:
+            raise GraphReflyRuntimeError(str(native_error)) from native_error
+        except BaseException as native_error:
+            _poison_on_fatal(self._lifetime, native_error)
+        return True
+
+    def _can_reenter(self) -> bool:
+        if get_ident() != self._owner_thread:
+            msg = "async runner completion must re-enter GraphReFly on the graph owner thread"
+            raise GraphReflyRuntimeError(msg)
+        if self._lifetime.closed:
+            return False
+        try:
+            return bool(self._native.is_live())
+        except RuntimeError:
+            return False
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+
+
+class _AsyncJob:
+    def __init__(self, runner: AsyncRunner, lifetime: _GraphLifetime) -> None:
+        self._runner = runner
+        self._lifetime = lifetime
+        self._task: object | None = None
+        self._cancel_requested = False
+        self._done = False
+        lifetime.register_async_job(self)
+
+    @property
+    def cancel_requested(self) -> bool:
+        return self._cancel_requested
+
+    @property
+    def active(self) -> bool:
+        return not self._done and not self._cancel_requested and not self._lifetime.closed
+
+    def start(self, body: AsyncJobFactory) -> None:
+        try:
+            task = _spawn_runner_job(self._runner, body)
+        except Exception:
+            self.finish()
+            raise
+        self._task = task
+        if self._cancel_requested or self._done or self._lifetime.closed:
+            _cancel_runner_task(self._runner, task)
+            self.finish()
+
+    def cancel(self) -> None:
+        if self._done:
+            return
+        self._cancel_requested = True
+        _cancel_runner_task(self._runner, self._task)
+        self.finish()
+
+    def finish(self) -> None:
+        if not self._done:
+            self._done = True
+            self._lifetime.unregister_async_job(self)
+
+
+class _AsyncioRunner:
+    def __init__(self, loop: object | None = None) -> None:
+        self._loop = loop
+
+    def spawn(self, job: AsyncJobFactory) -> object:
+        import asyncio
+
+        loop = self._loop
+        if loop is None:
+            loop = asyncio.get_running_loop()
+        awaitable = job()
+        try:
+            return cast("Any", loop).create_task(awaitable)
+        except Exception:
+            close = getattr(awaitable, "close", None)
+            if callable(close):
+                close()
+            raise
+
+    def cancel(self, task: object | None) -> None:
+        cancel = getattr(task, "cancel", None)
+        if callable(cancel):
+            cancel()
 
 
 class Ctx:
@@ -319,6 +491,7 @@ class Ctx:
 
     def emit(self, value: object) -> None:
         self._check_thread()
+        _reject_awaitable(value)
         _reject_sentinel_data(value)
         try:
             self._native.emit(value)
@@ -352,6 +525,8 @@ class Ctx:
     @state.setter
     def state(self, value: object) -> None:
         self._check_thread()
+        _reject_awaitable(value)
+        _reject_sentinel_data(value)
         try:
             self._native.set_state(value)
         except RuntimeError as error:
@@ -407,6 +582,7 @@ class Ctx:
     ) -> None:
         self._check_thread()
         _reject_non_string_pull_id(pull_id)
+        _reject_awaitable(params)
         _reject_sentinel_data(params)
         toward_dep = _normalize_toward_dep(toward_dep)
         self._reject_unknown_toward_dep(toward_dep)
@@ -428,6 +604,7 @@ class Ctx:
     ) -> None:
         self._check_thread()
         _reject_non_string_pull_id(pull_id)
+        _reject_awaitable(params)
         _reject_sentinel_data(params)
         toward_dep = _normalize_toward_dep(toward_dep)
         self._reject_unknown_toward_dep(toward_dep)
@@ -543,6 +720,7 @@ class Node[T]:
         if not self._writable:
             msg = "set() is only available on state nodes in the v0 Python facade"
             raise GraphReflyRuntimeError(msg)
+        _reject_awaitable(value)
         _reject_sentinel_data(value)
         try:
             self._native.set(value)
@@ -667,6 +845,7 @@ class Graph:
 
     def state(self, value: T, name: str | None = None) -> Node[T]:
         self._check_thread()
+        _reject_awaitable(value)
         _reject_sentinel_data(value)
         try:
             return Node(
@@ -700,6 +879,7 @@ class Graph:
         self._check_thread()
         if callback is None:
             return lambda fn: self.producer(fn, name or fn.__name__)
+        _reject_async_callable(callback)
 
         def native_callback() -> T:
             value = callback()
@@ -744,6 +924,7 @@ class Graph:
         deps = list(deps)
         if callback is None:
             return lambda fn: self.derived(deps, fn, name or fn.__name__)
+        _reject_async_callable(callback)
         native_deps = self._native_deps(deps)
 
         def native_callback(*values: object) -> U:
@@ -890,6 +1071,7 @@ class Graph:
         deps = list(deps)
         if callback is None:
             return lambda fn: self.effect(deps, fn, name or fn.__name__)
+        _reject_async_callable(callback)
         native_deps = self._native_deps(deps)
 
         def native_callback(*values: object) -> None:
@@ -1025,6 +1207,198 @@ class Graph:
             raise GraphReflyRuntimeError(self._lifetime.closed_message)
 
 
+def from_awaitable[T](
+    graph: Graph,
+    runner: AsyncRunner,
+    factory: Callable[[], Awaitable[T]],
+    *,
+    name: str | None = None,
+    pausable: PausableMode = True,
+) -> Node[T]:
+    """Create a source from a fresh awaitable produced on each activation."""
+
+    _validate_async_source_args(graph, runner, factory)
+    native_pausable = _native_pausable(pausable)
+
+    def activate(native_ctx: Any) -> None:
+        gate = _AsyncCompletionGate(
+            native_ctx,
+            owner_thread=graph._owner_thread,
+            lifetime=graph._lifetime,
+        )
+        job = _AsyncJob(runner, graph._lifetime)
+        gate.register_deactivation(job.cancel)
+
+        async def run() -> None:
+            try:
+                if not job.active:
+                    return
+                awaitable = factory()
+                if not isawaitable(awaitable):
+                    msg = "from_awaitable factory must return an awaitable"
+                    raise GraphReflyRuntimeError(msg)
+                value = await awaitable
+                if job.active:
+                    gate.resolve(value)
+            except Exception as error:
+                if job.active:
+                    gate.error(error)
+            except BaseException as error:
+                if not (job.cancel_requested or _is_cancellation_error(error)):
+                    raise
+            finally:
+                job.finish()
+
+        job.start(run)
+
+    try:
+        return Node(
+            graph._native._async_source(activate, name, native_pausable),
+            owner_thread=graph._owner_thread,
+            lifetime=graph._lifetime,
+        )
+    except RuntimeError as error:
+        raise GraphReflyRuntimeError(str(error)) from error
+    except BaseException as error:
+        _poison_on_fatal(graph._lifetime, error)
+
+
+def from_async_iter[T](
+    graph: Graph,
+    runner: AsyncRunner,
+    factory: Callable[[], AsyncIterable[T]],
+    *,
+    name: str | None = None,
+    pausable: PausableMode = True,
+) -> Node[T]:
+    """Create a source from a fresh async iterable produced on each activation."""
+
+    _validate_async_source_args(graph, runner, factory)
+    native_pausable = _native_pausable(pausable)
+
+    def activate(native_ctx: Any) -> None:
+        gate = _AsyncCompletionGate(
+            native_ctx,
+            owner_thread=graph._owner_thread,
+            lifetime=graph._lifetime,
+        )
+        job = _AsyncJob(runner, graph._lifetime)
+        gate.register_deactivation(job.cancel)
+
+        async def run() -> None:
+            try:
+                if not job.active:
+                    return
+                iterable = factory()
+                if not hasattr(iterable, "__aiter__"):
+                    msg = "from_async_iter factory must return an async iterable"
+                    raise GraphReflyRuntimeError(msg)
+                async for value in iterable:
+                    if not job.active:
+                        return
+                    gate.emit(value)
+                if job.active:
+                    gate.complete()
+            except Exception as error:
+                if job.active:
+                    gate.error(error)
+            except BaseException as error:
+                if not (job.cancel_requested or _is_cancellation_error(error)):
+                    raise
+            finally:
+                job.finish()
+
+        job.start(run)
+
+    try:
+        return Node(
+            graph._native._async_source(activate, name, native_pausable),
+            owner_thread=graph._owner_thread,
+            lifetime=graph._lifetime,
+        )
+    except RuntimeError as error:
+        raise GraphReflyRuntimeError(str(error)) from error
+    except BaseException as error:
+        _poison_on_fatal(graph._lifetime, error)
+
+
+def async_node[T](
+    graph: Graph,
+    deps: Iterable[Node[Any]],
+    runner: AsyncRunner,
+    callback: Callable[..., Awaitable[T]],
+    *,
+    name: str | None = None,
+    pausable: PausableMode = True,
+) -> Node[T]:
+    """Create a value-level async compute node over declared dependencies."""
+
+    graph._check_thread()
+    deps = list(deps)
+    _reject_async_factory_instance(callback)
+    if not callable(callback):
+        msg = "async_node callback must be callable"
+        raise GraphReflyValueError(msg)
+    _validate_runner(runner)
+    native_deps = graph._native_deps(deps)
+    native_pausable = _native_pausable(pausable)
+    generation = 0
+
+    def activate(native_ctx: Any, *values: object) -> None:
+        nonlocal generation
+        generation += 1
+        invocation_generation = generation
+        gate = _AsyncCompletionGate(
+            native_ctx,
+            owner_thread=graph._owner_thread,
+            lifetime=graph._lifetime,
+        )
+        job = _AsyncJob(runner, graph._lifetime)
+        gate.register_deactivation(job.cancel)
+
+        def is_current() -> bool:
+            return invocation_generation == generation and job.active
+
+        async def run() -> None:
+            try:
+                if not job.active:
+                    return
+                awaitable = callback(*values)
+                if not isawaitable(awaitable):
+                    msg = "async_node callback must return an awaitable"
+                    raise GraphReflyRuntimeError(msg)
+                value = await awaitable
+                if is_current():
+                    gate.emit(value)
+            except Exception as error:
+                if is_current():
+                    gate.error(error)
+            except BaseException as error:
+                if not (job.cancel_requested or _is_cancellation_error(error)):
+                    raise
+            finally:
+                job.finish()
+
+        job.start(run)
+
+    try:
+        return Node(
+            graph._native._async_node(native_deps, activate, name, native_pausable),
+            owner_thread=graph._owner_thread,
+            lifetime=graph._lifetime,
+        )
+    except RuntimeError as error:
+        raise GraphReflyRuntimeError(str(error)) from error
+    except BaseException as error:
+        _poison_on_fatal(graph._lifetime, error)
+
+
+def asyncio_runner(loop: object | None = None) -> AsyncRunner:
+    """Return a convenience runner for a caller-owned asyncio event loop."""
+
+    return _AsyncioRunner(loop)
+
+
 def version() -> str:
     """Return the installed Python package version."""
 
@@ -1032,6 +1406,69 @@ def version() -> str:
         return metadata.version("graphrefly")
     except PackageNotFoundError:
         return _VERSION
+
+
+def _validate_async_source_args(
+    graph: Graph,
+    runner: AsyncRunner,
+    factory: object,
+) -> None:
+    graph._check_thread()
+    _validate_runner(runner)
+    _reject_async_factory_instance(factory)
+    if not callable(factory):
+        msg = "async source factory must be callable"
+        raise GraphReflyValueError(msg)
+
+
+def _validate_runner(runner: AsyncRunner) -> None:
+    spawn = getattr(runner, "spawn", None)
+    if not callable(spawn):
+        msg = "AsyncRunner must provide spawn(job)"
+        raise GraphReflyValueError(msg)
+
+
+def _reject_async_factory_instance(factory: object) -> None:
+    if isawaitable(factory) or hasattr(factory, "__aiter__"):
+        msg = "async inputs must be factory callables so each activation creates fresh work"
+        raise GraphReflyValueError(msg)
+
+
+def _spawn_runner_job(runner: AsyncRunner, body: AsyncJobFactory) -> object:
+    task = runner.spawn(body)
+    if iscoroutine(task):
+        close = getattr(task, "close", None)
+        if callable(close):
+            close()
+        msg = "AsyncRunner.spawn(job) must not return a raw coroutine"
+        raise GraphReflyRuntimeError(msg)
+    return task
+
+
+def _cancel_runner_task(runner: AsyncRunner, task: object | None) -> None:
+    try:
+        runner_cancel = getattr(runner, "cancel", None)
+        if callable(runner_cancel):
+            result = runner_cancel(task)
+        else:
+            task_cancel = getattr(task, "cancel", None)
+            if not callable(task_cancel):
+                return
+            result = task_cancel()
+        if isawaitable(result):
+            close = getattr(result, "close", None)
+            if callable(close):
+                close()
+    except Exception:
+        return
+
+
+def _is_cancellation_error(error: BaseException) -> bool:
+    return "Cancel" in type(error).__name__
+
+
+def _format_async_error(error: BaseException) -> str:
+    return f"{type(error).__name__}: {error}"
 
 
 def _poison_on_fatal(lifetime: _GraphLifetime, error: BaseException) -> NoReturn:
