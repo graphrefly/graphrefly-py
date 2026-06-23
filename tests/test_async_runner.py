@@ -1,9 +1,12 @@
 import asyncio
+import sys
 from collections.abc import Awaitable, Callable
 from threading import Event, Thread, get_ident
+from types import ModuleType
 
 import pytest
 
+import graphrefly
 from graphrefly import (
     SENTINEL,
     CallbackError,
@@ -15,10 +18,12 @@ from graphrefly import (
     GraphReflyRuntimeError,
     GraphReflyValueError,
     Message,
+    anyio_runner,
     async_node,
     asyncio_runner,
     from_async_iter,
     from_awaitable,
+    trio_runner,
 )
 from graphrefly._facade import _AsyncJob, _GraphLifetime, _GraphReentryCompletion
 
@@ -91,6 +96,49 @@ class ThreadedRunner:
         assert self.errors == []
 
 
+class FakeCancelScope:
+    instances: list["FakeCancelScope"] = []
+
+    def __init__(self) -> None:
+        self.cancelled = False
+        self.cancel_calls = 0
+        FakeCancelScope.instances.append(self)
+
+    def __enter__(self) -> "FakeCancelScope":
+        return self
+
+    def __exit__(
+        self,
+        _exc_type: object,
+        _exc: object,
+        _traceback: object,
+    ) -> bool:
+        return False
+
+    def cancel(self) -> None:
+        self.cancelled = True
+        self.cancel_calls += 1
+
+
+class FakeStartSoonOwner:
+    def __init__(self) -> None:
+        self.started: list[tuple[Callable[..., Awaitable[None]], tuple[object, ...]]] = []
+
+    def start_soon(self, async_fn: Callable[..., Awaitable[None]], *args: object) -> None:
+        self.started.append((async_fn, args))
+
+    def run(self, index: int = 0) -> None:
+        async_fn, args = self.started[index]
+        asyncio.run(async_fn(*args))
+
+
+def install_fake_cancel_scope_module(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    FakeCancelScope.instances.clear()
+    module = ModuleType(name)
+    module.CancelScope = FakeCancelScope  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, name, module)
+
+
 def test_from_awaitable_source_emits_data_then_complete():
     graph = Graph("py-from-awaitable-smoke")
     runner = ManualRunner()
@@ -154,6 +202,183 @@ def test_asyncio_runner_uses_caller_owned_loop():
         assert DataMessage(9) in seen
 
     asyncio.run(main())
+
+
+def test_trio_runner_uses_caller_owned_nursery_start_soon(monkeypatch):
+    install_fake_cancel_scope_module(monkeypatch, "trio")
+    nursery = FakeStartSoonOwner()
+    runner = trio_runner(nursery)
+    events: list[tuple[str, bool]] = []
+
+    async def work() -> None:
+        events.append(("work", FakeCancelScope.instances[-1].cancelled))
+
+    task = runner.spawn(work)
+    runner.cancel(task)
+
+    assert len(nursery.started) == 1
+    nursery.run()
+    assert events == []
+    assert FakeCancelScope.instances[-1].cancel_calls == 1
+
+
+def test_anyio_runner_wraps_reentry_queue_without_owning_task_group(monkeypatch):
+    install_fake_cancel_scope_module(monkeypatch, "anyio")
+    graph = Graph("py-anyio-runner-reentry-smoke")
+    queue = graph.reentry_queue()
+    task_group = FakeStartSoonOwner()
+    runner = queue.wrap_runner(anyio_runner(task_group))
+    seen: list[Message[object]] = []
+
+    async def work() -> int:
+        return 11
+
+    node = from_awaitable(graph, runner, work, name="anyio_source")
+    with node.subscribe(seen.append):
+        assert len(task_group.started) == 1
+        task_group.run()
+        assert queue.pending_count == 1
+        assert not node.has_value
+        assert queue.drain() == 1
+        assert node.cache() == 11
+
+    assert DataMessage(11) in seen
+
+
+def test_trio_runner_wraps_reentry_queue_without_owning_nursery(monkeypatch):
+    install_fake_cancel_scope_module(monkeypatch, "trio")
+    graph = Graph("py-trio-runner-reentry-smoke")
+    queue = graph.reentry_queue()
+    nursery = FakeStartSoonOwner()
+    runner = queue.wrap_runner(trio_runner(nursery))
+    seen: list[Message[object]] = []
+
+    async def work() -> int:
+        return 10
+
+    node = from_awaitable(graph, runner, work, name="trio_source")
+    with node.subscribe(seen.append):
+        assert len(nursery.started) == 1
+        nursery.run()
+        assert queue.pending_count == 1
+        assert not node.has_value
+        assert queue.drain() == 1
+        assert node.cache() == 10
+
+    assert DataMessage(10) in seen
+
+
+def test_trio_runner_deactivation_cancels_private_job_scope(monkeypatch):
+    install_fake_cancel_scope_module(monkeypatch, "trio")
+    graph = Graph("py-trio-runner-cancel-smoke")
+    nursery = FakeStartSoonOwner()
+    runner = trio_runner(nursery)
+    seen: list[Message[object]] = []
+
+    async def work() -> int:
+        return 12
+
+    node = from_awaitable(graph, runner, work, name="trio_cancel")
+    sub = node.subscribe(seen.append)
+    sub.unsubscribe()
+    nursery.run()
+
+    assert FakeCancelScope.instances[-1].cancelled is True
+    assert not node.has_value
+    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
+
+
+def test_trio_runner_rejects_wrong_thread_spawn_and_cancel(monkeypatch):
+    install_fake_cancel_scope_module(monkeypatch, "trio")
+    nursery = FakeStartSoonOwner()
+    runner = trio_runner(nursery)
+    errors: list[BaseException] = []
+
+    async def work() -> None:
+        return None
+
+    def spawn_target() -> None:
+        try:
+            runner.spawn(work)
+        except BaseException as error:
+            errors.append(error)
+
+    thread = Thread(target=spawn_target)
+    thread.start()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+
+    assert len(nursery.started) == 0
+    assert len(errors) == 1
+    assert isinstance(errors[0], GraphReflyRuntimeError)
+    assert "owner thread" in str(errors[0])
+
+    task = runner.spawn(work)
+    errors.clear()
+
+    def cancel_target() -> None:
+        try:
+            runner.cancel(task)
+        except BaseException as error:
+            errors.append(error)
+
+    thread = Thread(target=cancel_target)
+    thread.start()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+
+    assert len(errors) == 1
+    assert isinstance(errors[0], GraphReflyRuntimeError)
+    assert FakeCancelScope.instances == []
+
+
+def test_anyio_runner_graph_close_cancels_private_job_scope(monkeypatch):
+    install_fake_cancel_scope_module(monkeypatch, "anyio")
+    graph = Graph("py-anyio-runner-close-cancel-smoke")
+    task_group = FakeStartSoonOwner()
+    runner = anyio_runner(task_group)
+    seen: list[Message[object]] = []
+
+    async def work() -> int:
+        return 13
+
+    node = from_awaitable(graph, runner, work, name="anyio_cancel")
+    node.subscribe(seen.append)
+    graph.close()
+    task_group.run()
+
+    assert FakeCancelScope.instances[-1].cancelled is True
+    with pytest.raises(GraphReflyRuntimeError, match="GraphReFly graph is closed"):
+        _ = node.has_value
+    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
+
+
+def test_anyio_runner_exception_typed_cancellation_is_cleanup_not_graph_error(monkeypatch):
+    install_fake_cancel_scope_module(monkeypatch, "anyio")
+    graph = Graph("py-anyio-runner-exception-cancel-smoke")
+    task_group = FakeStartSoonOwner()
+    runner = anyio_runner(task_group)
+    seen: list[Message[object]] = []
+
+    class BackendCancelledError(Exception):
+        pass
+
+    async def work() -> int:
+        raise BackendCancelledError("cancelled")
+
+    node = from_awaitable(graph, runner, work, name="anyio_exception_cancel")
+    with node.subscribe(seen.append):
+        task_group.run()
+
+    assert not node.has_value
+    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
+
+
+def test_trio_anyio_adapters_are_public_without_importing_optional_dependencies():
+    assert "trio_runner" in graphrefly.__all__
+    assert "anyio_runner" in graphrefly.__all__
+    assert callable(graphrefly.trio_runner)
+    assert callable(graphrefly.anyio_runner)
 
 
 def test_reentry_queue_enqueues_cross_thread_completion_and_owner_thread_drain_applies_it():

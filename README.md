@@ -43,7 +43,7 @@ The Python-owned facade exposes:
 - `Node.set`, `Node.cache(default=...)`, `Node.has_value`, `Node.status`, `Node.subscribe`
 - graph-owned control convenience: `Graph.pause(node, lock_id)`, `Graph.resume(node, lock_id)`, and `Graph.invalidate(node)`
 - `Graph.describe` and `Graph.observe`
-- framework-neutral async runner helpers: `from_awaitable(graph, runner, factory, ...)`, `from_async_iter(graph, runner, factory, ...)`, `async_node(graph, deps, runner, callback, ...)`, the `AsyncRunner` protocol, `Graph.reentry_queue().wrap_runner(runner)` for explicit owner-thread completion draining, and the optional caller-owned `asyncio_runner(...)` adapter
+- framework-neutral async runner helpers: `from_awaitable(graph, runner, factory, ...)`, `from_async_iter(graph, runner, factory, ...)`, `async_node(graph, deps, runner, callback, ...)`, the `AsyncRunner` protocol, `Graph.reentry_queue().wrap_runner(runner)` for explicit owner-thread completion draining, and optional caller-owned `asyncio_runner(...)`, `trio_runner(nursery)`, and `anyio_runner(task_group)` adapters
 - `Graph.close`, `Graph.closed`, and `Subscription.closed`
 
 ## Boundary Notes
@@ -57,11 +57,67 @@ The Python-owned facade exposes:
 - Deferred topology mutation uses `ctx.rewire_next.subscribe_dep(dep, callback)`, `ctx.rewire_next.unsubscribe_dep(dep, callback)`, or `ctx.rewire_next.replace_deps(deps, callback)`. The callback is required so each dep-shape change explicitly re-declares the positional fn/deps pairing. This is a narrow facade over the existing deferred rewire protocol, not raw `ctx.up`, raw message construction, cross-graph rewire, or immediate in-fn topology mutation.
 - `Node.cache()` returns cached DATA, including `None`, or raises `GraphReflyNoDataError` when no DATA is present. Use `Node.cache(default=...)` or `Node.has_value` for non-exceptional absence handling.
 - `Graph.close()` and `with Graph(...)` are Python host lifetime scopes. They release facade-created subscriptions/observers and reject later facade use without emitting protocol `TEARDOWN` or `COMPLETE`. Fatal host-boundary aborts automatically close/poison the facade after propagating the original fatal exception.
-- Async work enters only through the explicit runner helpers. Ordinary `Graph.node`, `Graph.derived`, `Graph.effect`, `Graph.batch`, `Node.subscribe`, `Graph.observe`, lifecycle hooks, and rewire callbacks remain synchronous and reject awaitables. The core API does not own an asyncio loop; `asyncio_runner(...)` is only a convenience adapter over a caller-owned loop, and Trio/AnyIO can supply protocol-compatible runners without becoming package dependencies. When a runner completes on a non-owner thread, use the graph-owned re-entry queue: `queue = graph.reentry_queue()`, pass `queue.wrap_runner(runner)` into the async helper, then call `queue.drain(max_items=None)` from the graph owner thread. The queue accepts only GraphReFly-owned private completions; it is not a public callable enqueue or graph mutation channel.
+- Async work enters only through the explicit runner helpers. Ordinary `Graph.node`, `Graph.derived`, `Graph.effect`, `Graph.batch`, `Node.subscribe`, `Graph.observe`, lifecycle hooks, and rewire callbacks remain synchronous and reject awaitables. The core API does not own an asyncio loop, Trio nursery, AnyIO task group, background thread, portal, or hidden pump; `asyncio_runner(...)`, `trio_runner(nursery)`, and `anyio_runner(task_group)` are only convenience adapters over caller-owned runtime objects. Trio/AnyIO convenience adapters must spawn and cancel from the same thread that created the adapter; if the runtime lives on another thread, supply a custom `AsyncRunner` with that runtime's thread-safe ingress. When a runner completes on a non-owner thread, use the graph-owned re-entry queue: `queue = graph.reentry_queue()`, pass `queue.wrap_runner(runner)` into the async helper, then call `queue.drain(max_items=None)` from the graph owner thread. The queue accepts only GraphReFly-owned private completions; it is not a public callable enqueue or graph mutation channel.
 - Node callback failures become graph `ERROR` observations wrapped as `GraphCallbackError`. Subscribe/observe callback failures stay at the Python observer boundary as `SubscriberCallbackError`. Public API value/runtime failures use `GraphReflyValueError` and `GraphReflyRuntimeError`.
 - Fatal Python `BaseException` process-control failures such as `KeyboardInterrupt`, `SystemExit`, and `GeneratorExit` propagate back to the initiating Python caller instead of becoming graph `ERROR` or `SubscriberCallbackError`. Per D431/D436, a fatal first observed after native batch commit has begun aborts the host boundary but does not claim full transactional rollback of graph effects already committed; the facade is then closed/poisoned and later use is rejected.
 - `DataIssue` is a reserved passive DATA envelope for future domain/material issue payloads; this slice does not emit it and does not change protocol `ERROR` semantics.
 - Public Python does not expose raw `Node.up(msgs)`, raw `Node.down(msgs)`, arbitrary message construction/sending, raw `ctx.up(msgs)`, raw PyO3 handles, or parallel raw value aliases such as `latest`, `prevData`, `latestData`, or `depRecords[i].latest`.
+
+## Async Runner Examples
+
+Trio and AnyIO adapters are caller-owned: GraphReFly uses the supplied nursery or task group on its owning thread, and does not create or drain the runtime for you.
+
+```python
+import trio
+from graphrefly import Graph, from_awaitable, trio_runner
+
+
+async def main() -> None:
+    graph = Graph("trio-demo")
+
+    async with trio.open_nursery() as nursery:
+        node = from_awaitable(
+            graph,
+            trio_runner(nursery),
+            lambda: fetch_value(),
+            name="value",
+        )
+        with node.subscribe(lambda msg: print(msg.kind)):
+            await trio.lowlevel.checkpoint()
+```
+
+```python
+import anyio
+from graphrefly import Graph, anyio_runner, from_async_iter
+
+
+async def main() -> None:
+    graph = Graph("anyio-demo")
+
+    async with anyio.create_task_group() as task_group:
+        node = from_async_iter(
+            graph,
+            anyio_runner(task_group),
+            stream_values,
+            name="values",
+        )
+        with node.subscribe(lambda msg: print(msg.kind)):
+            await anyio.sleep(0)
+```
+
+If a host runtime completes work away from the graph owner thread, keep re-entry explicit:
+
+```python
+graph = Graph("queued-demo")
+queue = graph.reentry_queue()
+runner = queue.wrap_runner(host_owned_runner)
+node = from_awaitable(graph, runner, fetch_value, name="queued")
+
+with node.subscribe(lambda msg: None):
+    # Schedule this from the graph owner thread when your host loop/timer says
+    # work may be ready. GraphReFly does not spin or block until idle.
+    queue.drain(max_items=None)
+```
 
 ## Local Development
 

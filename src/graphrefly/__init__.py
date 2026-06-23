@@ -17,10 +17,12 @@ from graphrefly._facade import (
     RewireNext,
     Sentinel,
     Subscription,
+    anyio_runner,
     async_node,
     asyncio_runner,
     from_async_iter,
     from_awaitable,
+    trio_runner,
     version,
 )
 from graphrefly.exceptions import (
@@ -60,9 +62,11 @@ __all__ = [
     "SubscriberCallbackError",
     "__version__",
     "async_node",
+    "anyio_runner",
     "asyncio_runner",
     "from_async_iter",
     "from_awaitable",
+    "trio_runner",
     "version",
 ]
 

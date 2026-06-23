@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import AsyncIterable, Awaitable, Callable, Iterable
 from dataclasses import dataclass
-from importlib import metadata
+from importlib import import_module, metadata
 from importlib.metadata import PackageNotFoundError
 from inspect import isawaitable, iscoroutine, iscoroutinefunction
 from threading import Lock, get_ident
@@ -82,6 +82,7 @@ type PausableMode = bool | Literal["resumeAll"]
 type NodeCallback = Callable[["Ctx"], object]
 type AsyncJobFactory = Callable[[], Awaitable[None]]
 type _CompletionPredicate = Callable[[], bool]
+type _CancelScopeFactory = Callable[[], object]
 
 
 class AsyncRunner(Protocol):
@@ -889,6 +890,83 @@ class _AsyncioRunner:
         cancel = getattr(task, "cancel", None)
         if callable(cancel):
             cancel()
+
+
+class _CancelScopeTask:
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._cancel_requested = False
+        self._cancel_scope: object | None = None
+
+    def cancel(self) -> None:
+        with self._lock:
+            self._cancel_requested = True
+            cancel_scope = self._cancel_scope
+        _cancel_scope(cancel_scope)
+
+    def _set_cancel_scope(self, cancel_scope: object) -> bool:
+        with self._lock:
+            self._cancel_scope = cancel_scope
+            cancel_requested = self._cancel_requested
+        if cancel_requested:
+            _cancel_scope(cancel_scope)
+        return cancel_requested
+
+
+class _StartSoonRunner:
+    def __init__(
+        self,
+        owner: object,
+        *,
+        cancel_scope_factory: _CancelScopeFactory,
+        owner_name: str,
+    ) -> None:
+        self._owner = owner
+        self._cancel_scope_factory = cancel_scope_factory
+        self._owner_name = owner_name
+        self._owner_thread = get_ident()
+
+    def spawn(self, job: AsyncJobFactory) -> object:
+        self._check_runtime_thread()
+        start_soon = getattr(self._owner, "start_soon", None)
+        if not callable(start_soon):
+            msg = f"{self._owner_name} must provide start_soon(async_fn, *args)"
+            raise GraphReflyValueError(msg)
+        task = _CancelScopeTask()
+        start_soon(_run_with_cancel_scope, task, job, self._cancel_scope_factory)
+        return task
+
+    def cancel(self, task: object | None) -> None:
+        self._check_runtime_thread()
+        if isinstance(task, _CancelScopeTask):
+            task.cancel()
+
+    def _check_runtime_thread(self) -> None:
+        if get_ident() != self._owner_thread:
+            msg = f"{self._owner_name} runner must be used on its owner thread"
+            raise GraphReflyRuntimeError(msg)
+
+
+async def _run_with_cancel_scope(
+    task: _CancelScopeTask,
+    job: AsyncJobFactory,
+    cancel_scope_factory: _CancelScopeFactory,
+) -> None:
+    cancel_scope = cancel_scope_factory()
+    with cast("Any", cancel_scope):
+        if task._set_cancel_scope(cancel_scope):
+            return
+        await job()
+
+
+def _cancel_scope(cancel_scope: object | None) -> None:
+    cancel = getattr(cancel_scope, "cancel", None)
+    if callable(cancel):
+        cancel()
+
+
+def _should_suppress_async_error(job: _AsyncJob, error: BaseException) -> bool:
+    return job.cancel_requested or _is_cancellation_error(error)
 
 
 class Ctx:
@@ -1776,9 +1854,10 @@ def from_awaitable[T](
                 value = await awaitable
                 completion_gate.resolve(value, job.can_apply_completion)
             except Exception as error:
-                completion_gate.error(error, job.can_apply_completion)
+                if not _should_suppress_async_error(job, error):
+                    completion_gate.error(error, job.can_apply_completion)
             except BaseException as error:
-                if not (job.cancel_requested or _is_cancellation_error(error)):
+                if not _should_suppress_async_error(job, error):
                     completion_gate.fatal(error, job.can_apply_completion)
             finally:
                 job.finish()
@@ -1843,9 +1922,10 @@ def from_async_iter[T](
                     completion_gate.emit(value, job.can_apply_completion)
                 completion_gate.complete(job.can_apply_completion)
             except Exception as error:
-                completion_gate.error(error, job.can_apply_completion)
+                if not _should_suppress_async_error(job, error):
+                    completion_gate.error(error, job.can_apply_completion)
             except BaseException as error:
-                if not (job.cancel_requested or _is_cancellation_error(error)):
+                if not _should_suppress_async_error(job, error):
                     completion_gate.fatal(error, job.can_apply_completion)
             finally:
                 job.finish()
@@ -1922,9 +2002,10 @@ def async_node[T](
                 value = await awaitable
                 completion_gate.emit(value, is_current, final=True)
             except Exception as error:
-                completion_gate.error(error, is_current)
+                if not _should_suppress_async_error(job, error):
+                    completion_gate.error(error, is_current)
             except BaseException as error:
-                if not (job.cancel_requested or _is_cancellation_error(error)):
+                if not _should_suppress_async_error(job, error):
                     completion_gate.fatal(error, is_current)
             finally:
                 job.finish()
@@ -1947,6 +2028,36 @@ def asyncio_runner(loop: object | None = None) -> AsyncRunner:
     """Return a convenience runner for a caller-owned asyncio event loop."""
 
     return _AsyncioRunner(loop)
+
+
+def trio_runner(nursery: object) -> AsyncRunner:
+    """Return a convenience runner for a caller-owned Trio nursery."""
+
+    trio = import_module("trio")
+    cancel_scope = getattr(trio, "CancelScope", None)
+    if not callable(cancel_scope):
+        msg = "trio.CancelScope is required for trio_runner"
+        raise GraphReflyRuntimeError(msg)
+    return _StartSoonRunner(
+        nursery,
+        cancel_scope_factory=cast("_CancelScopeFactory", cancel_scope),
+        owner_name="Trio nursery",
+    )
+
+
+def anyio_runner(task_group: object) -> AsyncRunner:
+    """Return a convenience runner for a caller-owned AnyIO task group."""
+
+    anyio = import_module("anyio")
+    cancel_scope = getattr(anyio, "CancelScope", None)
+    if not callable(cancel_scope):
+        msg = "anyio.CancelScope is required for anyio_runner"
+        raise GraphReflyRuntimeError(msg)
+    return _StartSoonRunner(
+        task_group,
+        cancel_scope_factory=cast("_CancelScopeFactory", cancel_scope),
+        owner_name="AnyIO task group",
+    )
 
 
 def version() -> str:
@@ -2026,6 +2137,10 @@ def _cancel_runner_task(runner: AsyncRunner, task: object | None) -> None:
 
 
 def _is_cancellation_error(error: BaseException) -> bool:
+    if isinstance(error, BaseExceptionGroup):
+        return bool(error.exceptions) and all(
+            _is_cancellation_error(item) for item in error.exceptions
+        )
     return "Cancel" in type(error).__name__
 
 
