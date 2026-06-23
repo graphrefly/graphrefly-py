@@ -1,7 +1,9 @@
 import pytest
 
+import graphrefly
 from graphrefly import (
     SENTINEL,
+    CallbackError,
     ControlMessage,
     DataMessage,
     ErrorMessage,
@@ -50,6 +52,145 @@ def test_c5_pause_lockset_multi_source_public_facade():
         graph.resume(node, "B")
         assert runs == 1
         assert node.cache() == 1
+
+
+def test_c2_async_result_at_paused_node_private_harness():
+    graph = Graph("py-c2-async-paused")
+    stimulus = ConformanceStimulus(graph)
+    trigger = graph.state(0, name="trigger")
+    node, pending = stimulus.c2_async_result_node(trigger, name="async-compute")
+    seen: list[Message[object]] = []
+
+    with node.subscribe(seen.append):
+        assert pending.has_pending()
+        assert node.has_value is False
+
+        graph.pause(node, "L1")
+        seen.clear()
+        pending.resolve(42)
+
+        assert seen == []
+        assert node.has_value is False
+
+        graph.resume(node, "L1")
+        assert _kinds(seen) == ["DIRTY", "DATA"]
+        assert _data_values(seen) == [42]
+        assert node.cache() == 42
+
+
+def test_c4_mixed_sync_async_diamond_private_harness():
+    graph = Graph("py-c4-mixed-diamond")
+    stimulus = ConformanceStimulus(graph)
+    source = graph.state(1, name="source")
+    sync_leg = graph.derived([source], lambda value: value + 10, name="sync-leg")
+    async_leg, pending = stimulus.c4_async_diamond_leg(source, name="async-leg")
+    runs = 0
+    seen: list[Message[object]] = []
+
+    def join(left: int, right: int) -> int:
+        nonlocal runs
+        runs += 1
+        return left + right
+
+    diamond = graph.derived([sync_leg, async_leg], join, name="diamond")
+    with diamond.subscribe(seen.append):
+        assert pending.has_pending()
+        assert runs == 0
+        assert diamond.has_value is False
+
+        pending.resolve(21)
+        assert runs == 1
+        assert diamond.cache() == 32
+
+        seen.clear()
+        source.set(2)
+        assert pending.has_pending()
+        assert runs == 1
+
+        pending.resolve(30)
+        assert runs == 2
+        assert diamond.cache() == 42
+        assert _kinds(seen) == ["DIRTY", "DATA"]
+        assert _data_values(seen) == [42]
+
+
+def test_c9_pausable_false_async_source_ignores_pause_private_harness():
+    graph = Graph("py-c9-pausable-false-async-source")
+    stimulus = ConformanceStimulus(graph)
+    source, pending = stimulus.c9_pausable_false_async_source(name="async-source")
+    seen: list[Message[object]] = []
+
+    with source.subscribe(seen.append):
+        assert pending.has_pending()
+        graph.pause(source, "L1")
+        seen.clear()
+
+        pending.resolve(42)
+        assert _kinds(seen) == ["DIRTY", "DATA"]
+        assert _data_values(seen) == [42]
+        assert source.cache() == 42
+
+        graph.resume(source, "L1")
+        assert _kinds(seen) == ["DIRTY", "DATA"]
+
+
+def test_c10_true_mode_async_leaf_source_delivers_immediately_private_harness():
+    graph = Graph("py-c10-true-async-leaf")
+    stimulus = ConformanceStimulus(graph)
+    source, pending = stimulus.c10_true_mode_async_leaf_source(name="async-leaf")
+    seen: list[Message[object]] = []
+
+    with source.subscribe(seen.append):
+        assert pending.has_pending()
+        graph.pause(source, "L1")
+        seen.clear()
+
+        pending.resolve(7)
+        assert _kinds(seen) == ["DIRTY", "DATA"]
+        assert _data_values(seen) == [7]
+        assert source.cache() == 7
+
+
+def test_c21_late_async_ctx_emission_uses_live_deps_after_rewire_private_harness():
+    graph = Graph("py-c21-live-edge")
+    stimulus = ConformanceStimulus(graph)
+    stale_dep = graph.state(1, name="stale")
+    live_dep = graph.state(2, name="live")
+    node, pending = stimulus.c21_live_edge_async_node(stale_dep, name="async-node")
+
+    with node.subscribe(lambda _msg: None):
+        assert pending.has_pending()
+        stimulus.c21_replace_with_live_dep(node, live_dep, pending)
+        pending.invalidate_live_deps()
+
+        assert stale_dep.has_value is True
+        assert stale_dep.cache() == 1
+        assert live_dep.has_value is False
+        assert pending.has_pending() is False
+
+        live_dep.set(3)
+        assert pending.has_pending()
+        pending.resolve(9)
+        assert node.cache() == 9
+
+    terminal_graph = Graph("py-c21-terminal-guard")
+    terminal_stimulus = ConformanceStimulus(terminal_graph)
+    terminal_dep = terminal_graph.state(1, name="dep")
+    terminal_node, terminal_pending = terminal_stimulus.c21_live_edge_async_node(
+        terminal_dep,
+        name="async-terminal",
+    )
+    terminal_seen: list[Message[object]] = []
+
+    with terminal_node.subscribe(terminal_seen.append):
+        assert terminal_pending.has_pending()
+        terminal_stimulus.c23_dep_completes(terminal_node)
+        assert terminal_node.status == "completed"
+        terminal_seen.clear()
+
+        terminal_pending.resolve("late")
+        assert terminal_seen == []
+        assert terminal_node.has_value is False
 
 
 def test_c6_synchronous_feedback_cycle_becomes_graph_error_without_recursion():
@@ -1943,6 +2084,9 @@ def test_c27_pull_family_public_no_change_params_drive_output_and_plain_silence(
 
 
 def test_d447_private_harness_preserves_facade_guards():
+    assert "_conformance" not in graphrefly.__all__
+    assert not hasattr(conformance._native, "ConformanceAsyncHandle")
+
     graph = Graph("py-d447-harness-guards")
     stimulus = ConformanceStimulus(graph)
     owned = graph.state(1, name="owned")
@@ -1956,6 +2100,19 @@ def test_d447_private_harness_preserves_facade_guards():
         stimulus.node([owned], lambda _ctx: None, pausable="sometimes")
 
     assert graph.state(2, name="after-value-error").cache() == 2
+
+    class AwaitableValue:
+        def __await__(self):
+            if False:
+                yield None
+            return None
+
+    source, pending = stimulus.c10_true_mode_async_leaf_source(name="awaitable-source")
+    with source.subscribe(lambda _msg: None):
+        assert pending.has_pending()
+        with pytest.raises(CallbackError, match="async callbacks"):
+            pending.resolve(AwaitableValue())
+        assert pending.has_pending()
 
     with pytest.raises(GraphReflyValueError, match="cannot be DATA"):
         stimulus.c17_dep_emits_data_then_completes(owned, SENTINEL)

@@ -30,6 +30,17 @@ class Graph:
         pausable: str | None = None,
         pull_id: str | None = None,
     ) -> Node: ...
+    def _conformance_async_node(
+        self,
+        deps: list[Node],
+        name: str | None = None,
+        pausable: str | None = None,
+    ) -> tuple[Node, object]: ...
+    def _conformance_async_source(
+        self,
+        name: str | None = None,
+        pausable: str | None = None,
+    ) -> tuple[Node, object]: ...
     def derived(
         self,
         deps: list[Node],
@@ -67,6 +78,11 @@ class Node:
         self,
         dep: Node,
         callback: Callable[[Ctx], object],
+    ) -> None: ...
+    def _conformance_c21_replace_with_live_dep(
+        self,
+        dep: Node,
+        async_handle: object,
     ) -> None: ...
     def _down_resolved(self) -> None: ...
     def _down_dirty(self) -> None: ...

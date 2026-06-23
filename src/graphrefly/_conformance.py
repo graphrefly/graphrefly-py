@@ -7,6 +7,7 @@ internals. It is deliberately not exported from ``graphrefly.__all__``.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from threading import get_ident
 from typing import Any, Literal
 
 from graphrefly import _native
@@ -21,6 +22,54 @@ from graphrefly._facade import (
 from graphrefly.exceptions import GraphReflyRuntimeError, GraphReflyValueError
 
 PausableMode = Literal["true", "resumeAll", "false"]
+
+
+class ConformanceAsyncHandle:
+    """Private scenario-fixed handle for a captured async-pool ctx."""
+
+    def __init__(self, native: Any, *, owner_thread: int, lifetime: Any) -> None:
+        self._native = native
+        self._owner_thread = owner_thread
+        self._lifetime = lifetime
+
+    def has_pending(self) -> bool:
+        self._check_thread()
+        try:
+            return bool(self._native.has_pending())
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+
+    def resolve(self, value: object) -> None:
+        self._check_thread()
+        _reject_sentinel_data(value)
+        _reject_awaitable(value)
+        try:
+            self._native.resolve(value)
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+
+    def invalidate_live_deps(self) -> None:
+        self._check_thread()
+        try:
+            self._native.invalidate_live_deps()
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+
+    def _check_thread(self) -> None:
+        if get_ident() != self._owner_thread:
+            msg = (
+                "GraphReFly Python conformance async handles are bound to "
+                "their creating thread in v0"
+            )
+            raise GraphReflyRuntimeError(msg)
+        if self._lifetime.closed:
+            raise GraphReflyRuntimeError(self._lifetime.closed_message)
 
 
 class ConformanceStimulus:
@@ -183,8 +232,120 @@ class ConformanceStimulus:
             native_callback,
         )
 
+    def c2_async_result_node(
+        self,
+        dep: Node[Any],
+        name: str | None = None,
+    ) -> tuple[Node[object], ConformanceAsyncHandle]:
+        return self._async_node([dep], name=name, pausable="true")
+
+    def c4_async_diamond_leg(
+        self,
+        dep: Node[Any],
+        name: str | None = None,
+    ) -> tuple[Node[object], ConformanceAsyncHandle]:
+        return self._async_node([dep], name=name, pausable="true")
+
+    def c9_pausable_false_async_source(
+        self,
+        name: str | None = None,
+    ) -> tuple[Node[object], ConformanceAsyncHandle]:
+        return self._async_source(name=name, pausable="false")
+
+    def c10_true_mode_async_leaf_source(
+        self,
+        name: str | None = None,
+    ) -> tuple[Node[object], ConformanceAsyncHandle]:
+        return self._async_source(name=name, pausable="true")
+
+    def c21_live_edge_async_node(
+        self,
+        dep: Node[Any],
+        name: str | None = None,
+    ) -> tuple[Node[object], ConformanceAsyncHandle]:
+        return self._async_node([dep], name=name, pausable="true")
+
+    def c21_replace_with_live_dep(
+        self,
+        node: Node[Any],
+        dep: Node[Any],
+        pending: ConformanceAsyncHandle,
+    ) -> None:
+        if pending._lifetime is not self._graph._lifetime:
+            msg = "conformance async handle must belong to this GraphReFly graph"
+            raise GraphReflyRuntimeError(msg)
+        self._native_node(node)._conformance_c21_replace_with_live_dep(
+            self._native_node(dep),
+            pending._native,
+        )
+
     def _native_node(self, node: Node[Any]) -> _native.Node:
         return self._graph._native_node(node)
+
+    def _async_node(
+        self,
+        deps: Iterable[Node[Any]],
+        *,
+        name: str | None,
+        pausable: PausableMode,
+    ) -> tuple[Node[object], ConformanceAsyncHandle]:
+        self._graph._check_thread()
+        native_deps = self._graph._native_deps(list(deps))
+        try:
+            native_node, native_handle = self._graph._native._conformance_async_node(
+                native_deps,
+                name,
+                pausable,
+            )
+            return (
+                Node(
+                    native_node,
+                    owner_thread=self._graph._owner_thread,
+                    lifetime=self._graph._lifetime,
+                ),
+                ConformanceAsyncHandle(
+                    native_handle,
+                    owner_thread=self._graph._owner_thread,
+                    lifetime=self._graph._lifetime,
+                ),
+            )
+        except ValueError as error:
+            raise GraphReflyValueError(str(error)) from error
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._graph._lifetime, error)
+
+    def _async_source(
+        self,
+        *,
+        name: str | None,
+        pausable: PausableMode,
+    ) -> tuple[Node[object], ConformanceAsyncHandle]:
+        self._graph._check_thread()
+        try:
+            native_node, native_handle = self._graph._native._conformance_async_source(
+                name,
+                pausable,
+            )
+            return (
+                Node(
+                    native_node,
+                    owner_thread=self._graph._owner_thread,
+                    lifetime=self._graph._lifetime,
+                ),
+                ConformanceAsyncHandle(
+                    native_handle,
+                    owner_thread=self._graph._owner_thread,
+                    lifetime=self._graph._lifetime,
+                ),
+            )
+        except ValueError as error:
+            raise GraphReflyValueError(str(error)) from error
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._graph._lifetime, error)
 
 
 def up_data_forbidden(ctx: Ctx, value: object) -> None:
