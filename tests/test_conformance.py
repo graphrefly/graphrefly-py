@@ -666,8 +666,7 @@ def test_c11_public_rewire_next_merge_keeps_multiple_inners_live():
 
 def test_c25_public_rewire_next_batch_commit_old_shape_before_drain():
     graph = Graph("py-c25-batch-commit")
-    stimulus = ConformanceStimulus(graph)
-    source = stimulus.state_empty("source")
+    source = graph.state("idle", name="source")
     helper_activations: list[str] = []
     seen: list[Message[object]] = []
 
@@ -679,8 +678,10 @@ def test_c25_public_rewire_next_batch_commit_old_shape_before_drain():
 
     def op_body(ctx) -> None:
         if _fresh_values(ctx, 0):
-            ctx.rewire_next.subscribe_dep(helper, op_body)
-            ctx.emit("old-shape")
+            label = _fresh_values(ctx, 0)[-1]
+            if label == "attach":
+                ctx.rewire_next.subscribe_dep(helper, op_body)
+                ctx.emit("old-shape")
         for index in range(1, ctx.dep_len):
             for value in _fresh_values(ctx, index):
                 ctx.emit(value)
@@ -690,7 +691,7 @@ def test_c25_public_rewire_next_batch_commit_old_shape_before_drain():
         seen.clear()
 
         def body() -> None:
-            source.set(1)
+            source.set("attach")
             assert helper_activations == []
 
         graph.batch(body)
@@ -702,55 +703,114 @@ def test_c25_public_rewire_next_batch_commit_old_shape_before_drain():
 
 def test_c25_public_rewire_next_batch_rollback_drops_tasks():
     graph = Graph("py-c25-rollback")
-    stimulus = ConformanceStimulus(graph)
-    source = stimulus.state_empty("source")
-    helper = graph.state("helper-1", name="helper")
-    replacement = graph.state("replacement", name="replacement")
+    subscribe_source = graph.state("attach-rollback", name="subscribe-source")
     rollback_helper = graph.state("rollback-helper", name="rollback-helper")
-    seen: list[Message[object]] = []
+    subscribe_seen: list[Message[object]] = []
+    subscribe_queued: list[str] = []
+    subscribe_holders: list[object] = []
 
-    def op_body(ctx) -> None:
+    def subscribe_body(ctx) -> None:
         for value in _fresh_values(ctx, 0):
             if value == "attach-rollback":
-                ctx.rewire_next.subscribe_dep(rollback_helper, op_body)
-            elif value == "attach":
-                ctx.rewire_next.subscribe_dep(helper, op_body)
-            elif value == "drop":
-                ctx.rewire_next.unsubscribe_dep(helper, op_body)
-                ctx.rewire_next.replace_deps([source, replacement], op_body)
+                subscribe_queued.append("subscribe-rollback")
+                ctx.rewire_next.subscribe_dep(rollback_helper, subscribe_body)
         for index in range(1, ctx.dep_len):
             for value in _fresh_values(ctx, index):
                 ctx.emit(value)
 
+    subscribe_op = graph.node([subscribe_source], subscribe_body, name="subscribe-op", partial=True)
+
+    def rollback_subscribe() -> None:
+        subscribe_holders.append(subscribe_op.subscribe(subscribe_seen.append))
+        assert subscribe_queued == ["subscribe-rollback"]
+        raise ValueError("rollback")
+
+    with pytest.raises(ValueError, match="rollback"):
+        graph.batch(rollback_subscribe)
+    assert subscribe_queued == ["subscribe-rollback"]
+    rollback_helper.set("must-not-drive-after-subscribe-rollback")
+    assert "must-not-drive-after-subscribe-rollback" not in _data_values(subscribe_seen)
+    subscribe_holders.pop().unsubscribe()
+
+    drop_source = graph.state("drop", name="drop-source")
+    helper = graph.state("helper-1", name="helper")
+    replacement = graph.state("replacement", name="replacement")
+    drop_seen: list[Message[object]] = []
+    drop_queued: list[str] = []
+    drop_holders: list[object] = []
+
+    def drop_body(ctx) -> None:
+        for value in _fresh_values(ctx, 0):
+            if value == "drop":
+                drop_queued.append("drop-rollback")
+                ctx.rewire_next.unsubscribe_dep(helper, drop_body)
+                ctx.rewire_next.replace_deps([drop_source, replacement], drop_body)
+        for index in range(1, ctx.dep_len):
+            for value in _fresh_values(ctx, index):
+                ctx.emit(value)
+
+    drop_op = graph.node([drop_source, helper], drop_body, name="drop-op", partial=True)
+
+    def rollback_drop() -> None:
+        drop_holders.append(drop_op.subscribe(drop_seen.append))
+        assert drop_queued == ["drop-rollback"]
+        raise ValueError("rollback")
+
+    with pytest.raises(ValueError, match="rollback"):
+        graph.batch(rollback_drop)
+    assert drop_queued == ["drop-rollback"]
+
+    drop_seen.clear()
+    helper.set("still-live")
+    replacement.set("must-not-drive")
+    drop_holders.pop().unsubscribe()
+
+    assert "still-live" in _data_values(drop_seen)
+    assert "must-not-drive" not in _data_values(drop_seen)
+
+
+def test_c25_public_rewire_next_paused_batch_rollback_drops_task_before_resume():
+    graph = Graph("py-c25-rewire-paused-rollback")
+    source = graph.state("queue", name="source")
+    helper_activations: list[str] = []
+    op_holder: list[object] = []
+    subscriptions: list[object] = []
+    queued: list[str] = []
+
+    def helper_body(ctx) -> None:
+        helper_activations.append("helper")
+        ctx.emit("helper")
+
+    helper = graph.node([], helper_body, name="helper")
+
+    def op_body(ctx) -> None:
+        if "queue" in _fresh_values(ctx, 0):
+            queued.append("rewire")
+            ctx.rewire_next.subscribe_dep(helper, op_body)
+            graph.pause(op_holder[0], "rollback")
+
     op = graph.node([source], op_body, name="op", partial=True)
-    with op.subscribe(seen.append):
-        with pytest.raises(ValueError, match="rollback"):
-            graph.batch(
-                lambda: (
-                    source.set("attach-rollback"),
-                    (_ for _ in ()).throw(ValueError("rollback")),
-                )
-            )
-        rollback_helper.set("must-not-drive-after-subscribe-rollback")
-        assert "must-not-drive-after-subscribe-rollback" not in _data_values(seen)
+    op_holder.append(op)
 
-        graph.batch(lambda: source.set("attach"))
-        seen.clear()
+    def body() -> None:
+        subscriptions.append(op.subscribe(lambda _message: None))
+        assert queued == ["rewire"]
+        raise ValueError("rollback")
 
-        with pytest.raises(ValueError, match="rollback"):
-            graph.batch(lambda: (source.set("drop"), (_ for _ in ()).throw(ValueError("rollback"))))
+    with pytest.raises(ValueError, match="rollback"):
+        graph.batch(body)
 
-        helper.set("still-live")
-        replacement.set("must-not-drive")
-
-    assert "still-live" in _data_values(seen)
-    assert "must-not-drive" not in _data_values(seen)
+    assert queued == ["rewire"]
+    assert helper_activations == []
+    graph.resume(op, "rollback")
+    assert queued == ["rewire"]
+    assert helper_activations == []
+    subscriptions.pop().unsubscribe()
 
 
 def test_c25_public_rewire_next_pause_final_lock_gating():
     graph = Graph("py-c25-pause")
-    stimulus = ConformanceStimulus(graph)
-    source = stimulus.state_empty("source")
+    source = graph.state("idle", name="source")
     helper_activations: list[str] = []
     op_holder: list[object] = []
 
@@ -761,7 +821,7 @@ def test_c25_public_rewire_next_pause_final_lock_gating():
     helper = graph.node([], helper_body, name="helper")
 
     def op_body(ctx) -> None:
-        if _fresh_values(ctx, 0):
+        if "queue" in _fresh_values(ctx, 0):
             ctx.rewire_next.subscribe_dep(helper, op_body)
             graph.pause(op_holder[0], "A")
             graph.pause(op_holder[0], "B")
@@ -770,7 +830,7 @@ def test_c25_public_rewire_next_pause_final_lock_gating():
     op_holder.append(op)
 
     with op.subscribe(lambda _message: None):
-        source.set(1)
+        source.set("queue")
         assert helper_activations == []
         graph.resume(op, "A")
         assert helper_activations == []
@@ -780,8 +840,7 @@ def test_c25_public_rewire_next_pause_final_lock_gating():
 
 def test_c25_public_rewire_next_combined_batch_pause_ordering():
     graph = Graph("py-c25-batch-pause")
-    stimulus = ConformanceStimulus(graph)
-    source = stimulus.state_empty("source")
+    source = graph.state("idle", name="source")
     helper_activations: list[int] = []
     op_holder: list[object] = []
 
@@ -794,7 +853,8 @@ def test_c25_public_rewire_next_combined_batch_pause_ordering():
 
     def op_body(ctx) -> None:
         for value in _fresh_values(ctx, 0):
-            assert isinstance(value, int)
+            if not isinstance(value, int):
+                continue
             helper = make_helper(value)
             ctx.rewire_next.subscribe_dep(helper, op_body)
             graph.pause(op_holder[0], f"lock-{value}")
@@ -807,6 +867,294 @@ def test_c25_public_rewire_next_combined_batch_pause_ordering():
         assert helper_activations == []
         graph.resume(op, "lock-1")
         assert helper_activations == [1]
+
+
+def test_c25_public_rewire_next_final_resume_inside_open_batch_ordering():
+    graph = Graph("py-c25-rewire-resume-inside-batch")
+    source = graph.state("idle", name="source")
+    events: list[str] = []
+    helper_activations: list[str] = []
+
+    def helper_body(ctx) -> None:
+        helper_activations.append("helper")
+        events.append("helper")
+        ctx.emit("helper")
+
+    helper = graph.node([], helper_body, name="helper")
+
+    def op_body(ctx) -> None:
+        for value in _fresh_values(ctx, 0):
+            if value != "inside":
+                continue
+            events.append(f"op:{value}")
+            ctx.rewire_next.subscribe_dep(helper, op_body)
+            ctx.emit(f"old:{value}")
+        for index in range(1, ctx.dep_len):
+            for value in _fresh_values(ctx, index):
+                ctx.emit(value)
+
+    op = graph.node([source], op_body, name="op", partial=True)
+    seen: list[Message[object]] = []
+    with op.subscribe(seen.append):
+        seen.clear()
+        graph.pause(op, "gate")
+
+        def body() -> None:
+            source.set("inside")
+            assert events == []
+            graph.resume(op, "gate")
+            assert events == []
+            assert helper_activations == []
+            assert _data_values(seen) == []
+
+        graph.batch(body)
+
+    assert events == ["op:inside", "helper"]
+    assert helper_activations == ["helper"]
+    assert _data_values(seen) == ["old:inside", "helper"]
+
+
+def test_c25_public_request_pull_next_batch_commit_old_shape_before_drain():
+    graph = Graph("py-c25-pull-batch-commit")
+    acc = graph.state(0, name="acc")
+    trigger = graph.state("idle", name="trigger")
+    events: list[str] = []
+    pull_params: list[object | None] = []
+    seen: list[Message[object]] = []
+
+    def snapshot(ctx) -> None:
+        events.append("snap")
+        pull_params.append(ctx.pull_params())
+        if ctx.has_data(0):
+            ctx.emit(ctx.data(0))
+
+    snap = graph.node([acc], snapshot, name="snap", pull_id="snapshot")
+
+    def demand(ctx) -> None:
+        for value in _fresh_values(ctx, 0):
+            if value != "commit":
+                continue
+            events.append(f"demand:{value}")
+            ctx.request_pull_next("snapshot", {"batch": value}, toward_dep=1)
+            ctx.emit(f"old:{value}")
+        for value in _fresh_values(ctx, 1):
+            ctx.emit(("snap", value))
+
+    op = graph.node([trigger, snap], demand, name="op", partial=True)
+    with op.subscribe(seen.append):
+        seen.clear()
+
+        def body() -> None:
+            acc.set(1)
+            trigger.set("commit")
+            assert events == []
+            assert pull_params == []
+
+        graph.batch(body)
+
+    assert events == ["demand:commit", "snap"]
+    assert pull_params == [{"batch": "commit"}]
+    assert _data_values(seen) == ["old:commit", ("snap", 1)]
+
+
+def test_c25_public_request_pull_next_batch_rollback_drops_task():
+    graph = Graph("py-c25-pull-rollback")
+    acc = graph.state(0, name="acc")
+    trigger = graph.state("rollback", name="trigger")
+    pull_params: list[object | None] = []
+    queued: list[str] = []
+    subscriptions: list[object] = []
+
+    def snapshot(ctx) -> None:
+        pull_params.append(ctx.pull_params())
+        if ctx.has_data(0):
+            ctx.emit(ctx.data(0))
+
+    snap = graph.node([acc], snapshot, name="snap", pull_id="snapshot")
+
+    def demand(ctx) -> None:
+        for value in _fresh_values(ctx, 0):
+            if value not in {"rollback", "commit"}:
+                continue
+            queued.append(value)
+            ctx.request_pull_next("snapshot", value, toward_dep=1)
+        for value in _fresh_values(ctx, 1):
+            ctx.emit(value)
+
+    op = graph.node([trigger, snap], demand, name="op", partial=True)
+    def rollback_pull() -> None:
+        subscriptions.append(op.subscribe(lambda _message: None))
+        assert queued == ["rollback"]
+        raise ValueError("rollback")
+
+    with pytest.raises(ValueError, match="rollback"):
+        graph.batch(rollback_pull)
+    assert queued == ["rollback"]
+    assert pull_params == []
+
+    trigger.set("commit")
+    subscriptions.pop().unsubscribe()
+
+    assert queued == ["rollback", "commit"]
+    assert pull_params == ["commit"]
+
+
+def test_c25_public_request_pull_next_paused_batch_rollback_drops_task_before_resume():
+    graph = Graph("py-c25-pull-paused-rollback")
+    acc = graph.state(1, name="acc")
+    trigger = graph.state("queue", name="trigger")
+    pull_params: list[object | None] = []
+    op_holder: list[object] = []
+    subscriptions: list[object] = []
+    queued: list[str] = []
+
+    def snapshot(ctx) -> None:
+        pull_params.append(ctx.pull_params())
+        if ctx.has_data(0):
+            ctx.emit(ctx.data(0))
+
+    snap = graph.node([acc], snapshot, name="snap", pull_id="snapshot")
+
+    def demand(ctx) -> None:
+        if "queue" in _fresh_values(ctx, 0):
+            queued.append("pull")
+            ctx.request_pull_next("snapshot", "rollback", toward_dep=1)
+            graph.pause(op_holder[0], "rollback")
+        for value in _fresh_values(ctx, 1):
+            ctx.emit(value)
+
+    op = graph.node([trigger, snap], demand, name="op", partial=True)
+    op_holder.append(op)
+
+    def body() -> None:
+        subscriptions.append(op.subscribe(lambda _message: None))
+        assert queued == ["pull"]
+        raise ValueError("rollback")
+
+    with pytest.raises(ValueError, match="rollback"):
+        graph.batch(body)
+
+    assert queued == ["pull"]
+    assert pull_params == []
+    graph.resume(op, "rollback")
+    assert queued == ["pull"]
+    assert pull_params == []
+    subscriptions.pop().unsubscribe()
+
+
+def test_c25_public_request_pull_next_pause_final_lock_gating():
+    graph = Graph("py-c25-pull-pause")
+    acc = graph.state(1, name="acc")
+    trigger = graph.state("idle", name="trigger")
+    pull_params: list[object | None] = []
+    op_holder: list[object] = []
+
+    def snapshot(ctx) -> None:
+        pull_params.append(ctx.pull_params())
+        if ctx.has_data(0):
+            ctx.emit(ctx.data(0))
+
+    snap = graph.node([acc], snapshot, name="snap", pull_id="snapshot")
+
+    def demand(ctx) -> None:
+        for value in _fresh_values(ctx, 0):
+            if value != "pause":
+                continue
+            ctx.request_pull_next("snapshot", value, toward_dep=1)
+            graph.pause(op_holder[0], "A")
+            graph.pause(op_holder[0], "B")
+        for value in _fresh_values(ctx, 1):
+            ctx.emit(value)
+
+    op = graph.node([trigger, snap], demand, name="op", partial=True)
+    op_holder.append(op)
+
+    with op.subscribe(lambda _message: None):
+        trigger.set("pause")
+        assert pull_params == []
+        graph.resume(op, "A")
+        assert pull_params == []
+        graph.resume(op, "B")
+        assert pull_params == ["pause"]
+
+
+def test_c25_public_request_pull_next_combined_commit_before_final_resume_ordering():
+    graph = Graph("py-c25-pull-batch-then-resume")
+    acc = graph.state(1, name="acc")
+    trigger = graph.state("idle", name="trigger")
+    pull_params: list[object | None] = []
+    op_holder: list[object] = []
+
+    def snapshot(ctx) -> None:
+        pull_params.append(ctx.pull_params())
+        if ctx.has_data(0):
+            ctx.emit(ctx.data(0))
+
+    snap = graph.node([acc], snapshot, name="snap", pull_id="snapshot")
+
+    def demand(ctx) -> None:
+        for value in _fresh_values(ctx, 0):
+            if not isinstance(value, int):
+                continue
+            ctx.request_pull_next("snapshot", value, toward_dep=1)
+            graph.pause(op_holder[0], f"lock-{value}")
+        for value in _fresh_values(ctx, 1):
+            ctx.emit(value)
+
+    op = graph.node([trigger, snap], demand, name="op", partial=True)
+    op_holder.append(op)
+
+    with op.subscribe(lambda _message: None):
+        graph.batch(lambda: trigger.set(1))
+        assert pull_params == []
+        graph.resume(op, "lock-1")
+        assert pull_params == [1]
+
+
+def test_c25_public_request_pull_next_final_resume_inside_open_batch_ordering():
+    graph = Graph("py-c25-pull-resume-inside-batch")
+    acc = graph.state(1, name="acc")
+    trigger = graph.state("idle", name="trigger")
+    events: list[str] = []
+    pull_params: list[object | None] = []
+    seen: list[Message[object]] = []
+
+    def snapshot(ctx) -> None:
+        events.append("snap")
+        pull_params.append(ctx.pull_params())
+        if ctx.has_data(0):
+            ctx.emit(ctx.data(0))
+
+    snap = graph.node([acc], snapshot, name="snap", pull_id="snapshot")
+
+    def demand(ctx) -> None:
+        for value in _fresh_values(ctx, 0):
+            if value != "batch":
+                continue
+            events.append(f"demand:{value}")
+            ctx.request_pull_next("snapshot", {"inside": value}, toward_dep=1)
+            ctx.emit(f"old:{value}")
+        for value in _fresh_values(ctx, 1):
+            ctx.emit(("snap", value))
+
+    op = graph.node([trigger, snap], demand, name="op", partial=True)
+    with op.subscribe(seen.append):
+        seen.clear()
+        graph.pause(op, "gate")
+
+        def body() -> None:
+            trigger.set("batch")
+            assert events == []
+            graph.resume(op, "gate")
+            assert events == []
+            assert pull_params == []
+            assert _data_values(seen) == []
+
+        graph.batch(body)
+
+    assert events == ["demand:batch", "snap"]
+    assert pull_params == [{"inside": "batch"}]
+    assert _data_values(seen) == ["old:batch", ("snap", 1)]
 
 
 def test_c15_dep_complete_releases_dirty_and_joins_once():
