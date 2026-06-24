@@ -1,3 +1,5 @@
+from threading import Thread
+
 import pytest
 
 import graphrefly
@@ -2864,6 +2866,31 @@ class _JsonMemoDescriptor:
         ctx.register_node(memo, factory=self.ref)
 
 
+class _DuplicateRefDescriptor:
+    ref = "dup"
+
+    def create(self, ctx: RestoreContext) -> None:
+        ctx.register_state()
+
+
+class _FatalDescriptor:
+    ref = "py-json-memo"
+
+    def create(self, ctx: RestoreContext) -> None:
+        raise SystemExit("fatal restore descriptor")
+
+
+class _EscapingDescriptor:
+    ref = "py-json-memo"
+
+    def __init__(self) -> None:
+        self.ctx: RestoreContext | None = None
+
+    def create(self, ctx: RestoreContext) -> None:
+        self.ctx = ctx
+        ctx.register_node(lambda restored_ctx: restored_ctx.emit(0), factory=self.ref)
+
+
 def test_c24_snapshot_restore_preserves_cache_state_topology_and_late_subscribe_public_slice():
     graph = Graph("py-c24-original")
     source = graph.state(1, name="source")
@@ -2900,15 +2927,16 @@ def test_c24_snapshot_restore_preserves_cache_state_topology_and_late_subscribe_
         registry=restore_registry([_JsonMemoDescriptor(restored_runs)]),
     )
     restored_memo = restored._conformance_find("memo")
-    restored_source = restored._conformance_find("source")
 
     assert restored_runs == []
     assert restored_memo.cache() == 41
+    with pytest.raises(GraphReflyRuntimeError, match="set\\(\\)"):
+        restored_memo.set(2)
     seen: list[Message[object]] = []
     with restored_memo.subscribe(seen.append):
         assert DataMessage(41) in seen
         assert restored_runs == []
-        restored_source.set(2)
+        restored._conformance_set_state("source", 2)
         assert restored_runs == ["run"]
         assert DataMessage(42) in seen
         assert restored_memo.cache() == 42
@@ -2949,6 +2977,91 @@ def test_c24_local_only_missing_descriptor_and_strict_json_fail_honestly():
         match="strict JSON",
     ):
         non_json.checkpoint()
+
+    too_big = Graph("py-c24-too-big-int")
+    big = too_big.state(2**80, name="big")
+    with big.subscribe(lambda _msg: None), pytest.raises(
+        graphrefly.GraphReflyCheckpointError,
+        match="strict JSON|outside",
+    ):
+        too_big.checkpoint()
+
+    tuple_graph = Graph("py-c24-tuple")
+    tuple_node = tuple_graph.state((1, 2), name="tuple")
+    with tuple_node.subscribe(lambda _msg: None), pytest.raises(
+        graphrefly.GraphReflyCheckpointError,
+        match="strict JSON",
+    ):
+        tuple_graph.checkpoint()
+
+    config_graph = Graph("py-c24-config")
+    config_source = config_graph.state(1, name="source")
+    with pytest.raises(GraphReflyValueError, match="strict JSON"):
+        config_graph.node(
+            [config_source],
+            lambda ctx: ctx.emit(ctx.data(0)),
+            name="bad-config",
+            restore=restore_ref("py-json-memo", config=(1, 2)),
+        )
+
+    cycle_graph = Graph("py-c24-cycle")
+    cyclic: list[object] = []
+    cyclic.append(cyclic)
+    cycle_node = cycle_graph.state(cyclic, name="cycle")
+    with cycle_node.subscribe(lambda _msg: None), pytest.raises(
+        graphrefly.GraphReflyCheckpointError,
+        match="cyclic",
+    ):
+        cycle_graph.checkpoint()
+
+    with pytest.raises(GraphReflyValueError, match="duplicate restore registry ref"):
+        restore_registry([_DuplicateRefDescriptor(), _DuplicateRefDescriptor()])
+
+
+def test_c24_restore_descriptor_fatal_and_lifetime_boundaries():
+    graph = Graph("py-c24-descriptor-boundaries")
+    source = graph.state(1, name="source")
+    node = graph.node(
+        [source],
+        lambda ctx: ctx.emit(ctx.data(0)),
+        name="memo",
+        restore=restore_ref("py-json-memo"),
+    )
+    with node.subscribe(lambda _msg: None):
+        checkpoint = graph.checkpoint()
+
+    with pytest.raises(SystemExit, match="fatal restore descriptor"):
+        restore_graph(checkpoint, registry=restore_registry([_FatalDescriptor()]))
+
+    escaping = _EscapingDescriptor()
+    restore_graph(checkpoint, registry=restore_registry([escaping]))
+    assert escaping.ctx is not None
+    with pytest.raises(GraphReflyRestoreError, match="only valid during create"):
+        escaping.ctx.register_state()
+
+
+def test_c24_checkpoint_pyvalue_encoder_is_available_on_worker_threads():
+    errors: list[str] = []
+    checkpoints: list[dict[str, object]] = []
+
+    def worker() -> None:
+        try:
+            graph = Graph("py-c24-worker-thread")
+            node = graph.state({"ok": [1, None, True]}, name="state")
+            with node.subscribe(lambda _msg: None):
+                checkpoints.append(graph.checkpoint())
+        except BaseException as error:  # pragma: no cover - asserted below
+            errors.append(repr(error))
+
+    thread = Thread(target=worker)
+    thread.start()
+    thread.join()
+
+    assert errors == []
+    assert checkpoints[0]["nodes"][0]["value"] == {
+        "kind": "DATA",
+        "data": {"ok": [1, None, True]},
+    }
 
 
 def test_c24_checkpoint_distinguishes_data_none_from_sentinel_absence():

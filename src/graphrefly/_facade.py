@@ -179,7 +179,10 @@ class _BoundRestoreContext:
         return self._native.checkpoint
 
     def register_state(self) -> None:
-        self._native.register_state()
+        try:
+            self._native.register_state()
+        except RuntimeError as error:
+            raise GraphReflyRestoreError(str(error)) from error
 
     def register_node(
         self,
@@ -200,7 +203,10 @@ class _BoundRestoreContext:
             )
             _reject_awaitable(value)
 
-        self._native.register_node(native_callback, factory)
+        try:
+            self._native.register_node(native_callback, factory)
+        except RuntimeError as error:
+            raise GraphReflyRestoreError(str(error)) from error
 
 
 class _BoundRestoreDescriptor:
@@ -251,6 +257,23 @@ class _RestoreRegistryFacade:
             for entry in self._entries
         ]
         return _native.restore_registry(cast("list[object]", entries), self._include_builtins)
+
+
+def _validate_restore_registry_entries(
+    entries: list[RestoreDescriptor],
+    *,
+    include_builtins: bool,
+) -> None:
+    seen = {"state", "map"} if include_builtins else set()
+    for entry in entries:
+        ref = getattr(entry, "ref", None)
+        if not isinstance(ref, str) or ref == "":
+            msg = "restore registry entries must expose a non-empty string 'ref'"
+            raise GraphReflyValueError(msg)
+        if ref in seen:
+            msg = f"duplicate restore registry ref '{ref}'"
+            raise GraphReflyValueError(msg)
+        seen.add(ref)
 
 
 class _GraphLifetime:
@@ -1844,6 +1867,8 @@ class Graph:
                 owner_thread=self._owner_thread,
                 lifetime=self._lifetime,
             )
+        except ValueError as error:
+            raise GraphReflyValueError(str(error)) from error
         except RuntimeError as error:
             raise GraphReflyRuntimeError(str(error)) from error
         except BaseException as error:
@@ -2017,7 +2042,21 @@ class Graph:
         if native is None:
             msg = f"conformance node '{id}' was not found"
             raise GraphReflyRuntimeError(msg)
-        return Node(native, owner_thread=self._owner_thread, lifetime=self._lifetime, writable=True)
+        return Node(native, owner_thread=self._owner_thread, lifetime=self._lifetime)
+
+    def _conformance_set_state(self, id: str, value: object) -> None:
+        self._check_thread()
+        if not isinstance(id, str):
+            msg = "conformance id must be a str"
+            raise GraphReflyValueError(msg)
+        _reject_awaitable(value)
+        _reject_sentinel_data(value)
+        try:
+            self._native._set_state_by_id(id, value)
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
 
     def _check_thread(self, *, allow_closed: bool = False) -> None:
         if get_ident() != self._owner_thread:
@@ -2311,7 +2350,9 @@ def restore_registry(
     """Build an explicit restore registry for `restore_graph`."""
 
     _reject_non_bool("include_builtins", include_builtins)
-    return _RestoreRegistryFacade(list(entries), include_builtins=include_builtins)
+    entry_list = list(entries)
+    _validate_restore_registry_entries(entry_list, include_builtins=include_builtins)
+    return _RestoreRegistryFacade(entry_list, include_builtins=include_builtins)
 
 
 def restore_graph(checkpoint: GraphCheckpoint, *, registry: RestoreRegistry) -> Graph:
