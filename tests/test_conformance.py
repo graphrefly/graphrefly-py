@@ -54,6 +54,168 @@ def test_c5_pause_lockset_multi_source_public_facade():
         assert node.cache() == 1
 
 
+def test_c8_private_immediate_rewire_surgical_and_drained():
+    graph = Graph("py-c8-immediate-rewire")
+    stimulus = ConformanceStimulus(graph)
+    source_a = graph.state(1, name="source-a")
+    source_b = graph.state(100, name="source-b")
+    runs = 0
+
+    def a_only(ctx) -> None:
+        nonlocal runs
+        runs += 1
+        ctx.emit(ctx.data(0))
+
+    node = graph.node([source_a], a_only, name="rewired")
+
+    with node.subscribe(lambda _msg: None):
+        assert node.cache() == 1
+
+        def sum_deps(ctx) -> None:
+            nonlocal runs
+            runs += 1
+            ctx.emit(ctx.data(0) + ctx.data(1))
+
+        stimulus.c8_immediate_subscribe_dep(node, source_b, sum_deps)
+        assert node.cache() == 101
+
+        source_b.set(50)
+        assert node.cache() == 51
+
+        before_unsubscribe_runs = runs
+
+        def b_only(ctx) -> None:
+            nonlocal runs
+            runs += 1
+            ctx.emit(ctx.data(0))
+
+        stimulus.c8_immediate_unsubscribe_dep(node, source_a, b_only)
+        assert node.cache() == 51
+        assert runs == before_unsubscribe_runs
+
+        source_a.set(9)
+        assert node.cache() == 51
+
+        source_b.set(7)
+        assert node.cache() == 7
+
+        replace_runs = 0
+
+        def replacement(ctx) -> None:
+            nonlocal replace_runs
+            replace_runs += 1
+            ctx.emit(ctx.data(0))
+
+        stimulus.c8_immediate_replace_deps(node, [source_b], replacement)
+        assert replace_runs == 0
+        assert node.cache() == 7
+
+
+def test_c8_private_immediate_rewire_with_sentinel_dep_waits_for_data():
+    graph = Graph("py-c8-sentinel-rewire")
+    stimulus = ConformanceStimulus(graph)
+    source = graph.state(1, name="source")
+    empty = stimulus.state_empty("empty")
+    runs = 0
+
+    def body(ctx) -> None:
+        nonlocal runs
+        runs += 1
+        if ctx.dep_len == 2 and ctx.has_data(1):
+            ctx.emit(ctx.data(0) + ctx.data(1))
+            return
+        ctx.emit(ctx.data(0))
+
+    node = graph.node([source], body, name="sentinel-rewire")
+    with node.subscribe(lambda _msg: None):
+        assert node.cache() == 1
+        runs = 0
+        stimulus.c8_immediate_subscribe_dep(node, empty, body)
+        assert runs == 0
+        assert node.cache() == 1
+
+        empty.set(10)
+        assert node.cache() == 11
+        assert runs == 1
+
+
+def test_c8_private_immediate_rewire_rejects_invalid_boundaries():
+    graph = Graph("py-c8-rewire-invalid")
+    stimulus = ConformanceStimulus(graph)
+    other_graph = Graph("py-c8-rewire-other")
+    source = graph.state(1, name="source")
+    helper = graph.state(2, name="helper")
+    foreign = other_graph.state(3, name="foreign")
+    node = graph.node([source], lambda ctx: ctx.emit(ctx.data(0)), name="node")
+
+    with pytest.raises(GraphReflyValueError, match="graphrefly.Node"):
+        stimulus.c8_immediate_subscribe_dep(  # type: ignore[arg-type]
+            node,
+            object(),
+            lambda ctx: ctx.emit(None),
+        )
+
+    with pytest.raises(GraphReflyRuntimeError, match="belong to this GraphReFly graph"):
+        stimulus.c8_immediate_subscribe_dep(foreign, helper, lambda ctx: ctx.emit(ctx.data(0)))
+
+    with pytest.raises(GraphReflyValueError, match="callback must be callable"):
+        stimulus.c8_immediate_subscribe_dep(node, helper, object())  # type: ignore[arg-type]
+
+    async def async_body(_ctx) -> None:
+        return None
+
+    with pytest.raises(GraphReflyRuntimeError, match="async callbacks are deferred"):
+        stimulus.c8_immediate_subscribe_dep(node, helper, async_body)
+
+
+def test_c8_private_immediate_rewire_on_terminal_node_rejected():
+    graph = Graph("py-c8-terminal-rewire")
+    stimulus = ConformanceStimulus(graph)
+    source = graph.state(1, name="source")
+    node = graph.node([source], lambda ctx: ctx.emit(ctx.data(0)), name="terminal")
+
+    with node.subscribe(lambda _msg: None):
+        stimulus.c23_dep_completes(node)
+        assert node.status == "completed"
+
+        with pytest.raises(GraphReflyRuntimeError, match="terminal"):
+            stimulus.c8_immediate_replace_deps(
+                node,
+                [source],
+                lambda ctx: ctx.emit(ctx.data(0)),
+            )
+
+
+def test_c8_private_immediate_rewire_fatal_callback_poisons_facade():
+    graph = Graph("py-c8-fatal-rewire")
+    stimulus = ConformanceStimulus(graph)
+    source = graph.state(1, name="source")
+    helper = graph.state(2, name="helper")
+    seen: list[Message[object]] = []
+    node = graph.node([source], lambda ctx: ctx.emit(ctx.data(0)), name="fatal-rewire")
+
+    def fatal(_ctx) -> None:
+        raise SystemExit("c8 rewire exit")
+
+    with pytest.raises(SystemExit, match="c8 rewire exit"), node.subscribe(seen.append):
+        stimulus.c8_immediate_subscribe_dep(node, helper, fatal)
+
+    assert graph.closed is True
+    assert not any(isinstance(message, ErrorMessage) for message in seen)
+    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
+        node.cache()
+
+
+def test_c8_immediate_rewire_remains_private_not_public_node_facade():
+    graph = Graph("py-c8-private-boundary")
+    source = graph.state(1, name="source")
+    node = graph.node([source], lambda ctx: ctx.emit(ctx.data(0)), name="node")
+
+    assert not hasattr(node, "subscribe_dep")
+    assert not hasattr(node, "unsubscribe_dep")
+    assert not hasattr(node, "replace_deps")
+
+
 def test_c2_async_result_at_paused_node_private_harness():
     graph = Graph("py-c2-async-paused")
     stimulus = ConformanceStimulus(graph)

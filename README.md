@@ -65,6 +65,13 @@ The Python-owned facade exposes:
 
 ## Async Runner Examples
 
+The Trio and AnyIO helpers are optional convenience adapters. Install the
+runtime extra when you want those adapters available:
+
+```bash
+pip install "graphrefly[async]"
+```
+
 Trio and AnyIO adapters are caller-owned: GraphReFly uses the supplied nursery or task group on its owning thread, and does not create or drain the runtime for you.
 
 ```python

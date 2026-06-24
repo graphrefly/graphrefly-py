@@ -36,6 +36,10 @@ jobs:
         working-directory: graphrefly-py
         run: uv run pytest
 
+      - name: Test optional async runtime adapters
+        working-directory: graphrefly-py
+        run: uv run --with 'trio>=0.25' --with 'anyio>=4.0' pytest tests/test_async_runner_real_runtime.py
+
       - name: Lint
         working-directory: graphrefly-py
         run: uv run ruff check .

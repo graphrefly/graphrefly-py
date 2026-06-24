@@ -16,6 +16,7 @@ from graphrefly._facade import (
     Graph,
     Node,
     _poison_on_fatal,
+    _reject_async_callable,
     _reject_awaitable,
     _reject_sentinel_data,
 )
@@ -232,6 +233,57 @@ class ConformanceStimulus:
             native_callback,
         )
 
+    def c8_immediate_subscribe_dep(
+        self,
+        node: Node[Any],
+        dep: Node[Any],
+        callback: Callable[[Ctx], object],
+    ) -> None:
+        native_callback = self._native_callback(callback)
+        try:
+            self._native_node(node)._conformance_immediate_subscribe_dep(
+                self._native_node(dep),
+                native_callback,
+            )
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._graph._lifetime, error)
+
+    def c8_immediate_unsubscribe_dep(
+        self,
+        node: Node[Any],
+        dep: Node[Any],
+        callback: Callable[[Ctx], object],
+    ) -> None:
+        native_callback = self._native_callback(callback)
+        try:
+            self._native_node(node)._conformance_immediate_unsubscribe_dep(
+                self._native_node(dep),
+                native_callback,
+            )
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._graph._lifetime, error)
+
+    def c8_immediate_replace_deps(
+        self,
+        node: Node[Any],
+        deps: Iterable[Node[Any]],
+        callback: Callable[[Ctx], object],
+    ) -> None:
+        native_callback = self._native_callback(callback)
+        try:
+            self._native_node(node)._conformance_immediate_replace_deps(
+                [self._native_node(dep) for dep in deps],
+                native_callback,
+            )
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._graph._lifetime, error)
+
     def c2_async_result_node(
         self,
         dep: Node[Any],
@@ -280,7 +332,28 @@ class ConformanceStimulus:
         )
 
     def _native_node(self, node: Node[Any]) -> _native.Node:
+        if not isinstance(node, Node):
+            msg = "conformance stimulus nodes must be graphrefly.Node objects"
+            raise GraphReflyValueError(msg)
         return self._graph._native_node(node)
+
+    def _native_callback(self, callback: Callable[[Ctx], object]) -> Callable[[_native.Ctx], None]:
+        if not callable(callback):
+            msg = "conformance rewire callback must be callable"
+            raise GraphReflyValueError(msg)
+        _reject_async_callable(callback)
+
+        def native_callback(native_ctx: _native.Ctx) -> None:
+            value = callback(
+                Ctx(
+                    native_ctx,
+                    owner_thread=self._graph._owner_thread,
+                    lifetime=self._graph._lifetime,
+                )
+            )
+            _reject_awaitable(value)
+
+        return native_callback
 
     def _async_node(
         self,

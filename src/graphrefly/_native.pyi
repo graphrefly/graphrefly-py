@@ -92,6 +92,16 @@ class Node:
         dep: Node,
         callback: Callable[[Ctx], object],
     ) -> None: ...
+    def _conformance_immediate_unsubscribe_dep(
+        self,
+        dep: Node,
+        callback: Callable[[Ctx], object],
+    ) -> None: ...
+    def _conformance_immediate_replace_deps(
+        self,
+        deps: list[Node],
+        callback: Callable[[Ctx], object],
+    ) -> None: ...
     def _conformance_c21_replace_with_live_dep(
         self,
         dep: Node,

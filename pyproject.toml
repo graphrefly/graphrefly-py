@@ -29,6 +29,12 @@ Repository = "https://github.com/graphrefly/graphrefly-py"
 Documentation = "https://graphrefly.dev/py/"
 Spec = "https://graphrefly.dev/spec/"
 
+[project.optional-dependencies]
+async = [
+    "anyio>=4.0",
+    "trio>=0.25",
+]
+
 [dependency-groups]
 dev = [
     "maturin>=1.9,<2.0",
