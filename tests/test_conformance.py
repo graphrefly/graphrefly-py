@@ -355,6 +355,205 @@ def test_c21_late_async_ctx_emission_uses_live_deps_after_rewire_private_harness
         assert terminal_node.has_value is False
 
 
+def test_c22_private_immediate_rewire_waits_for_batch_commit_old_shape_first():
+    graph = Graph("py-c22-batch-before-immediate-rewire")
+    stimulus = ConformanceStimulus(graph)
+    source_a = graph.state(1, name="a")
+    source_b = graph.state(10, name="b")
+    seen: list[Message[object]] = []
+
+    def a_body(ctx) -> None:
+        ctx.emit(ctx.data(0))
+
+    node = graph.node([source_a], a_body, name="node")
+
+    with node.subscribe(seen.append):
+        assert node.cache() == 1
+        seen.clear()
+
+        def b_body(ctx) -> None:
+            ctx.emit(ctx.data(0) * 10)
+
+        def batch_body() -> None:
+            stimulus.c22_old_shape_data(node, 2)
+            stimulus.c8_immediate_replace_deps(node, [source_b], b_body)
+
+            assert _data_values(seen) == []
+            assert node.cache() == 1
+
+        graph.batch(batch_body)
+
+        assert _kinds(seen) == ["DIRTY", "DATA", "DIRTY", "DATA"]
+        assert _data_values(seen) == [2, 100]
+        assert node.cache() == 100
+
+        seen.clear()
+        source_a.set(3)
+        assert _data_values(seen) == []
+
+        source_b.set(11)
+        assert _data_values(seen) == [110]
+
+
+def test_c22_private_immediate_rewire_rollback_discards_queued_topology_changes():
+    graph = Graph("py-c22-rollback-immediate-rewire")
+    stimulus = ConformanceStimulus(graph)
+    source = graph.state("idle", name="source")
+    helper = graph.state("helper", name="helper")
+    replacement = graph.state("replacement", name="replacement")
+    seen: list[Message[object]] = []
+
+    def source_only(ctx) -> None:
+        ctx.emit(("source", ctx.data(0)))
+
+    node = graph.node([source], source_only, name="node", partial=True)
+    with node.subscribe(seen.append):
+        seen.clear()
+
+        def source_helper(ctx) -> None:
+            for index in range(ctx.dep_len):
+                for value in _fresh_values(ctx, index):
+                    ctx.emit(("live", value))
+
+        def rollback_subscribe() -> None:
+            stimulus.c22_old_shape_data(node, ("old", "attach"))
+            stimulus.c8_immediate_subscribe_dep(node, helper, source_helper)
+            raise ValueError("rollback")
+
+        with pytest.raises(ValueError, match="rollback"):
+            graph.batch(rollback_subscribe)
+
+        helper.set("must-not-drive")
+        assert ("live", "must-not-drive") not in _data_values(seen)
+
+        source.set("after")
+        assert ("source", "after") in _data_values(seen)
+
+    drop_seen: list[Message[object]] = []
+    drop_source = graph.state("drop-idle", name="drop-source")
+    live_helper = graph.state("live-helper", name="live-helper")
+
+    def two_dep_body(ctx) -> None:
+        for index in range(ctx.dep_len):
+            for value in _fresh_values(ctx, index):
+                ctx.emit(("dep", index, value))
+
+    drop_node = graph.node([drop_source, live_helper], two_dep_body, name="drop-node", partial=True)
+    with drop_node.subscribe(drop_seen.append):
+        drop_seen.clear()
+
+        def replacement_body(ctx) -> None:
+            for index in range(ctx.dep_len):
+                for value in _fresh_values(ctx, index):
+                    ctx.emit(("replacement", index, value))
+
+        def rollback_drop() -> None:
+            stimulus.c22_old_shape_data(drop_node, ("old", "drop"))
+            stimulus.c8_immediate_unsubscribe_dep(drop_node, live_helper, two_dep_body)
+            stimulus.c8_immediate_replace_deps(
+                drop_node,
+                [drop_source, replacement],
+                replacement_body,
+            )
+            raise ValueError("rollback")
+
+        with pytest.raises(ValueError, match="rollback"):
+            graph.batch(rollback_drop)
+
+        drop_seen.clear()
+        live_helper.set("still-live")
+        replacement.set("must-not-drive")
+
+        assert ("dep", 1, "still-live") in _data_values(drop_seen)
+        assert ("replacement", 1, "must-not-drive") not in _data_values(drop_seen)
+
+
+def test_c22_private_immediate_rewire_fifo_order_after_batch_commit():
+    graph = Graph("py-c22-immediate-rewire-fifo")
+    stimulus = ConformanceStimulus(graph)
+    source_a = graph.state(1, name="a")
+    source_b = graph.state(10, name="b")
+    source_c = graph.state(100, name="c")
+    seen: list[Message[object]] = []
+
+    def a_body(ctx) -> None:
+        ctx.emit(ctx.data(0))
+
+    node = graph.node([source_a], a_body, name="node")
+
+    with node.subscribe(seen.append):
+        seen.clear()
+
+        def b_body(ctx) -> None:
+            ctx.emit(("b", ctx.data(0)))
+
+        def c_body(ctx) -> None:
+            ctx.emit(("c", ctx.data(0)))
+
+        def batch_body() -> None:
+            stimulus.c22_old_shape_data(node, 2)
+            stimulus.c8_immediate_replace_deps(node, [source_b], b_body)
+            stimulus.c8_immediate_replace_deps(node, [source_c], c_body)
+            assert _data_values(seen) == []
+
+        graph.batch(batch_body)
+
+        assert _data_values(seen) == [2, ("b", 10), ("c", 100)]
+
+        seen.clear()
+        source_b.set(11)
+        assert _data_values(seen) == []
+
+        source_c.set(101)
+        assert _data_values(seen) == [("c", 101)]
+
+
+def test_c22_private_immediate_subscribe_dep_fifo_composes_after_batch_commit():
+    graph = Graph("py-c22-immediate-subscribe-fifo")
+    stimulus = ConformanceStimulus(graph)
+    source = graph.state(1, name="source")
+    helper_b = graph.state(10, name="helper-b")
+    helper_c = graph.state(100, name="helper-c")
+    seen: list[Message[object]] = []
+
+    def source_body(ctx) -> None:
+        ctx.emit(("source", ctx.data(0)))
+
+    node = graph.node([source], source_body, name="node", partial=True)
+
+    with node.subscribe(seen.append):
+        seen.clear()
+
+        def b_body(ctx) -> None:
+            for index in range(ctx.dep_len):
+                for value in _fresh_values(ctx, index):
+                    ctx.emit((index, value))
+
+        def c_body(ctx) -> None:
+            for index in range(ctx.dep_len):
+                for value in _fresh_values(ctx, index):
+                    ctx.emit((index, value))
+
+        def batch_body() -> None:
+            stimulus.c22_old_shape_data(node, ("old", "batch"))
+            stimulus.c8_immediate_subscribe_dep(node, helper_b, b_body)
+            stimulus.c8_immediate_subscribe_dep(node, helper_c, c_body)
+            assert _data_values(seen) == []
+
+        graph.batch(batch_body)
+
+        assert _data_values(seen) == [
+            ("old", "batch"),
+            (1, 10),
+            (2, 100),
+        ]
+
+        seen.clear()
+        helper_b.set(11)
+        helper_c.set(101)
+        assert _data_values(seen) == [(1, 11), (2, 101)]
+
+
 def test_c6_synchronous_feedback_cycle_becomes_graph_error_without_recursion():
     graph = Graph("py-c6-feedback")
     source = graph.state(0, name="source")

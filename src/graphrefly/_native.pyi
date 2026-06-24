@@ -102,6 +102,7 @@ class Node:
         deps: list[Node],
         callback: Callable[[Ctx], object],
     ) -> None: ...
+    def _conformance_c22_down_data(self, value: object) -> None: ...
     def _conformance_c21_replace_with_live_dep(
         self,
         dep: Node,

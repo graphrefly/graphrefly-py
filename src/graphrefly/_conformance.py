@@ -284,6 +284,16 @@ class ConformanceStimulus:
         except BaseException as error:
             _poison_on_fatal(self._graph._lifetime, error)
 
+    def c22_old_shape_data(self, node: Node[Any], value: object) -> None:
+        _reject_sentinel_data(value)
+        _reject_awaitable(value)
+        try:
+            self._native_node(node)._conformance_c22_down_data(value)
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._graph._lifetime, error)
+
     def c2_async_result_node(
         self,
         dep: Node[Any],
