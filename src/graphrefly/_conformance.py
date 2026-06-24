@@ -188,6 +188,11 @@ class ConformanceStimulus:
         _reject_sentinel_data(second)
         self._native_node(node)._down_data_data_invalidate(first, second)
 
+    def c12_dep_emits_data_resolved(self, node: Node[Any], value: object) -> None:
+        _reject_sentinel_data(value)
+        _reject_awaitable(value)
+        self._native_node(node)._conformance_c12_down_data_resolved(value)
+
     def c23_dep_completes(self, node: Node[Any]) -> None:
         self._native_node(node)._down_complete()
 

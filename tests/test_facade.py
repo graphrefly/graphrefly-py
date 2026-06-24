@@ -1,5 +1,6 @@
 import gc
 from importlib import import_module
+from inspect import signature
 
 import pytest
 
@@ -32,6 +33,25 @@ def test_import_package_surface():
     assert issubclass(graphrefly.GraphReflyNoDataError, LookupError)
     assert hasattr(import_module("graphrefly._native"), "Graph")
     assert "_conformance" not in graphrefly.__all__
+
+
+def test_public_facade_has_no_equals_substitution_surface():
+    graph = Graph("py-public-no-equals")
+    source = graph.state(1, name="source")
+    seen: list[Message[object]] = []
+
+    assert "equals" not in signature(Graph.node).parameters
+    assert "equals" not in signature(Graph.derived).parameters
+    assert "distinctUntilChanged" not in graphrefly.__all__
+    assert not hasattr(graphrefly, "distinctUntilChanged")
+
+    with source.subscribe(seen.append):
+        seen.clear()
+        source.set(1)
+        source.set(1)
+
+    assert [message.kind for message in seen] == ["DIRTY", "DATA", "DIRTY", "DATA"]
+    assert [message.value for message in seen if isinstance(message, DataMessage)] == [1, 1]
 
 
 def test_python_callback_runs_through_rust_graph_and_subscription_observes_wave():

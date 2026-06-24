@@ -868,6 +868,169 @@ def _data_values(messages: list[Message[object]]) -> list[object]:
     return [message.value for message in messages if isinstance(message, DataMessage)]
 
 
+def test_c12_occurrences_stay_data_and_state_set_same_value_is_data():
+    graph = Graph("py-c12-occurrences-data")
+    source = graph.state(1, name="source")
+    seen: list[Message[object]] = []
+
+    with source.subscribe(seen.append):
+        seen.clear()
+
+        source.set(1)
+        source.set(1)
+        source.set(1)
+
+    assert _kinds(seen) == ["DIRTY", "DATA", "DIRTY", "DATA", "DIRTY", "DATA"]
+    assert _data_values(seen) == [1, 1, 1]
+    assert "RESOLVED" not in _kinds(seen)
+    assert source.cache() == 1
+
+
+def test_c12_take_style_counts_occurrences_not_distinct_values():
+    graph = Graph("py-c12-take-occurrences")
+    stimulus = ConformanceStimulus(graph)
+    source = stimulus.state_empty("source")
+    taken_seen: list[Message[object]] = []
+    taken_values: list[object] = []
+
+    def take_three(ctx) -> None:
+        count = int(ctx.state) if ctx.has_state else 0
+        for value in _fresh_values(ctx, 0):
+            if count >= 3:
+                break
+            count += 1
+            ctx.state = count
+            ctx.emit(value)
+            if count == 3:
+                conformance.down_complete(ctx)
+                break
+
+    taken = graph.node([source], take_three, name="take-three")
+    with taken.subscribe(taken_seen.append):
+        taken_values.clear()
+        taken_seen.clear()
+
+        source.set(1)
+        source.set(1)
+        source.set(1)
+        source.set(1)
+        taken_values.extend(_data_values(taken_seen))
+        assert taken.status == "completed"
+
+    assert taken_values == [1, 1, 1]
+
+
+def test_c12_filter_reject_synthesizes_undirty_resolved_no_wedge():
+    graph = Graph("py-c12-filter-resolved")
+    source = graph.state(50, name="source")
+    seen: list[Message[object]] = []
+
+    def only_large(ctx) -> None:
+        for value in _fresh_values(ctx, 0):
+            if int(value) >= 100:
+                ctx.emit(value)
+
+    filtered = graph.node([source], only_large, name="only-large")
+    with filtered.subscribe(seen.append):
+        assert filtered.has_value is False
+        assert filtered.status == "sentinel"
+        seen.clear()
+
+        source.set(60)
+        assert _kinds(seen) == ["DIRTY", "RESOLVED"]
+        assert filtered.has_value is False
+        assert filtered.status == "sentinel"
+        seen.clear()
+
+        source.set(150)
+        assert _kinds(seen) == ["DIRTY", "DATA"]
+        assert filtered.cache() == 150
+        seen.clear()
+
+        source.set(70)
+        assert _kinds(seen) == ["DIRTY", "RESOLVED"]
+        assert filtered.cache() == 150
+        assert filtered.status == "resolved"
+
+
+def test_c12_downstream_recompute_from_resolved_emits_data_not_wedge():
+    graph = Graph("py-c12-downstream-resolved")
+    source = graph.state(100, name="source")
+    filtered_seen: list[Message[object]] = []
+    downstream_seen: list[Message[object]] = []
+
+    def only_large(ctx) -> None:
+        for value in _fresh_values(ctx, 0):
+            if int(value) >= 100:
+                ctx.emit(value)
+
+    filtered = graph.node([source], only_large, name="only-large")
+    downstream = graph.derived([filtered], lambda value: int(value) * 2, name="double")
+
+    with filtered.subscribe(filtered_seen.append), downstream.subscribe(downstream_seen.append):
+        assert downstream.cache() == 200
+        filtered_seen.clear()
+        downstream_seen.clear()
+
+        source.set(50)
+        assert downstream.cache() == 200
+
+    assert _kinds(filtered_seen) == ["DIRTY", "RESOLVED"]
+    assert _kinds(downstream_seen) == ["DIRTY", "DATA"]
+
+
+def test_c12_distinct_until_changed_is_opt_in_dedup():
+    graph = Graph("py-c12-distinct-opt-in")
+    source = graph.state(0, name="source")
+    distinct_seen: list[Message[object]] = []
+
+    def distinct(ctx) -> None:
+        for value in _fresh_values(ctx, 0):
+            if not ctx.has_state or ctx.state != value:
+                ctx.state = value
+                ctx.emit(value)
+
+    deduped = graph.node([source], distinct, name="distinct-until-changed")
+    with deduped.subscribe(distinct_seen.append):
+        distinct_seen.clear()
+
+        source.set(1)
+        source.set(1)
+        source.set(2)
+        source.set(2)
+        source.set(3)
+
+    assert _data_values(distinct_seen) == [1, 2, 3]
+    assert _kinds(distinct_seen).count("RESOLVED") == 2
+
+
+def test_c12_tier3_exclusivity_rejects_data_and_resolved_same_wave():
+    graph = Graph("py-c12-tier3-exclusivity")
+    stimulus = ConformanceStimulus(graph)
+    source = graph.state(1, name="source")
+    seen: list[Message[object]] = []
+
+    with source.subscribe(seen.append):
+        seen.clear()
+        stimulus.c12_dep_emits_data_resolved(source, 2)
+
+    assert isinstance(seen[-1], ErrorMessage)
+    assert "mix DATA and RESOLVED" in seen[-1].error.message
+    assert source.status == "errored"
+
+
+def test_c12_private_data_resolved_stimulus_rejects_awaitable_payload():
+    graph = Graph("py-c12-awaitable-payload")
+    stimulus = ConformanceStimulus(graph)
+    source = graph.state(1, name="source")
+
+    async def payload() -> int:
+        return 2
+
+    with pytest.raises(CallbackError, match="async callbacks are deferred"):
+        stimulus.c12_dep_emits_data_resolved(source, payload())
+
+
 def test_c11_public_rewire_next_subscribe_unsubscribe_replace_boundary():
     graph = Graph("py-c11-rewire-next")
     stimulus = ConformanceStimulus(graph)
