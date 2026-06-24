@@ -14,6 +14,7 @@ from graphrefly import (
     Graph,
     GraphEvent,
     GraphReflyNoDataError,
+    GraphReflyRestoreError,
     GraphReflyRuntimeError,
     GraphReflyValueError,
     Message,
@@ -763,6 +764,7 @@ def test_restore_public_surface_has_no_storage_or_hidden_runtime_hydration():
     checkpoint_params = signature(Graph.checkpoint).parameters
     restore_params = signature(restore_graph).parameters
     registry_params = signature(restore_registry).parameters
+    ref_params = signature(restore_ref).parameters
 
     assert list(checkpoint_params) == ["self"]
     assert list(restore_params) == ["checkpoint", "registry"]
@@ -776,6 +778,18 @@ def test_restore_public_surface_has_no_storage_or_hidden_runtime_hydration():
         registry_params["include_builtins"].kind
         is registry_params["include_builtins"].KEYWORD_ONLY
     )
+    assert list(ref_params) == ["ref", "config", "config_version"]
+    assert ref_params["config"].kind is ref_params["config"].KEYWORD_ONLY
+    assert ref_params["config_version"].kind is ref_params["config_version"].KEYWORD_ONLY
+
+    public_registry = restore_registry([])
+    native = import_module("graphrefly._native")
+    assert not isinstance(public_registry, native.RestoreRegistry)
+    with pytest.raises(GraphReflyRestoreError, match="graphrefly.restore_registry"):
+        restore_graph({}, registry=native.restore_registry([], True))
+    assert not hasattr(graphrefly, "NativeGraph")
+    assert not hasattr(graphrefly, "NativeNode")
+    assert not hasattr(graphrefly, "RestoreNativeContext")
 
 
 def test_public_value_and_runtime_errors_are_facade_exceptions():

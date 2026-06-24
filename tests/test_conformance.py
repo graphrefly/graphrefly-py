@@ -2873,6 +2873,21 @@ class _DuplicateRefDescriptor:
         ctx.register_state()
 
 
+class _BuiltinCollisionDescriptor:
+    def __init__(self, ref: str, created: list[str] | None = None) -> None:
+        self.ref = ref
+        self.created = created
+
+    def create(self, ctx: RestoreContext) -> None:
+        if self.created is not None:
+            self.created.append(ctx.id)
+        ctx.register_state()
+
+
+class _RefOnlyDescriptor:
+    ref = "ref-only"
+
+
 class _FatalDescriptor:
     ref = "py-json-memo"
 
@@ -3016,6 +3031,102 @@ def test_c24_local_only_missing_descriptor_and_strict_json_fail_honestly():
 
     with pytest.raises(GraphReflyValueError, match="duplicate restore registry ref"):
         restore_registry([_DuplicateRefDescriptor(), _DuplicateRefDescriptor()])
+
+
+def test_c24_restore_registry_rejects_bad_entries_and_builtin_collisions():
+    class MissingRefDescriptor:
+        def create(self, ctx: RestoreContext) -> None:
+            ctx.register_state()
+
+    class EmptyRefDescriptor:
+        ref = ""
+
+        def create(self, ctx: RestoreContext) -> None:
+            ctx.register_state()
+
+    with pytest.raises(GraphReflyValueError, match="non-empty string 'ref'"):
+        restore_registry([object()])  # type: ignore[list-item]
+    with pytest.raises(GraphReflyValueError, match="non-empty string 'ref'"):
+        restore_registry([MissingRefDescriptor()])  # type: ignore[list-item]
+    with pytest.raises(GraphReflyValueError, match="non-empty string 'ref'"):
+        restore_registry([EmptyRefDescriptor()])
+    with pytest.raises(GraphReflyValueError, match="duplicate restore registry ref 'state'"):
+        restore_registry([_BuiltinCollisionDescriptor("state")])
+    with pytest.raises(GraphReflyValueError, match="duplicate restore registry ref 'map'"):
+        restore_registry([_BuiltinCollisionDescriptor("map")])
+
+    shadow_state_creates: list[str] = []
+    shadow_state_descriptor = _BuiltinCollisionDescriptor("state", shadow_state_creates)
+    shadow_state_registry = restore_registry([shadow_state_descriptor], include_builtins=False)
+    graph = Graph("py-c24-shadow-state")
+    state = graph.state(7, name="state")
+    with state.subscribe(lambda _msg: None):
+        checkpoint = graph.checkpoint()
+    restored = restore_graph(checkpoint, registry=shadow_state_registry)
+    assert shadow_state_creates == ["state"]
+    assert restored._conformance_find("state").cache() == 7
+
+    shadow_map_registry = restore_registry(
+        [_BuiltinCollisionDescriptor("map")],
+        include_builtins=False,
+    )
+    # Python exposes no public map factory yet; this covers intentional shadow acceptance.
+    assert shadow_map_registry is not None
+
+    ref_only_graph = Graph("py-c24-ref-only")
+    source = ref_only_graph.state(1, name="source")
+    node = ref_only_graph.node(
+        [source],
+        lambda ctx: ctx.emit(ctx.data(0)),
+        name="ref-only-node",
+        restore=restore_ref("ref-only"),
+    )
+    with node.subscribe(lambda _msg: None):
+        ref_only_checkpoint = ref_only_graph.checkpoint()
+    with pytest.raises(GraphReflyRestoreError, match="create"):
+        restore_graph(
+            ref_only_checkpoint,
+            registry=restore_registry([_RefOnlyDescriptor()]),  # type: ignore[list-item]
+        )
+
+
+def test_c24_restore_without_builtins_omits_state_descriptor_honestly():
+    graph = Graph("py-c24-no-builtins")
+    state = graph.state({"ok": True}, name="state")
+    with state.subscribe(lambda _msg: None):
+        checkpoint = graph.checkpoint()
+
+    with pytest.raises(GraphReflyRestoreError, match="missing registry descriptor"):
+        restore_graph(checkpoint, registry=restore_registry([], include_builtins=False))
+
+
+def test_c24_restore_checkpoint_schema_guards_cross_public_api():
+    graph = Graph("py-c24-schema-guards")
+    source = graph.state(1, name="source")
+    with source.subscribe(lambda _msg: None):
+        checkpoint = graph.checkpoint()
+
+    malformed_cases = [
+        (None, "invalid type: null"),
+        ([], "invalid length 0"),
+        (
+            {"schema": checkpoint.get("schema"), "nodes": "not-a-list"},
+            "expected a sequence",
+        ),
+        ({**checkpoint, "nodes": "not-a-list"}, "expected a sequence"),
+        (
+            {**checkpoint, "nodes": [{**checkpoint["nodes"][0], "id": 123}]},
+            "expected a string",
+        ),
+        (
+            {**checkpoint, "nodes": [{**checkpoint["nodes"][0], "value": {"kind": "BAD"}}]},
+            "unknown variant `BAD`",
+        ),
+    ]
+
+    for malformed, pattern in malformed_cases:
+        with pytest.raises(GraphReflyRestoreError, match=pattern):
+            restore_graph(malformed, registry=restore_registry([]))  # type: ignore[arg-type]
 
 
 def test_c24_restore_descriptor_fatal_and_lifetime_boundaries():
