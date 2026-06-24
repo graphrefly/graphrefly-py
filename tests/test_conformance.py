@@ -5,14 +5,21 @@ from graphrefly import (
     SENTINEL,
     CallbackError,
     ControlMessage,
+    Ctx,
     DataMessage,
     ErrorMessage,
     Graph,
+    GraphReflyNoDataError,
+    GraphReflyRestoreError,
     GraphReflyRuntimeError,
     GraphReflyValueError,
     Message,
     PullContext,
+    RestoreContext,
     Sentinel,
+    restore_graph,
+    restore_ref,
+    restore_registry,
 )
 from graphrefly import _conformance as conformance
 from graphrefly._conformance import ConformanceStimulus
@@ -2830,3 +2837,135 @@ def test_c23_python_sentinel_is_not_a_legal_data_payload():
         pass
     assert isinstance(derived_seen[-1], ErrorMessage)
     assert "cannot be DATA" in derived_seen[-1].error.message
+
+
+class _JsonMemoDescriptor:
+    ref = "py-json-memo"
+
+    def __init__(self, runs: list[str]) -> None:
+        self.runs = runs
+
+    def create(self, ctx: RestoreContext) -> None:
+        assert ctx.id == "memo"
+        assert ctx.name == "memo"
+        assert ctx.deps == ["source"]
+        assert ctx.config == {"seed": 40}
+        assert ctx.config_version is None
+        assert ctx.checkpoint["id"] == "memo"
+
+        def memo(restored_ctx: Ctx) -> None:
+            self.runs.append("run")
+            acc = int(restored_ctx.state) if restored_ctx.has_state else int(ctx.config["seed"])
+            if restored_ctx.has_data(0):
+                acc += 1
+                restored_ctx.emit(acc)
+            restored_ctx.state = acc
+
+        ctx.register_node(memo, factory=self.ref)
+
+
+def test_c24_snapshot_restore_preserves_cache_state_topology_and_late_subscribe_public_slice():
+    graph = Graph("py-c24-original")
+    source = graph.state(1, name="source")
+    original_runs: list[str] = []
+
+    def memo(ctx: Ctx) -> None:
+        original_runs.append("run")
+        acc = int(ctx.state) if ctx.has_state else 40
+        if ctx.has_data(0):
+            acc += 1
+            ctx.emit(acc)
+        ctx.state = acc
+
+    node = graph.node(
+        [source],
+        memo,
+        name="memo",
+        restore=restore_ref("py-json-memo", config={"seed": 40}),
+    )
+    sub = node.subscribe(lambda _msg: None)
+    assert node.cache() == 41
+    checkpoint = graph.checkpoint()
+    sub.unsubscribe()
+    nodes = {node["id"]: node for node in checkpoint["nodes"]}
+    assert nodes["memo"]["value"] == {"kind": "DATA", "data": 41}
+    assert nodes["memo"]["ctxState"] == {
+        "persist": False,
+        "value": {"kind": "DATA", "data": 41},
+    }
+
+    restored_runs: list[str] = []
+    restored = restore_graph(
+        checkpoint,
+        registry=restore_registry([_JsonMemoDescriptor(restored_runs)]),
+    )
+    restored_memo = restored._conformance_find("memo")
+    restored_source = restored._conformance_find("source")
+
+    assert restored_runs == []
+    assert restored_memo.cache() == 41
+    seen: list[Message[object]] = []
+    with restored_memo.subscribe(seen.append):
+        assert DataMessage(41) in seen
+        assert restored_runs == []
+        restored_source.set(2)
+        assert restored_runs == ["run"]
+        assert DataMessage(42) in seen
+        assert restored_memo.cache() == 42
+        restored_checkpoint = restored.checkpoint()
+        restored_nodes = {node["id"]: node for node in restored_checkpoint["nodes"]}
+        assert restored_nodes["memo"]["ctxState"]["value"] == {"kind": "DATA", "data": 42}
+        assert {"from": "source", "to": "memo"} in restored.describe()["edges"]
+
+
+def test_c24_local_only_missing_descriptor_and_strict_json_fail_honestly():
+    local_graph = Graph("py-c24-local-only")
+    source = local_graph.state(1, name="source")
+    local = local_graph.node([source], lambda ctx: ctx.emit(ctx.data(0)), name="local")
+    with local.subscribe(lambda _msg: None):
+        checkpoint = local_graph.checkpoint()
+
+    with pytest.raises(GraphReflyRestoreError, match="local-only"):
+        restore_graph(checkpoint, registry=restore_registry([]))
+
+    restorable_graph = Graph("py-c24-missing-descriptor")
+    restorable_source = restorable_graph.state(1, name="source")
+    restorable = restorable_graph.node(
+        [restorable_source],
+        lambda ctx: ctx.emit(ctx.data(0)),
+        name="memo",
+        restore=restore_ref("missing-descriptor"),
+    )
+    with restorable.subscribe(lambda _msg: None):
+        missing_checkpoint = restorable_graph.checkpoint()
+
+    with pytest.raises(GraphReflyRestoreError, match="missing registry descriptor"):
+        restore_graph(missing_checkpoint, registry=restore_registry([]))
+
+    non_json = Graph("py-c24-non-json")
+    bad = non_json.state(object(), name="bad")
+    with bad.subscribe(lambda _msg: None), pytest.raises(
+        graphrefly.GraphReflyCheckpointError,
+        match="strict JSON",
+    ):
+        non_json.checkpoint()
+
+
+def test_c24_checkpoint_distinguishes_data_none_from_sentinel_absence():
+    graph = Graph("py-c24-none-vs-absence")
+    nil = graph.state(None, name="nil")
+    cold = conformance.ConformanceStimulus(graph).state_empty("cold")
+
+    assert nil.cache() is None
+    with pytest.raises(GraphReflyNoDataError):
+        cold.cache()
+
+    checkpoint = graph.checkpoint()
+    nodes = {node["id"]: node for node in checkpoint["nodes"]}
+    assert nodes["nil"]["value"] == {"kind": "DATA", "data": None}
+    assert nodes["cold"]["value"] == {"kind": "SENTINEL"}
+
+    restored = restore_graph(checkpoint, registry=restore_registry([]))
+    assert restored._conformance_find("nil").cache() is None
+    with pytest.raises(GraphReflyNoDataError):
+        restored._conformance_find("cold").cache()

@@ -17,6 +17,14 @@ class GraphReflyNoDataError(GraphReflyError, LookupError):
     """A node has no cached DATA value at the public Python boundary."""
 
 
+class GraphReflyCheckpointError(GraphReflyValueError):
+    """Checkpoint material is not restorable strict JSON."""
+
+
+class GraphReflyRestoreError(GraphReflyRuntimeError):
+    """A checkpoint restore failed honestly at the graph boundary."""
+
+
 class CallbackError(GraphReflyError):
     """A Python callback failed and is mapped into graph ERROR."""
 

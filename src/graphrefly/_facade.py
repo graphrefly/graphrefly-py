@@ -16,7 +16,9 @@ from graphrefly import _native
 from graphrefly.exceptions import (
     CallbackError,
     GraphCallbackError,
+    GraphReflyCheckpointError,
     GraphReflyNoDataError,
+    GraphReflyRestoreError,
     GraphReflyRuntimeError,
     GraphReflyValueError,
     SubscriberCallbackError,
@@ -83,12 +85,172 @@ type NodeCallback = Callable[["Ctx"], object]
 type AsyncJobFactory = Callable[[], Awaitable[None]]
 type _CompletionPredicate = Callable[[], bool]
 type _CancelScopeFactory = Callable[[], object]
+type GraphCheckpoint = dict[str, Any]
+type RestoreRegistry = Any
 
 
 class AsyncRunner(Protocol):
     """Framework-neutral async job runner supplied explicitly by the host."""
 
     def spawn(self, job: AsyncJobFactory) -> object: ...
+
+
+@dataclass(frozen=True, slots=True)
+class RestoreRef:
+    """Factory reference metadata recorded into a strict-JSON checkpoint."""
+
+    ref: str
+    config: object | None = None
+    config_version: object | None = None
+
+
+class RestoreContext(Protocol):
+    """Descriptor construction context with no raw Node/Ctx/native handles."""
+
+    @property
+    def id(self) -> str: ...
+
+    @property
+    def name(self) -> str | None: ...
+
+    @property
+    def deps(self) -> list[str]: ...
+
+    @property
+    def config(self) -> object | None: ...
+
+    @property
+    def config_version(self) -> object | None: ...
+
+    @property
+    def checkpoint(self) -> GraphCheckpoint: ...
+
+    def register_state(self) -> None: ...
+
+    def register_node(
+        self,
+        callback: Callable[[Ctx], object],
+        factory: str | None = None,
+    ) -> None: ...
+
+
+class RestoreDescriptor(Protocol):
+    """A factory-name restore descriptor used by `restore_graph`."""
+
+    ref: str
+
+    def create(self, ctx: RestoreContext) -> object: ...
+
+
+class _BoundRestoreContext:
+    def __init__(
+        self,
+        native: _native.RestoreContext,
+        *,
+        owner_thread: int,
+        lifetime: _GraphLifetime,
+    ) -> None:
+        self._native = native
+        self._owner_thread = owner_thread
+        self._lifetime = lifetime
+
+    @property
+    def id(self) -> str:
+        return self._native.id
+
+    @property
+    def name(self) -> str | None:
+        return self._native.name
+
+    @property
+    def deps(self) -> list[str]:
+        return self._native.deps
+
+    @property
+    def config(self) -> object | None:
+        return self._native.config
+
+    @property
+    def config_version(self) -> object | None:
+        return self._native.config_version
+
+    @property
+    def checkpoint(self) -> GraphCheckpoint:
+        return self._native.checkpoint
+
+    def register_state(self) -> None:
+        self._native.register_state()
+
+    def register_node(
+        self,
+        callback: Callable[[Ctx], object],
+        factory: str | None = None,
+    ) -> None:
+        _reject_async_callable(callback)
+        owner_thread = self._owner_thread
+        lifetime = self._lifetime
+
+        def native_callback(native_ctx: _native.Ctx) -> None:
+            value = callback(
+                Ctx(
+                    native_ctx,
+                    owner_thread=owner_thread,
+                    lifetime=lifetime,
+                )
+            )
+            _reject_awaitable(value)
+
+        self._native.register_node(native_callback, factory)
+
+
+class _BoundRestoreDescriptor:
+    def __init__(
+        self,
+        descriptor: RestoreDescriptor,
+        *,
+        owner_thread: int,
+        lifetime: _GraphLifetime,
+    ) -> None:
+        self._descriptor = descriptor
+        self._owner_thread = owner_thread
+        self._lifetime = lifetime
+        self.ref = descriptor.ref
+
+    def create(self, native_ctx: _native.RestoreContext) -> object:
+        return self._descriptor.create(
+            _BoundRestoreContext(
+                native_ctx,
+                owner_thread=self._owner_thread,
+                lifetime=self._lifetime,
+            )
+        )
+
+
+class _RestoreRegistryFacade:
+    def __init__(
+        self,
+        entries: list[RestoreDescriptor],
+        *,
+        include_builtins: bool,
+    ) -> None:
+        self._entries = entries
+        self._include_builtins = include_builtins
+
+    def _native_registry(
+        self,
+        *,
+        owner_thread: int,
+        lifetime: _GraphLifetime,
+    ) -> _native.RestoreRegistry:
+        entries = [
+            _BoundRestoreDescriptor(
+                entry,
+                owner_thread=owner_thread,
+                lifetime=lifetime,
+            )
+            for entry in self._entries
+        ]
+        return _native.restore_registry(cast("list[object]", entries), self._include_builtins)
 
 
 class _GraphLifetime:
@@ -1414,6 +1576,23 @@ class Graph:
         self._native = _native.Graph(name)
         self._reentry_queue: GraphReentryQueue | None = None
 
+    @classmethod
+    def _from_native(
+        cls,
+        native: _native.Graph,
+        *,
+        owner_thread: int | None = None,
+        lifetime: _GraphLifetime | None = None,
+    ) -> Graph:
+        graph = cls.__new__(cls)
+        graph._owner_thread = get_ident() if owner_thread is None else owner_thread
+        graph._lifetime = (
+            _GraphLifetime(graph._owner_thread) if lifetime is None else lifetime
+        )
+        graph._native = native
+        graph._reentry_queue = None
+        return graph
+
     def __enter__(self) -> Graph:
         self._check_thread()
         return self
@@ -1434,6 +1613,17 @@ class Graph:
             _poison_on_fatal(self._lifetime, error)
         finally:
             self._lifetime.close()
+
+    def checkpoint(self) -> GraphCheckpoint:
+        self._check_thread()
+        try:
+            return self._native.checkpoint()
+        except ValueError as error:
+            raise GraphReflyCheckpointError(str(error)) from error
+        except RuntimeError as error:
+            raise GraphReflyCheckpointError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
 
     def reentry_queue(self) -> GraphReentryQueue:
         """Return this graph's explicit owner-thread async re-entry queue."""
@@ -1561,6 +1751,7 @@ class Graph:
         terminal_as_real_input: bool = False,
         pausable: PausableMode = True,
         pull_id: str | None = None,
+        restore: RestoreRef | None = None,
     ) -> Node[object]: ...
 
     @overload
@@ -1576,6 +1767,7 @@ class Graph:
         terminal_as_real_input: bool = False,
         pausable: PausableMode = True,
         pull_id: str | None = None,
+        restore: RestoreRef | None = None,
     ) -> Callable[[Callable[[Ctx], object]], Node[object]]: ...
 
     def node(
@@ -1590,6 +1782,7 @@ class Graph:
         terminal_as_real_input: bool = False,
         pausable: PausableMode = True,
         pull_id: str | None = None,
+        restore: RestoreRef | None = None,
     ) -> Node[object] | Callable[[Callable[[Ctx], object]], Node[object]]:
         self._check_thread()
         deps = list(deps)
@@ -1603,6 +1796,9 @@ class Graph:
         if pull_id is not None and pausable is False:
             msg = "pull_id nodes cannot use pausable=False in the Python facade"
             raise GraphReflyValueError(msg)
+        if restore is not None and not isinstance(restore, RestoreRef):
+            msg = "restore must be created by graphrefly.restore_ref(...)"
+            raise GraphReflyValueError(msg)
         if callback is None:
             return lambda fn: self.node(
                 deps,
@@ -1614,6 +1810,7 @@ class Graph:
                 terminal_as_real_input=terminal_as_real_input,
                 pausable=pausable,
                 pull_id=pull_id,
+                restore=restore,
             )
         _reject_async_callable(callback)
         native_deps = self._native_deps(deps)
@@ -1640,6 +1837,9 @@ class Graph:
                     terminal_as_real_input,
                     native_pausable,
                     pull_id,
+                    restore.ref if restore is not None else None,
+                    restore.config if restore is not None else None,
+                    restore.config_version if restore is not None else None,
                 ),
                 owner_thread=self._owner_thread,
                 lifetime=self._lifetime,
@@ -1802,6 +2002,22 @@ class Graph:
         for dep in deps:
             native_deps.append(self._native_node(dep))
         return native_deps
+
+    def _conformance_find(self, id: str) -> Node[Any]:
+        self._check_thread()
+        if not isinstance(id, str):
+            msg = "conformance id must be a str"
+            raise GraphReflyValueError(msg)
+        try:
+            native = self._native._find(id)
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
+        if native is None:
+            msg = f"conformance node '{id}' was not found"
+            raise GraphReflyRuntimeError(msg)
+        return Node(native, owner_thread=self._owner_thread, lifetime=self._lifetime, writable=True)
 
     def _check_thread(self, *, allow_closed: bool = False) -> None:
         if get_ident() != self._owner_thread:
@@ -2067,6 +2283,62 @@ def version() -> str:
         return metadata.version("graphrefly")
     except PackageNotFoundError:
         return _VERSION
+
+
+def restore_ref(
+    ref: str,
+    *,
+    config: object | None = None,
+    config_version: object | None = None,
+) -> RestoreRef:
+    """Return strict-JSON factory metadata for a restorable function-backed node."""
+
+    if not isinstance(ref, str) or ref == "":
+        msg = "restore ref must be a non-empty str"
+        raise GraphReflyValueError(msg)
+    _reject_awaitable(config)
+    _reject_awaitable(config_version)
+    _reject_sentinel_data(config)
+    _reject_sentinel_data(config_version)
+    return RestoreRef(ref=ref, config=config, config_version=config_version)
+
+
+def restore_registry(
+    entries: Iterable[RestoreDescriptor],
+    *,
+    include_builtins: bool = True,
+) -> RestoreRegistry:
+    """Build an explicit restore registry for `restore_graph`."""
+
+    _reject_non_bool("include_builtins", include_builtins)
+    return _RestoreRegistryFacade(list(entries), include_builtins=include_builtins)
+
+
+def restore_graph(checkpoint: GraphCheckpoint, *, registry: RestoreRegistry) -> Graph:
+    """Construct a fresh graph from an already-loaded strict-JSON checkpoint."""
+
+    if not isinstance(registry, _RestoreRegistryFacade):
+        msg = "registry must be created by graphrefly.restore_registry(...)"
+        raise GraphReflyRestoreError(msg)
+    owner_thread = get_ident()
+    lifetime = _GraphLifetime(owner_thread)
+    try:
+        native_registry = registry._native_registry(
+            owner_thread=owner_thread,
+            lifetime=lifetime,
+        )
+        native_graph = _native.restore_graph(checkpoint, native_registry)
+        return Graph._from_native(
+            native_graph,
+            owner_thread=owner_thread,
+            lifetime=lifetime,
+        )
+    except ValueError as error:
+        raise GraphReflyRestoreError(str(error)) from error
+    except TypeError as error:
+        raise GraphReflyRestoreError(str(error)) from error
+    except RuntimeError as error:
+        raise GraphReflyRestoreError(str(error)) from error
 
 
 def _validate_async_source_args(

@@ -17,9 +17,15 @@ from graphrefly import (
     GraphReflyRuntimeError,
     GraphReflyValueError,
     Message,
+    RestoreContext,
+    RestoreDescriptor,
+    RestoreRef,
     RewireNext,
     SubscriberCallbackError,
     Subscription,
+    restore_graph,
+    restore_ref,
+    restore_registry,
 )
 
 
@@ -30,6 +36,14 @@ def test_import_package_surface():
     assert graphrefly.DataIssue("missing", "reserved").code == "missing"
     assert graphrefly.Ctx is Ctx
     assert graphrefly.RewireNext is RewireNext
+    assert graphrefly.RestoreContext is RestoreContext
+    assert graphrefly.RestoreDescriptor is RestoreDescriptor
+    assert graphrefly.RestoreRef is RestoreRef
+    assert graphrefly.restore_graph is restore_graph
+    assert graphrefly.restore_ref is restore_ref
+    assert graphrefly.restore_registry is restore_registry
+    assert issubclass(graphrefly.GraphReflyCheckpointError, GraphReflyValueError)
+    assert issubclass(graphrefly.GraphReflyRestoreError, GraphReflyRuntimeError)
     assert issubclass(graphrefly.GraphReflyNoDataError, LookupError)
     assert hasattr(import_module("graphrefly._native"), "Graph")
     assert "_conformance" not in graphrefly.__all__
@@ -743,6 +757,25 @@ def test_describe_exposes_factory_metadata_without_raw_function_bodies():
     assert nodes["plus_one"]["factory"] == "derived"
     assert nodes["plus_one"]["has_value"] is True
     assert "lambda" not in repr(snapshot)
+
+
+def test_restore_public_surface_has_no_storage_or_hidden_runtime_hydration():
+    checkpoint_params = signature(Graph.checkpoint).parameters
+    restore_params = signature(restore_graph).parameters
+    registry_params = signature(restore_registry).parameters
+
+    assert list(checkpoint_params) == ["self"]
+    assert list(restore_params) == ["checkpoint", "registry"]
+    assert restore_params["registry"].kind is restore_params["registry"].KEYWORD_ONLY
+    assert "storage" not in restore_params
+    assert "runner" not in restore_params
+    assert "hydrate" not in restore_params
+    assert "into" not in restore_params
+    assert list(registry_params) == ["entries", "include_builtins"]
+    assert (
+        registry_params["include_builtins"].kind
+        is registry_params["include_builtins"].KEYWORD_ONLY
+    )
 
 
 def test_public_value_and_runtime_errors_are_facade_exceptions():
