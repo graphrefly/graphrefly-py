@@ -69,6 +69,43 @@ def test_public_facade_has_no_equals_substitution_surface():
     assert [message.value for message in seen if isinstance(message, DataMessage)] == [1, 1]
 
 
+def test_public_facade_has_no_raw_wire_bridge_or_wire_edge_group_surface():
+    native = import_module("graphrefly._native")
+    forbidden = {
+        "WireEdgeGroup",
+        "WireEdgeGroupBundle",
+        "WireEdgeGroupEdge",
+        "WireEdgeGroupOptions",
+        "WireEdgeGroupIssue",
+        "WireEdgeGroupIssueCode",
+        "WireEdgeGroupStatus",
+        "WireEdgeGroupStatusState",
+        "WireBridgeBundle",
+        "WireBridgeAck",
+        "WireBridgeAttempt",
+        "WireBridgeInbound",
+        "WireBridgeIngress",
+        "WireBridgeEnvelope",
+        "WireBridgeEnvelopeInput",
+        "WireBridgeEnvelopeType",
+        "WireBridgeMetadata",
+        "WireBridgeNack",
+        "WireBridgeOptions",
+        "WireBridgePayload",
+        "WireBridgeReceipt",
+        "WireBridgeStatus",
+        "WireBridgeStatusState",
+        "WireEdgeFrame",
+        "WireBridgeCommand",
+        "WireBridgeEvent",
+    }
+
+    for name in forbidden:
+        assert name not in graphrefly.__all__
+        assert not hasattr(graphrefly, name)
+        assert not hasattr(native, name)
+
+
 def test_python_callback_runs_through_rust_graph_and_subscription_observes_wave():
     seen: list[Message[object]] = []
     graph = Graph("py-smoke")
