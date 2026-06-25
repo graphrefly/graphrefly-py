@@ -1,5 +1,6 @@
 """Python-owned facade for the GraphReFly native engine."""
 
+from graphrefly import _native as _native
 from graphrefly._facade import (
     _VERSION,
     SENTINEL,
