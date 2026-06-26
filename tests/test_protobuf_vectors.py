@@ -102,3 +102,110 @@ def test_d523_public_wire_bridge_protobuf_facade_reports_bytes_status_and_issues
     assert statuses[-1] == graphrefly.WireBridgeProtobufStatus("inbound", "invalid")
     assert issues[-1].category == "unknown_field"
     assert "WireBridgeEnvelope" in issues[-1].message
+
+
+def test_d542_protobuf_inbound_bytes_privately_drive_wire_edge_group_ingress():
+    bridge_records = _load_vectors(
+        FIXTURE_DIR / "wire_bridge_envelope.v1.jsonl",
+        "WireBridgeEnvelope",
+    )
+    dirty = next(
+        record for record in bridge_records if record["id"] == "positive.data.wire_edge_dirty"
+    )
+    data = next(
+        record for record in bridge_records if record["id"] == "positive.data.wire_edge_data"
+    )
+    graph = graphrefly.Graph("py-c1a-inbound-attachment")
+    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
+    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
+    group = graphrefly.wire_edge_group(
+        graph,
+        bridge,
+        name="group",
+        inbound_edges=["edge-a"],
+    )
+    released: list[bytes] = []
+    statuses: list[graphrefly.WireBridgeProtobufStatus] = []
+    issues: list[graphrefly.WireBridgeProtobufIssue] = []
+
+    with (
+        group.inbound_edges["edge-a"].subscribe(
+            lambda msg: released.append(msg.value)
+            if isinstance(msg, graphrefly.DataMessage)
+            else None
+        ),
+        protobuf.status.subscribe(
+            lambda msg: statuses.append(msg.value)
+            if isinstance(msg, graphrefly.DataMessage)
+            else None
+        ),
+        protobuf.issues.subscribe(
+            lambda msg: issues.append(msg.value)
+            if isinstance(msg, graphrefly.DataMessage)
+            else None
+        ),
+    ):
+        protobuf.inbound_bytes.set(bytes.fromhex(str(dirty["hex"])))
+        protobuf.inbound_bytes.set(bytes.fromhex(str(data["hex"])))
+
+    assert released == [b'{"ok":true}']
+    assert statuses[-1] == graphrefly.WireBridgeProtobufStatus("inbound", "valid")
+    assert issues == []
+
+
+def test_d542_protobuf_outbound_bytes_are_canonical_byte_values():
+    graph = graphrefly.Graph("py-c1a-outbound-bytes")
+    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
+    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
+    source = graph.state(b'{"n":1}', name="edge-a")
+    graphrefly.wire_edge_group(
+        graph,
+        bridge,
+        name="group",
+        outbound_edges={"edge-a": source},
+    )
+    outbound: list[bytes] = []
+
+    with protobuf.outbound_bytes.subscribe(
+        lambda msg: outbound.append(msg.value)
+        if isinstance(msg, graphrefly.DataMessage)
+        else None
+    ):
+        outbound.clear()
+        source.set(b'{"n":2}')
+
+    assert outbound
+    assert all(isinstance(value, bytes) for value in outbound)
+    assert all(native._validate_canonical_wire_bridge_envelope(value).ok for value in outbound)
+
+
+def test_d542_protobuf_nack_without_error_uses_bridge_fallback_issue():
+    nack_without_error = bytes.fromhex(
+        "0a0273311210080110001a0473313a312001280138013200"
+    )
+    assert native._validate_canonical_wire_bridge_envelope(nack_without_error).ok
+
+    graph = graphrefly.Graph("py-c1a-nack-fallback")
+    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
+    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
+    source = graph.state(b'{"n":1}', name="edge-a")
+    graphrefly.wire_edge_group(
+        graph,
+        bridge,
+        name="group",
+        outbound_edges={"edge-a": source},
+    )
+    issues: list[graphrefly.WireBridgeIssue] = []
+
+    with bridge.issues.subscribe(
+        lambda msg: issues.append(msg.value)
+        if isinstance(msg, graphrefly.DataMessage)
+        else None
+    ):
+        source.set(b'{"n":2}')
+        protobuf.inbound_bytes.set(nack_without_error)
+
+    assert issues[-1] == graphrefly.WireBridgeIssue(
+        code="bridge_error",
+        message="remote nack",
+    )

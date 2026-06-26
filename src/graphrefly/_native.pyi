@@ -18,8 +18,15 @@ class Graph:
         inbound_edges: list[str],
         name: str | None = None,
     ) -> _WireEdgeGroup: ...
+    def _wire_edge_group_outbound(
+        self,
+        bridge: _WireBridge,
+        outbound_edges: list[tuple[str, Node]],
+        name: str | None = None,
+    ) -> _WireEdgeGroup: ...
     def _wire_bridge_ack_driver(
         self,
+        bridge: _WireBridge,
         clock: Node,
         timeout_ms: int,
         name: str | None = None,

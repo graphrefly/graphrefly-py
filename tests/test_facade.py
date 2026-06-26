@@ -167,8 +167,13 @@ def test_wire_bridge_public_constructor_guards():
             inbound_edges=["a"],
             outbound_edges={"b": graph.state(b"b")},
         )
-    with pytest.raises(GraphReflyRuntimeError, match="outbound_edges facade is pending"):
-        graphrefly.wire_edge_group(graph, bridge, outbound_edges={"a": graph.state(b"a")})
+    outbound = graphrefly.wire_edge_group(
+        graph,
+        bridge,
+        outbound_edges={"a": graph.state(b"a")},
+    )
+    assert outbound.inbound_edges == {}
+    outbound.release()
 
     bridge.release()
     with pytest.raises(GraphReflyRuntimeError, match="released"):
@@ -212,6 +217,62 @@ def test_wire_bridge_ack_driver_invalid_clock_is_issue_not_timeout():
             message="wire_bridge_ack_driver clock facts must be non-negative integers",
         )
     ]
+
+
+def test_d542_bridge_release_cascades_children_and_late_child_release_is_noop():
+    graph = Graph("py-c1-release-cascade")
+    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
+    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
+    group = graphrefly.wire_edge_group(graph, bridge, inbound_edges=["edge-a"], name="group")
+    ack = graphrefly.wire_bridge_ack_driver(
+        graph,
+        bridge,
+        clock=graph.state(0, name="clock"),
+        timeout_ms=5,
+        name="ack",
+    )
+
+    bridge.release()
+    ack.release()
+    group.release()
+    protobuf.release()
+
+    with pytest.raises(GraphReflyRuntimeError, match="released"):
+        graphrefly.wire_bridge_protobuf(graph, bridge)
+
+
+def test_d542_wire_edge_group_outbound_non_bytes_is_public_issue_status():
+    graph = Graph("py-c1-outbound-non-bytes")
+    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
+    source = graph.state(b"ok", name="edge-source")
+    group = graphrefly.wire_edge_group(
+        graph,
+        bridge,
+        outbound_edges={"edge-a": source},
+        name="group",
+    )
+    issues: list[graphrefly.WireEdgeGroupIssue] = []
+    statuses: list[graphrefly.WireEdgeGroupStatus] = []
+
+    with (
+        group.issues.subscribe(
+            lambda msg: issues.append(msg.value)
+            if isinstance(msg, graphrefly.DataMessage)
+            else None
+        ),
+        group.status.subscribe(
+            lambda msg: statuses.append(msg.value)
+            if isinstance(msg, graphrefly.DataMessage)
+            else None
+        ),
+    ):
+        source.set("not bytes")
+
+    assert issues[-1].code == "malformed_frame"
+    assert issues[-1].edge_id == "edge-a"
+    assert "must emit bytes" in issues[-1].message
+    assert statuses[-1].state == "issues"
+    assert statuses[-1].last_issue == issues[-1]
 
 
 def test_python_callback_runs_through_rust_graph_and_subscription_observes_wave():
