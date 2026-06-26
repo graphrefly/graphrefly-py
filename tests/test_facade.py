@@ -101,13 +101,29 @@ def test_public_facade_has_no_raw_wire_bridge_or_wire_edge_group_surface():
         "WireBridgeEvent",
         "CanonicalWireBridgeEnvelope",
         "CanonicalWireEdgeFrame",
+        "CanonicalProtobufRoundtrip",
+        "CanonicalProtobufValidation",
         "PyO3Handle",
+        "_roundtrip_canonical_wire_bridge_envelope",
+        "_roundtrip_canonical_wire_edge_frame",
+        "_validate_canonical_wire_bridge_envelope",
+        "_validate_canonical_wire_edge_frame",
     }
 
     for name in forbidden:
         assert name not in graphrefly.__all__
         assert not hasattr(graphrefly, name)
-        assert not hasattr(native, name)
+        if not name.startswith("_") and not name.startswith("CanonicalProtobuf"):
+            assert not hasattr(native, name)
+
+    assert hasattr(native, "_roundtrip_canonical_wire_bridge_envelope")
+    assert hasattr(native, "_roundtrip_canonical_wire_edge_frame")
+    assert hasattr(native, "_validate_canonical_wire_bridge_envelope")
+    assert hasattr(native, "_validate_canonical_wire_edge_frame")
+    assert not hasattr(graphrefly.Node, "up")
+    assert not hasattr(graphrefly.Node, "down")
+    assert not hasattr(graphrefly.Ctx, "up")
+    assert not hasattr(graphrefly.Ctx, "down")
 
 
 def test_wire_bridge_public_facade_shape_and_dataclasses():

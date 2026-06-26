@@ -30,18 +30,20 @@ def _load_vectors(path: Path, message: str) -> list[dict[str, object]]:
 
 
 @pytest.mark.parametrize(
-    ("path", "message", "validator", "empty_value_ids"),
+    ("path", "message", "validator", "roundtripper", "empty_value_ids"),
     [
         (
             FIXTURE_DIR / "wire_bridge_envelope.v1.jsonl",
             "WireBridgeEnvelope",
             native._validate_canonical_wire_bridge_envelope,
+            native._roundtrip_canonical_wire_bridge_envelope,
             {"positive.data.empty_value"},
         ),
         (
             FIXTURE_DIR / "wire_edge_frame.v1.jsonl",
             "WireEdgeFrame",
             native._validate_canonical_wire_edge_frame,
+            native._roundtrip_canonical_wire_edge_frame,
             {"positive.wire_edge.data_empty_value"},
         ),
     ],
@@ -50,6 +52,7 @@ def test_d497_canonical_protobuf_vectors(
     path: Path,
     message: str,
     validator: Callable[[bytes], object],
+    roundtripper: Callable[[bytes], object],
     empty_value_ids: set[str],
 ) -> None:
     records = _load_vectors(path, message)
@@ -57,20 +60,30 @@ def test_d497_canonical_protobuf_vectors(
     assert any(not record["canonical"] for record in records)
 
     for record in records:
-        result = validator(bytes.fromhex(record["hex"]))
+        fixture_bytes = bytes.fromhex(record["hex"])
+        result = validator(fixture_bytes)
+        roundtrip = roundtripper(fixture_bytes)
         if record["canonical"]:
             assert result.ok is True
             assert result.category is None
             assert result.message is None
+            assert roundtrip.ok is True
+            assert roundtrip.bytes == fixture_bytes
+            assert roundtrip.category is None
+            assert roundtrip.message is None
             if record["id"] in empty_value_ids:
                 assert record["description"]
         else:
             assert result.ok is False
             assert result.category == record["errorCategory"]
             assert result.message
+            assert roundtrip.ok is False
+            assert roundtrip.bytes is None
+            assert roundtrip.category == record["errorCategory"]
+            assert roundtrip.message
 
 
-def test_d523_public_wire_bridge_protobuf_facade_reports_bytes_status_and_issues():
+def test_d523_public_wire_bridge_protobuf_facade_reports_malformed_bytes_as_status_issues():
     bridge_records = _load_vectors(
         FIXTURE_DIR / "wire_bridge_envelope.v1.jsonl",
         "WireBridgeEnvelope",
@@ -82,6 +95,7 @@ def test_d523_public_wire_bridge_protobuf_facade_reports_bytes_status_and_issues
     protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
     statuses: list[graphrefly.WireBridgeProtobufStatus] = []
     issues: list[graphrefly.WireBridgeProtobufIssue] = []
+    bridge_issues: list[graphrefly.WireBridgeIssue] = []
 
     def record_status(msg: graphrefly.Message[object]) -> None:
         if isinstance(msg, graphrefly.DataMessage):
@@ -94,6 +108,11 @@ def test_d523_public_wire_bridge_protobuf_facade_reports_bytes_status_and_issues
     with (
         protobuf.status.subscribe(record_status),
         protobuf.issues.subscribe(record_issue),
+        bridge.issues.subscribe(
+            lambda msg: bridge_issues.append(msg.value)
+            if isinstance(msg, graphrefly.DataMessage)
+            else None
+        ),
     ):
         protobuf.inbound_bytes.set(bytes.fromhex(str(positive["hex"])))
         protobuf.inbound_bytes.set(bytes.fromhex(str(negative["hex"])))
@@ -102,6 +121,9 @@ def test_d523_public_wire_bridge_protobuf_facade_reports_bytes_status_and_issues
     assert statuses[-1] == graphrefly.WireBridgeProtobufStatus("inbound", "invalid")
     assert issues[-1].category == "unknown_field"
     assert "WireBridgeEnvelope" in issues[-1].message
+    assert bridge_issues[-1].code == "bridge_error"
+    assert bridge_issues[-1].message.startswith("unknown_field:")
+    assert "WireBridgeEnvelope" in bridge_issues[-1].message
 
 
 def test_d542_protobuf_inbound_bytes_privately_drive_wire_edge_group_ingress():
