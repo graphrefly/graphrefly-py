@@ -360,6 +360,80 @@ def _validate_restore_registry_entries(
         seen.add(ref)
 
 
+class _ResourceScope:
+    def __init__(self, closed_message: Callable[[], str]) -> None:
+        self._closed_message = closed_message
+        self._lock = Lock()
+        self._closed = False
+        self._resources: list[object] = []
+
+    def register(self, resource: object) -> None:
+        should_close = False
+        with self._lock:
+            if self._closed:
+                should_close = True
+            elif resource not in self._resources:
+                self._resources.append(resource)
+        if should_close:
+            _close_lifecycle_resource(resource)
+            raise GraphReflyRuntimeError(self._closed_message())
+
+    def adopt(self, resource: object, *, lifetime: _GraphLifetime) -> None:
+        lifetime.unregister_resource(resource)
+        self.register(resource)
+
+    def unregister(self, resource: object) -> None:
+        with self._lock:
+            self._resources = [item for item in self._resources if item is not resource]
+
+    def retained_subscriptions(self) -> tuple[Subscription, ...]:
+        with self._lock:
+            resources = tuple(self._resources)
+        subscriptions: list[Subscription] = []
+        for resource in resources:
+            if isinstance(resource, Retain):
+                subscriptions.append(resource._subscription)
+            scope = getattr(resource, "_scope", None)
+            if isinstance(scope, _ResourceScope):
+                subscriptions.extend(scope.retained_subscriptions())
+        return tuple(subscriptions)
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            resources = tuple(reversed(self._resources))
+            self._resources.clear()
+        first_error: BaseException | None = None
+        for resource in resources:
+            try:
+                _close_lifecycle_resource(resource)
+            except BaseException as error:
+                if first_error is None:
+                    first_error = error
+        if first_error is not None:
+            raise first_error
+
+
+def _close_lifecycle_resource(resource: object) -> None:
+    close = getattr(resource, "_close_from_graph", None)
+    if callable(close):
+        close()
+
+
+def _record_lifecycle_error(
+    first_error: BaseException | None,
+    cleanup: Callable[[], object],
+) -> BaseException | None:
+    try:
+        cleanup()
+    except BaseException as error:
+        if first_error is None:
+            return error
+    return first_error
+
+
 class _GraphLifetime:
     def __init__(self, owner_thread: int) -> None:
         self.owner_thread = owner_thread
@@ -367,10 +441,9 @@ class _GraphLifetime:
         self.closed = False
         self.poisoned = False
         self.subscriptions: list[ReferenceType[Subscription]] = []
-        self.retains: list[Retain] = []
         self.async_jobs: list[ReferenceType[_AsyncJob]] = []
         self.reentry_queues: list[ReferenceType[GraphReentryQueue]] = []
-        self.resources: list[ReferenceType[object]] = []
+        self.resources = _ResourceScope(lambda: self.closed_message)
 
     @property
     def closed_message(self) -> str:
@@ -398,19 +471,10 @@ class _GraphLifetime:
             ]
 
     def register_retain(self, retain: Retain) -> None:
-        should_close = False
-        with self._lock:
-            if self.closed:
-                should_close = True
-            elif retain not in self.retains:
-                self.retains.append(retain)
-        if should_close:
-            retain._close_from_graph()
-            raise GraphReflyRuntimeError(self.closed_message)
+        self.register_resource(retain)
 
     def unregister_retain(self, retain: Retain) -> None:
-        with self._lock:
-            self.retains = [item for item in self.retains if item is not retain]
+        self.unregister_resource(retain)
 
     def register_async_job(self, job: _AsyncJob) -> None:
         cancel = False
@@ -448,30 +512,24 @@ class _GraphLifetime:
     def register_resource(self, resource: object) -> None:
         with self._lock:
             if self.closed:
-                close = getattr(resource, "_close_from_graph", None)
-                if callable(close):
-                    close()
+                _close_lifecycle_resource(resource)
                 raise GraphReflyRuntimeError(self.closed_message)
-            self.resources.append(ref(resource))
+        self.resources.register(resource)
 
     def unregister_resource(self, resource: object) -> None:
-        with self._lock:
-            self.resources = [
-                item
-                for item in self.resources
-                if (live := item()) is not None and live is not resource
-            ]
+        self.resources.unregister(resource)
+
+    def new_resource_scope(self) -> _ResourceScope:
+        return _ResourceScope(lambda: self.closed_message)
 
     def close(self, *, suppress_errors: bool = False) -> None:
         with self._lock:
             if self.closed:
                 return
             self.closed = True
-            resources = tuple(item() for item in reversed(self.resources))
             queues = tuple(item() for item in self.reentry_queues)
             jobs = tuple(item() for item in self.async_jobs)
-            retains = tuple(self.retains)
-            retained_subscriptions = tuple(retain._subscription for retain in retains)
+            retained_subscriptions = self.resources.retained_subscriptions()
             weak_subscriptions = tuple(item() for item in self.subscriptions)
             subscriptions = tuple(
                 subscription
@@ -479,31 +537,23 @@ class _GraphLifetime:
                 if subscription is not None
                 and all(subscription is not retained for retained in retained_subscriptions)
             )
-            self.retains.clear()
-            self.resources.clear()
             self.reentry_queues.clear()
             self.async_jobs.clear()
             self.subscriptions.clear()
-        for resource in resources:
-            if resource is not None:
-                close = getattr(resource, "_close_from_graph", None)
-                if callable(close):
-                    close()
-        self._close_reentry_queues(queues)
-        self._cancel_async_jobs(jobs)
         first_error: BaseException | None = None
-        for retain in retains:
-            try:
-                retain._close_from_graph()
-            except BaseException as error:
-                if first_error is None:
-                    first_error = error
         for subscription in subscriptions:
             try:
                 subscription._close_from_graph()
             except BaseException as error:
                 if first_error is None:
                     first_error = error
+        self._close_reentry_queues(queues)
+        self._cancel_async_jobs(jobs)
+        try:
+            self.resources.close()
+        except BaseException as error:
+            if first_error is None:
+                first_error = error
         if first_error is not None and not suppress_errors:
             raise first_error
 
@@ -1913,6 +1963,7 @@ class WireBridge:
         self._native = native
         self._owner_thread = graph._owner_thread
         self._lifetime = graph._lifetime
+        self._scope = self._lifetime.new_resource_scope()
         self._children: list[
             WireBridgeProtobuf | WireEdgeGroup | WireBridgeAckDriver
         ] = []
@@ -1942,17 +1993,29 @@ class WireBridge:
         self._check_thread()
         if self._released:
             return
-        self._release_children()
+        first_error = _record_lifecycle_error(None, self._release_children)
+        if self._children:
+            if first_error is not None:
+                raise first_error
+            return
+        first_error = _record_lifecycle_error(first_error, self._scope.close)
         self._native.release()
         self._released = True
         self._lifetime.unregister_resource(self)
+        if first_error is not None:
+            raise first_error
 
     def _close_from_graph(self) -> None:
         if self._released:
             return
-        self._release_children()
+        first_error = _record_lifecycle_error(None, self._release_children)
+        if self._children and first_error is not None:
+            raise first_error
+        first_error = _record_lifecycle_error(first_error, self._scope.close)
         self._native.release()
         self._released = True
+        if first_error is not None:
+            raise first_error
 
     def _check_thread(self) -> None:
         if get_ident() != self._owner_thread:
@@ -1979,9 +2042,12 @@ class WireBridge:
         self._children = [item for item in self._children if item is not child]
 
     def _release_children(self) -> None:
+        first_error: BaseException | None = None
         for child in tuple(reversed(self._children)):
-            child._release_from_bridge()
-        self._children.clear()
+            first_error = _record_lifecycle_error(first_error, child._release_from_bridge)
+        self._children = [child for child in self._children if not child._released]
+        if first_error is not None:
+            raise first_error
 
 
 class WireBridgeProtobuf:
@@ -1994,6 +2060,7 @@ class WireBridgeProtobuf:
         self._native = native
         self._owner_thread = graph._owner_thread
         self._lifetime = graph._lifetime
+        self._scope = self._lifetime.new_resource_scope()
         self._bridge = bridge
         self.inbound_bytes: Node[bytes] = Node(
             native.inbound_bytes,
@@ -2033,23 +2100,32 @@ class WireBridgeProtobuf:
         self._check_thread()
         if self._released:
             return
+        first_error = _record_lifecycle_error(None, self._scope.close)
         self._native.release()
         self._released = True
         self._bridge._unregister_child(self)
         self._lifetime.unregister_resource(self)
+        if first_error is not None:
+            raise first_error
 
     def _close_from_graph(self) -> None:
         if self._released:
             return
+        first_error = _record_lifecycle_error(None, self._scope.close)
         self._native.release()
         self._released = True
+        if first_error is not None:
+            raise first_error
 
     def _release_from_bridge(self) -> None:
         if self._released:
             return
+        first_error = _record_lifecycle_error(None, self._scope.close)
         self._native.release()
         self._released = True
         self._lifetime.unregister_resource(self)
+        if first_error is not None:
+            raise first_error
 
     def _check_thread(self) -> None:
         if get_ident() != self._owner_thread:
@@ -2069,6 +2145,7 @@ class WireEdgeGroup:
         self._native = native
         self._owner_thread = graph._owner_thread
         self._lifetime = graph._lifetime
+        self._scope = self._lifetime.new_resource_scope()
         self._bridge = bridge
         self.inbound_edges: dict[str, Node[bytes]] = {
             str(edge_id): Node(
@@ -2105,23 +2182,32 @@ class WireEdgeGroup:
         self._check_thread()
         if self._released:
             return
+        first_error = _record_lifecycle_error(None, self._scope.close)
         self._native.release()
         self._released = True
         self._bridge._unregister_child(self)
         self._lifetime.unregister_resource(self)
+        if first_error is not None:
+            raise first_error
 
     def _close_from_graph(self) -> None:
         if self._released:
             return
+        first_error = _record_lifecycle_error(None, self._scope.close)
         self._native.release()
         self._released = True
+        if first_error is not None:
+            raise first_error
 
     def _release_from_bridge(self) -> None:
         if self._released:
             return
+        first_error = _record_lifecycle_error(None, self._scope.close)
         self._native.release()
         self._released = True
         self._lifetime.unregister_resource(self)
+        if first_error is not None:
+            raise first_error
 
     def _check_thread(self) -> None:
         if get_ident() != self._owner_thread:
@@ -2141,6 +2227,7 @@ class WireBridgeAckDriver:
         self._native = native
         self._owner_thread = graph._owner_thread
         self._lifetime = graph._lifetime
+        self._scope = self._lifetime.new_resource_scope()
         self._bridge = bridge
         self.timeouts: Node[WireBridgeAckTimeout] = _MappedNode(
             native.timeouts,
@@ -2161,8 +2248,23 @@ class WireBridgeAckDriver:
             mapper=_wire_bridge_ack_driver_issue,
         )
         self._released = False
-        self._bridge._register_child(self)
-        self._lifetime.register_resource(self)
+        self._scope.adopt(
+            graph.retain(self.timeouts, reason="wire_bridge_ack_driver.timeouts"),
+            lifetime=self._lifetime,
+        )
+        registered_child = False
+        try:
+            self._bridge._register_child(self)
+            registered_child = True
+            self._lifetime.register_resource(self)
+        except BaseException:
+            if registered_child:
+                self._bridge._unregister_child(self)
+            self._scope.close()
+            if not self._released:
+                self._native.release()
+                self._released = True
+            raise
 
     def __enter__(self) -> WireBridgeAckDriver:
         self._check_thread()
@@ -2175,23 +2277,32 @@ class WireBridgeAckDriver:
         self._check_thread()
         if self._released:
             return
+        first_error = _record_lifecycle_error(None, self._scope.close)
         self._native.release()
         self._released = True
         self._bridge._unregister_child(self)
         self._lifetime.unregister_resource(self)
+        if first_error is not None:
+            raise first_error
 
     def _close_from_graph(self) -> None:
         if self._released:
             return
+        first_error = _record_lifecycle_error(None, self._scope.close)
         self._native.release()
         self._released = True
+        if first_error is not None:
+            raise first_error
 
     def _release_from_bridge(self) -> None:
         if self._released:
             return
+        first_error = _record_lifecycle_error(None, self._scope.close)
         self._native.release()
         self._released = True
         self._lifetime.unregister_resource(self)
+        if first_error is not None:
+            raise first_error
 
     def _check_thread(self) -> None:
         if get_ident() != self._owner_thread:

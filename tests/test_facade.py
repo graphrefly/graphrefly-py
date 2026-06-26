@@ -2,6 +2,7 @@ import gc
 from dataclasses import FrozenInstanceError, is_dataclass
 from importlib import import_module
 from inspect import signature
+from typing import Any
 
 import pytest
 
@@ -30,6 +31,78 @@ from graphrefly import (
     restore_ref,
     restore_registry,
 )
+
+
+def _varint(value: int) -> bytes:
+    out = bytearray()
+    while value >= 0x80:
+        out.append((value & 0x7F) | 0x80)
+        value >>= 7
+    out.append(value)
+    return bytes(out)
+
+
+def _key(field_no: int, wire_type: int) -> bytes:
+    return _varint((field_no << 3) | wire_type)
+
+
+def _varint_field(field_no: int, value: int) -> bytes:
+    return _key(field_no, 0) + _varint(value)
+
+
+def _bytes_field(field_no: int, value: bytes) -> bytes:
+    return _key(field_no, 2) + _varint(len(value)) + value
+
+
+def _string_field(field_no: int, value: str) -> bytes:
+    return _bytes_field(field_no, value.encode())
+
+
+def _message_field(field_no: int, value: bytes) -> bytes:
+    return _bytes_field(field_no, value)
+
+
+def _metadata(seq: int, session_id: str, *, ack_for_seq: int | None = None) -> bytes:
+    encoded = [
+        _varint_field(1, seq),
+        _varint_field(2, 0),
+        _string_field(3, f"{session_id}:{seq}"),
+        _varint_field(4, 1),
+        _varint_field(5, 2),
+    ]
+    if ack_for_seq is not None:
+        encoded.append(_varint_field(7, ack_for_seq))
+    return b"".join(encoded)
+
+
+def _ack_envelope(seq: int, ack_for_seq: int, *, session_id: str = "s1") -> bytes:
+    return b"".join(
+        [
+            _string_field(1, session_id),
+            _message_field(2, _metadata(seq, session_id, ack_for_seq=ack_for_seq)),
+            _message_field(5, b""),
+        ]
+    )
+
+
+def _record_data(target: list[Any]):
+    def record(message: Message[object]) -> None:
+        if isinstance(message, DataMessage):
+            target.append(message.value)
+
+    return record
+
+
+def _describe_has_prefix(snapshot: dict[str, object], *prefixes: str) -> bool:
+    nodes = snapshot.get("nodes", [])
+    if not isinstance(nodes, list):
+        return False
+    for node in nodes:
+        if isinstance(node, dict):
+            name = node.get("name")
+            if isinstance(name, str) and name.startswith(prefixes):
+                return True
+    return False
 
 
 def test_import_package_surface():
@@ -164,7 +237,9 @@ def test_wire_bridge_public_facade_shape_and_dataclasses():
     assert not hasattr(bridge, "close")
     assert set(group.inbound_edges) == {"a"}
     assert protobuf.inbound_bytes.has_value is False
-    assert ack.status.cache().timeout_ms == 5
+    with ack.status.subscribe(lambda _msg: None):
+        clock.set(1)
+        assert ack.status.cache().timeout_ms == 5
     ack.release()
     group.release()
     protobuf.release()
@@ -235,6 +310,169 @@ def test_wire_bridge_ack_driver_invalid_clock_is_issue_not_timeout():
             message="wire_bridge_ack_driver clock facts must be non-negative integers",
         )
     ]
+
+    with ack.issues.subscribe(record_issue):
+        issues.clear()
+        clock.set(10)
+        clock.set(9)
+
+    assert issues == [
+        graphrefly.WireBridgeAckDriverIssue(
+            code="invalid_clock",
+            message="wire_bridge_ack_driver clock facts must be monotonic non-decreasing",
+        )
+    ]
+
+
+def test_c1c_ack_driver_clock_driven_timeout_retries_and_exhausts():
+    graph = Graph("py-c1c-ack-driver-retry-exhaust")
+    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
+    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
+    clock = graph.state(1000, name="clock")
+    ack = graphrefly.wire_bridge_ack_driver(graph, bridge, clock=clock, timeout_ms=5, name="ack")
+    source = graph.state(b"first", name="edge-source")
+    graphrefly.wire_edge_group(graph, bridge, outbound_edges={"edge-a": source}, name="group")
+    timeouts: list[graphrefly.WireBridgeAckTimeout] = []
+    ack_statuses: list[graphrefly.WireBridgeAckDriverStatus] = []
+    bridge_statuses: list[graphrefly.WireBridgeStatus] = []
+    bridge_issues: list[graphrefly.WireBridgeIssue] = []
+    outbound: list[bytes] = []
+
+    with (
+        ack.timeouts.subscribe(_record_data(timeouts)),
+        ack.status.subscribe(_record_data(ack_statuses)),
+        bridge.status.subscribe(_record_data(bridge_statuses)),
+        bridge.issues.subscribe(_record_data(bridge_issues)),
+        protobuf.outbound_bytes.subscribe(_record_data(outbound)),
+    ):
+        assert len(outbound) == 1
+        clock.set(1004)
+        assert timeouts == []
+        clock.set(1005)
+        assert any(timeout.attempt == 1 and timeout.observed_at_ms == 1005 for timeout in timeouts)
+        assert len(outbound) > 1
+        assert any(status.state == "waiting" for status in bridge_statuses)
+        clock.set(1010)
+
+    assert any(timeout.attempt == 2 and timeout.observed_at_ms == 1010 for timeout in timeouts)
+    assert any(status.state == "exhausted" for status in bridge_statuses)
+    assert bridge_issues[-1].code == "bridge_error"
+    assert "ack timeout for seq" in bridge_issues[-1].message
+    assert ack_statuses[-1].last_timeout == timeouts[-1]
+
+
+def test_c1c_stale_mismatched_and_malformed_timeout_ingress_fail_closed():
+    graph = Graph("py-c1c-ack-driver-private-ingress")
+    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
+    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
+    clock = graph.state(1000, name="clock")
+    ack = graphrefly.wire_bridge_ack_driver(graph, bridge, clock=clock, timeout_ms=5, name="ack")
+    source = graph.state(b"first", name="edge-source")
+    graphrefly.wire_edge_group(graph, bridge, outbound_edges={"edge-a": source}, name="group")
+    bridge_statuses: list[graphrefly.WireBridgeStatus] = []
+    bridge_issues: list[graphrefly.WireBridgeIssue] = []
+
+    with (
+        bridge.status.subscribe(_record_data(bridge_statuses)),
+        bridge.issues.subscribe(_record_data(bridge_issues)),
+        protobuf.outbound_bytes.subscribe(lambda _msg: None),
+    ):
+        ack._native._conformance_ack_timeout(1, 2, 1005)  # noqa: SLF001
+        assert bridge_issues == []
+        assert bridge_statuses[-1].pending >= 1
+
+        ack._native._conformance_ack_timeout(1, 0, 1005)  # noqa: SLF001
+        ack._native._conformance_ack_timeout(0, 1, 1005)  # noqa: SLF001
+
+        protobuf.inbound_bytes.set(_ack_envelope(1, 1))
+        ack._native._conformance_ack_timeout(1, 1, 1005)  # noqa: SLF001
+
+    assert [issue.message for issue in bridge_issues] == [
+        "wireBridge: ack-timeout command attempt must be positive",
+        "wireBridge: ack-timeout command seq must be positive",
+    ]
+    assert not any(status.state == "exhausted" for status in bridge_statuses)
+
+
+def test_c1c_ack_driver_release_detaches_private_command_source():
+    graph = Graph("py-c1c-ack-driver-release")
+    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
+    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
+    clock = graph.state(1000, name="clock")
+    ack = graphrefly.wire_bridge_ack_driver(graph, bridge, clock=clock, timeout_ms=5, name="ack")
+    source = graph.state(b"first", name="edge-source")
+    graphrefly.wire_edge_group(graph, bridge, outbound_edges={"edge-a": source}, name="group")
+    timeouts: list[graphrefly.WireBridgeAckTimeout] = []
+    outbound: list[bytes] = []
+
+    with (
+        ack.timeouts.subscribe(_record_data(timeouts)),
+        protobuf.outbound_bytes.subscribe(_record_data(outbound)),
+    ):
+        assert len(outbound) == 1
+
+    ack.release()
+    clock.set(1005)
+
+    assert timeouts == []
+    assert len(outbound) == 1
+    assert not _describe_has_prefix(graph.describe(), "ack/", "ack.")
+
+
+def test_c1c_ack_driver_release_reports_scope_error_after_native_cleanup():
+    graph = Graph("py-c1c-ack-driver-release-scope-error")
+    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
+    clock = graph.state(1000, name="clock")
+    ack = graphrefly.wire_bridge_ack_driver(graph, bridge, clock=clock, timeout_ms=5, name="ack")
+
+    class FailingResource:
+        def _close_from_graph(self) -> None:
+            raise RuntimeError("scope cleanup failed")
+
+    ack._scope.register(FailingResource())  # noqa: SLF001
+
+    with pytest.raises(RuntimeError, match="scope cleanup failed"):
+        ack.release()
+
+    assert ack._released is True  # noqa: SLF001
+    assert ack not in bridge._children  # noqa: SLF001
+    assert not _describe_has_prefix(graph.describe(), "ack/", "ack.")
+
+
+def test_c1c_subscription_order_variants_keep_timeout_issue_and_status_visible():
+    graph = Graph("py-c1c-ack-driver-subscription-order")
+    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
+    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
+    clock = graph.state(1000, name="clock")
+    ack = graphrefly.wire_bridge_ack_driver(graph, bridge, clock=clock, timeout_ms=5, name="ack")
+    source = graph.state(b"first", name="edge-source")
+    graphrefly.wire_edge_group(graph, bridge, outbound_edges={"edge-a": source}, name="group")
+    statuses: list[graphrefly.WireBridgeAckDriverStatus] = []
+
+    with ack.status.subscribe(_record_data(statuses)), protobuf.outbound_bytes.subscribe(
+        lambda _msg: None
+    ):
+        clock.set(1005)
+
+    timeout = ack.timeouts.cache()
+    assert timeout.attempt == 1
+    assert timeout.observed_at_ms == 1005
+    assert statuses[-1].last_timeout == timeout
+
+    issue_graph = Graph("py-c1c-ack-driver-issue-order")
+    issue_bridge = graphrefly.wire_bridge(issue_graph, session_id="s1")
+    issue_clock = issue_graph.state(0, name="clock")
+    issue_ack = graphrefly.wire_bridge_ack_driver(
+        issue_graph,
+        issue_bridge,
+        clock=issue_clock,
+        timeout_ms=5,
+    )
+    issues: list[graphrefly.WireBridgeAckDriverIssue] = []
+
+    with issue_ack.issues.subscribe(_record_data(issues)):
+        issue_clock.set("bad")  # type: ignore[arg-type]
+    assert issues[-1].code == "invalid_clock"
 
 
 def test_d542_bridge_release_cascades_children_and_late_child_release_is_noop():
@@ -1241,6 +1479,106 @@ def test_graph_retain_rejects_non_string_reason():
 
     with pytest.raises(GraphReflyValueError, match="retain reason"):
         graph.retain(node, reason=object())  # type: ignore[arg-type]
+
+
+def test_d557_graph_close_uses_reverse_graph_owned_resource_stack():
+    graph = Graph("py-d557-resource-stack")
+    source = graph.state(1, name="source")
+    retained = graph.derived([source], lambda value: value, name="retained")
+    keepalive = graph.retain(retained)
+    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
+    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
+    group = graphrefly.wire_edge_group(graph, bridge, inbound_edges=["edge-a"], name="group")
+    ack = graphrefly.wire_bridge_ack_driver(
+        graph,
+        bridge,
+        clock=graph.state(0, name="clock"),
+        timeout_ms=5,
+        name="ack",
+    )
+    subscription = source.subscribe(lambda _msg: None)
+    order: list[str] = []
+
+    def wrap_close(resource: object, label: str) -> None:
+        original = resource._close_from_graph  # type: ignore[attr-defined]
+
+        def close() -> None:
+            order.append(label)
+            original()
+
+        resource._close_from_graph = close  # type: ignore[attr-defined]
+
+    wrap_close(keepalive, "retain")
+    wrap_close(bridge, "bridge")
+    wrap_close(protobuf, "protobuf")
+    wrap_close(group, "group")
+    wrap_close(ack, "ack")
+    wrap_close(subscription, "subscription")
+    wrap_close(keepalive._subscription, "retain-subscription")  # noqa: SLF001
+
+    graph.close()
+
+    assert order == [
+        "subscription",
+        "ack",
+        "group",
+        "protobuf",
+        "bridge",
+        "retain",
+        "retain-subscription",
+    ]
+    assert keepalive.closed is True
+    assert subscription.closed is True
+
+
+def test_d557_resource_stack_continues_after_resource_close_error():
+    graph = Graph("py-d557-resource-stack-error")
+    order: list[str] = []
+
+    class Resource:
+        def __init__(self, label: str, *, raises: bool = False) -> None:
+            self.label = label
+            self.raises = raises
+
+        def _close_from_graph(self) -> None:
+            order.append(self.label)
+            if self.raises:
+                raise RuntimeError(self.label)
+
+    first = Resource("first")
+    second = Resource("second")
+    third = Resource("third", raises=True)
+    graph._lifetime.register_resource(first)  # noqa: SLF001
+    graph._lifetime.register_resource(second)  # noqa: SLF001
+    graph._lifetime.register_resource(third)  # noqa: SLF001
+
+    with pytest.raises(RuntimeError, match="third"):
+        graph.close()
+
+    assert order == ["third", "second", "first"]
+
+
+def test_d557_graph_close_closes_public_resource_subscriptions_before_resource_stack():
+    graph = Graph("py-d557-resource-close-with-public-subscription")
+    bridge = graphrefly.wire_bridge(graph, session_id="s1")
+    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge)
+    clock = graph.state(1000, name="clock")
+    ack = graphrefly.wire_bridge_ack_driver(graph, bridge, clock=clock, timeout_ms=5)
+    source = graph.state(b"first", name="source")
+    graphrefly.wire_edge_group(graph, bridge, outbound_edges={"edge-a": source})
+    timeouts: list[graphrefly.WireBridgeAckTimeout] = []
+    outbound: list[bytes] = []
+
+    with (
+        ack.timeouts.subscribe(_record_data(timeouts)),
+        protobuf.outbound_bytes.subscribe(_record_data(outbound)),
+    ):
+        assert len(outbound) == 1
+        graph.close()
+
+    assert graph.closed is True
+    assert ack._released is True  # noqa: SLF001
+    assert bridge._released is True  # noqa: SLF001
 
 
 def test_dropped_subscription_handle_releases_native_subscription():
