@@ -1,4 +1,5 @@
 import gc
+from dataclasses import FrozenInstanceError, is_dataclass
 from importlib import import_module
 from inspect import signature
 
@@ -43,6 +44,10 @@ def test_import_package_surface():
     assert graphrefly.restore_graph is restore_graph
     assert graphrefly.restore_ref is restore_ref
     assert graphrefly.restore_registry is restore_registry
+    assert graphrefly.wire_bridge
+    assert graphrefly.wire_bridge_protobuf
+    assert graphrefly.wire_edge_group
+    assert graphrefly.wire_bridge_ack_driver
     assert issubclass(graphrefly.GraphReflyCheckpointError, GraphReflyValueError)
     assert issubclass(graphrefly.GraphReflyRestoreError, GraphReflyRuntimeError)
     assert issubclass(graphrefly.GraphReflyNoDataError, LookupError)
@@ -72,13 +77,10 @@ def test_public_facade_has_no_equals_substitution_surface():
 def test_public_facade_has_no_raw_wire_bridge_or_wire_edge_group_surface():
     native = import_module("graphrefly._native")
     forbidden = {
-        "WireEdgeGroup",
         "WireEdgeGroupBundle",
         "WireEdgeGroupEdge",
         "WireEdgeGroupOptions",
-        "WireEdgeGroupIssue",
         "WireEdgeGroupIssueCode",
-        "WireEdgeGroupStatus",
         "WireEdgeGroupStatusState",
         "WireBridgeBundle",
         "WireBridgeAck",
@@ -93,17 +95,123 @@ def test_public_facade_has_no_raw_wire_bridge_or_wire_edge_group_surface():
         "WireBridgeOptions",
         "WireBridgePayload",
         "WireBridgeReceipt",
-        "WireBridgeStatus",
         "WireBridgeStatusState",
         "WireEdgeFrame",
         "WireBridgeCommand",
         "WireBridgeEvent",
+        "CanonicalWireBridgeEnvelope",
+        "CanonicalWireEdgeFrame",
+        "PyO3Handle",
     }
 
     for name in forbidden:
         assert name not in graphrefly.__all__
         assert not hasattr(graphrefly, name)
         assert not hasattr(native, name)
+
+
+def test_wire_bridge_public_facade_shape_and_dataclasses():
+    for cls in [
+        graphrefly.WireBridgeStatus,
+        graphrefly.WireBridgeIssue,
+        graphrefly.WireEdgeGroupStatus,
+        graphrefly.WireEdgeGroupIssue,
+        graphrefly.WireBridgeProtobufStatus,
+        graphrefly.WireBridgeProtobufIssue,
+        graphrefly.WireBridgeAckTimeout,
+        graphrefly.WireBridgeAckDriverStatus,
+        graphrefly.WireBridgeAckDriverIssue,
+    ]:
+        assert is_dataclass(cls)
+        if cls is graphrefly.WireBridgeStatus:
+            assert "__dict__" not in cls(state="idle", session_id="s").__class__.__slots__
+
+    status = graphrefly.WireBridgeStatus(state="idle", session_id="s")
+    with pytest.raises(FrozenInstanceError):
+        status.state = "open"  # type: ignore[misc]
+
+    graph = Graph("py-c1-shape")
+    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
+    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
+    group = graphrefly.wire_edge_group(graph, bridge, name="group", inbound_edges=["a"])
+    clock = graph.state(0, name="clock")
+    ack = graphrefly.wire_bridge_ack_driver(
+        graph,
+        bridge,
+        clock=clock,
+        timeout_ms=5,
+        name="ack",
+    )
+
+    assert not hasattr(bridge, "close")
+    assert set(group.inbound_edges) == {"a"}
+    assert protobuf.inbound_bytes.has_value is False
+    assert ack.status.cache().timeout_ms == 5
+    ack.release()
+    group.release()
+    protobuf.release()
+    bridge.release()
+    bridge.release()
+
+
+def test_wire_bridge_public_constructor_guards():
+    graph = Graph("py-c1-guards")
+    bridge = graphrefly.wire_bridge(graph, session_id="s1")
+
+    with pytest.raises(GraphReflyValueError, match="exactly one"):
+        graphrefly.wire_edge_group(graph, bridge)
+    with pytest.raises(GraphReflyValueError, match="exactly one"):
+        graphrefly.wire_edge_group(
+            graph,
+            bridge,
+            inbound_edges=["a"],
+            outbound_edges={"b": graph.state(b"b")},
+        )
+    with pytest.raises(GraphReflyRuntimeError, match="outbound_edges facade is pending"):
+        graphrefly.wire_edge_group(graph, bridge, outbound_edges={"a": graph.state(b"a")})
+
+    bridge.release()
+    with pytest.raises(GraphReflyRuntimeError, match="released"):
+        graphrefly.wire_bridge_protobuf(graph, bridge)
+    with pytest.raises(GraphReflyRuntimeError, match="released"):
+        graphrefly.wire_edge_group(graph, bridge, inbound_edges=["a"])
+    with pytest.raises(GraphReflyRuntimeError, match="released"):
+        graphrefly.wire_bridge_ack_driver(
+            graph,
+            bridge,
+            clock=graph.state(0),
+            timeout_ms=5,
+        )
+
+
+def test_wire_bridge_ack_driver_invalid_clock_is_issue_not_timeout():
+    graph = Graph("py-c1-ack-invalid-clock")
+    bridge = graphrefly.wire_bridge(graph, session_id="s1")
+    clock = graph.state(0, name="clock")
+    ack = graphrefly.wire_bridge_ack_driver(graph, bridge, clock=clock, timeout_ms=5)
+    timeouts: list[graphrefly.WireBridgeAckTimeout] = []
+    issues: list[graphrefly.WireBridgeAckDriverIssue] = []
+
+    def record_timeout(msg: Message[object]) -> None:
+        if isinstance(msg, DataMessage):
+            timeouts.append(msg.value)
+
+    def record_issue(msg: Message[object]) -> None:
+        if isinstance(msg, DataMessage):
+            issues.append(msg.value)
+
+    with ack.timeouts.subscribe(record_timeout), ack.issues.subscribe(record_issue):
+        timeouts.clear()
+        issues.clear()
+        clock.set("bad")  # type: ignore[arg-type]
+
+    assert timeouts == []
+    assert issues == [
+        graphrefly.WireBridgeAckDriverIssue(
+            code="invalid_clock",
+            message="wire_bridge_ack_driver clock facts must be non-negative integers",
+        )
+    ]
 
 
 def test_python_callback_runs_through_rust_graph_and_subscription_observes_wave():

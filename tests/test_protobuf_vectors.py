@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+import graphrefly
 import graphrefly._native as native
 
 AUTHORITY_ROOT = Path(__file__).resolve().parents[2] / "graphrefly"
@@ -67,3 +68,37 @@ def test_d497_canonical_protobuf_vectors(
             assert result.ok is False
             assert result.category == record["errorCategory"]
             assert result.message
+
+
+def test_d523_public_wire_bridge_protobuf_facade_reports_bytes_status_and_issues():
+    bridge_records = _load_vectors(
+        FIXTURE_DIR / "wire_bridge_envelope.v1.jsonl",
+        "WireBridgeEnvelope",
+    )
+    positive = next(record for record in bridge_records if record["id"] == "positive.data.value")
+    negative = next(record for record in bridge_records if record["id"] == "negative.unknown_field")
+    graph = graphrefly.Graph("py-c1a-public")
+    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
+    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
+    statuses: list[graphrefly.WireBridgeProtobufStatus] = []
+    issues: list[graphrefly.WireBridgeProtobufIssue] = []
+
+    def record_status(msg: graphrefly.Message[object]) -> None:
+        if isinstance(msg, graphrefly.DataMessage):
+            statuses.append(msg.value)
+
+    def record_issue(msg: graphrefly.Message[object]) -> None:
+        if isinstance(msg, graphrefly.DataMessage):
+            issues.append(msg.value)
+
+    with (
+        protobuf.status.subscribe(record_status),
+        protobuf.issues.subscribe(record_issue),
+    ):
+        protobuf.inbound_bytes.set(bytes.fromhex(str(positive["hex"])))
+        protobuf.inbound_bytes.set(bytes.fromhex(str(negative["hex"])))
+
+    assert graphrefly.WireBridgeProtobufStatus("inbound", "valid") in statuses
+    assert statuses[-1] == graphrefly.WireBridgeProtobufStatus("inbound", "invalid")
+    assert issues[-1].category == "unknown_field"
+    assert "WireBridgeEnvelope" in issues[-1].message

@@ -89,6 +89,90 @@ type GraphCheckpoint = dict[str, Any]
 type RestoreRegistry = Any
 
 
+@dataclass(frozen=True, slots=True)
+class WireBridgeStatus:
+    state: Literal["idle", "started", "open", "waiting", "closed", "errored", "exhausted"]
+    session_id: str
+    cursor: int = 0
+    next_seq: int = 0
+    pending: int = 0
+    attempts: int = 0
+    acked: int = 0
+    nacked: int = 0
+    errors: int = 0
+    last_seq: int | None = None
+    last_delay_ms: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WireBridgeIssue:
+    code: Literal["bridge_error", "invalid"]
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class WireEdgeGroupIssue:
+    code: Literal[
+        "missing_snapshot",
+        "unknown_edge",
+        "duplicate_dirty",
+        "duplicate_data",
+        "data_before_dirty",
+        "competing_cause",
+        "malformed_frame",
+        "incomplete_cause",
+    ]
+    message: str
+    edge_id: str | None = None
+    cause_id: str | None = None
+    active_cause_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WireEdgeGroupStatus:
+    state: Literal["idle", "collecting", "released", "issues"]
+    expected_edges: tuple[str, ...]
+    active_cause_id: str | None = None
+    dirty: int = 0
+    data: int = 0
+    released: int = 0
+    issues: int = 0
+    last_issue: WireEdgeGroupIssue | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WireBridgeProtobufStatus:
+    direction: Literal["inbound", "outbound"]
+    state: Literal["valid", "invalid"]
+
+
+@dataclass(frozen=True, slots=True)
+class WireBridgeProtobufIssue:
+    direction: Literal["inbound", "outbound"]
+    category: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class WireBridgeAckTimeout:
+    seq: int
+    attempt: int
+    observed_at_ms: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WireBridgeAckDriverStatus:
+    state: Literal["idle", "ready", "issues"]
+    timeout_ms: int
+    last_timeout: WireBridgeAckTimeout | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WireBridgeAckDriverIssue:
+    code: Literal["invalid_clock", "invalid_timeout"]
+    message: str
+
+
 class AsyncRunner(Protocol):
     """Framework-neutral async job runner supplied explicitly by the host."""
 
@@ -285,6 +369,7 @@ class _GraphLifetime:
         self.subscriptions: list[ReferenceType[Subscription]] = []
         self.async_jobs: list[ReferenceType[_AsyncJob]] = []
         self.reentry_queues: list[ReferenceType[GraphReentryQueue]] = []
+        self.resources: list[ReferenceType[object]] = []
 
     @property
     def closed_message(self) -> str:
@@ -344,17 +429,41 @@ class _GraphLifetime:
                 if (live := item()) is not None and live is not queue
             ]
 
+    def register_resource(self, resource: object) -> None:
+        with self._lock:
+            if self.closed:
+                close = getattr(resource, "_close_from_graph", None)
+                if callable(close):
+                    close()
+                raise GraphReflyRuntimeError(self.closed_message)
+            self.resources.append(ref(resource))
+
+    def unregister_resource(self, resource: object) -> None:
+        with self._lock:
+            self.resources = [
+                item
+                for item in self.resources
+                if (live := item()) is not None and live is not resource
+            ]
+
     def close(self, *, suppress_errors: bool = False) -> None:
         with self._lock:
             if self.closed:
                 return
             self.closed = True
+            resources = tuple(item() for item in reversed(self.resources))
             queues = tuple(item() for item in self.reentry_queues)
             jobs = tuple(item() for item in self.async_jobs)
             subscriptions = tuple(item() for item in self.subscriptions)
+            self.resources.clear()
             self.reentry_queues.clear()
             self.async_jobs.clear()
             self.subscriptions.clear()
+        for resource in resources:
+            if resource is not None:
+                close = getattr(resource, "_close_from_graph", None)
+                if callable(close):
+                    close()
         self._close_reentry_queues(queues)
         self._cancel_async_jobs(jobs)
         first_error: BaseException | None = None
@@ -1590,6 +1699,366 @@ class Node[T]:
             raise GraphReflyRuntimeError(self._lifetime.closed_message)
 
 
+class _MappedNode(Node[T]):
+    def __init__(
+        self,
+        native: _native.Node,
+        *,
+        owner_thread: int,
+        lifetime: _GraphLifetime,
+        mapper: Callable[[object], T],
+    ) -> None:
+        super().__init__(native, owner_thread=owner_thread, lifetime=lifetime)
+        self._mapper = mapper
+
+    @overload
+    def cache(self) -> T: ...
+
+    @overload
+    def cache(self, default: U) -> T | U: ...
+
+    def cache(self, default: object = _NO_DEFAULT) -> object:
+        value = super().cache(default)
+        if value is default:
+            return value
+        return self._mapper(value)
+
+    def subscribe(
+        self,
+        callback: Callable[[Message[T]], object],
+        *,
+        on_error: ObserverErrorHandler | None = None,
+    ) -> Subscription:
+        def mapped(message: Message[object]) -> object:
+            if isinstance(message, DataMessage):
+                return callback(DataMessage(self._mapper(message.value)))
+            return callback(cast("Message[T]", message))
+
+        return super().subscribe(mapped, on_error=on_error)
+
+
+def _wire_bridge_status(value: object) -> WireBridgeStatus:
+    data = cast("dict[str, Any]", value)
+    return WireBridgeStatus(
+        state=cast("Any", data["state"]),
+        session_id=str(data["session_id"]),
+        cursor=int(data.get("cursor", 0)),
+        next_seq=int(data.get("next_seq", 0)),
+        pending=int(data.get("pending", 0)),
+        attempts=int(data.get("attempts", 0)),
+        acked=int(data.get("acked", 0)),
+        nacked=int(data.get("nacked", 0)),
+        errors=int(data.get("errors", 0)),
+        last_seq=cast("int | None", data.get("last_seq")),
+        last_delay_ms=cast("int | None", data.get("last_delay_ms")),
+    )
+
+
+def _wire_bridge_issue(value: object) -> WireBridgeIssue:
+    data = cast("dict[str, Any]", value)
+    return WireBridgeIssue(
+        code=cast("Any", data.get("code", "invalid")),
+        message=str(data.get("message", "")),
+    )
+
+
+def _wire_edge_group_issue(value: object) -> WireEdgeGroupIssue:
+    data = cast("dict[str, Any]", value)
+    return WireEdgeGroupIssue(
+        code=cast("Any", data["code"]),
+        message=str(data["message"]),
+        edge_id=cast("str | None", data.get("edge_id")),
+        cause_id=cast("str | None", data.get("cause_id")),
+        active_cause_id=cast("str | None", data.get("active_cause_id")),
+    )
+
+
+def _wire_edge_group_status(value: object) -> WireEdgeGroupStatus:
+    data = cast("dict[str, Any]", value)
+    last_issue = data.get("last_issue")
+    return WireEdgeGroupStatus(
+        state=cast("Any", data["state"]),
+        expected_edges=tuple(cast("Iterable[str]", data.get("expected_edges", ()))),
+        active_cause_id=cast("str | None", data.get("active_cause_id")),
+        dirty=int(data.get("dirty", 0)),
+        data=int(data.get("data", 0)),
+        released=int(data.get("released", 0)),
+        issues=int(data.get("issues", 0)),
+        last_issue=_wire_edge_group_issue(last_issue) if isinstance(last_issue, dict) else None,
+    )
+
+
+def _wire_bridge_protobuf_status(value: object) -> WireBridgeProtobufStatus:
+    data = cast("dict[str, Any]", value)
+    return WireBridgeProtobufStatus(
+        direction=cast("Any", data["direction"]),
+        state=cast("Any", data["state"]),
+    )
+
+
+def _wire_bridge_protobuf_issue(value: object) -> WireBridgeProtobufIssue:
+    data = cast("dict[str, Any]", value)
+    return WireBridgeProtobufIssue(
+        direction=cast("Any", data["direction"]),
+        category=str(data["category"]),
+        message=str(data["message"]),
+    )
+
+
+def _wire_bridge_ack_timeout(value: object) -> WireBridgeAckTimeout:
+    data = cast("dict[str, Any]", value)
+    return WireBridgeAckTimeout(
+        seq=int(data.get("seq", 0)),
+        attempt=int(data.get("attempt", 0)),
+        observed_at_ms=cast("int | None", data.get("observed_at_ms")),
+    )
+
+
+def _wire_bridge_ack_driver_status(value: object) -> WireBridgeAckDriverStatus:
+    data = cast("dict[str, Any]", value)
+    last_timeout = data.get("last_timeout")
+    return WireBridgeAckDriverStatus(
+        state=cast("Any", data.get("state", "idle")),
+        timeout_ms=int(data.get("timeout_ms", 0)),
+        last_timeout=_wire_bridge_ack_timeout(last_timeout)
+        if isinstance(last_timeout, dict)
+        else None,
+    )
+
+
+def _wire_bridge_ack_driver_issue(value: object) -> WireBridgeAckDriverIssue:
+    data = cast("dict[str, Any]", value)
+    return WireBridgeAckDriverIssue(
+        code=cast("Any", data.get("code", "invalid_clock")),
+        message=str(data.get("message", "")),
+    )
+
+
+class WireBridge:
+    def __init__(self, native: _native._WireBridge, graph: Graph) -> None:
+        self._native = native
+        self._owner_thread = graph._owner_thread
+        self._lifetime = graph._lifetime
+        self.status: Node[WireBridgeStatus] = _MappedNode(
+            native.status,
+            owner_thread=self._owner_thread,
+            lifetime=self._lifetime,
+            mapper=_wire_bridge_status,
+        )
+        self.issues: Node[WireBridgeIssue] = _MappedNode(
+            native.issues,
+            owner_thread=self._owner_thread,
+            lifetime=self._lifetime,
+            mapper=_wire_bridge_issue,
+        )
+        self._released = False
+        self._lifetime.register_resource(self)
+
+    def __enter__(self) -> WireBridge:
+        self._check_thread()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.release()
+
+    def release(self) -> None:
+        self._check_thread()
+        if self._released:
+            return
+        self._native.release()
+        self._released = True
+        self._lifetime.unregister_resource(self)
+
+    def _close_from_graph(self) -> None:
+        if self._released:
+            return
+        self._native.release()
+        self._released = True
+
+    def _check_thread(self) -> None:
+        if get_ident() != self._owner_thread:
+            msg = "GraphReFly Python wire bridge facades are bound to their creating thread"
+            raise GraphReflyRuntimeError(msg)
+        if self._lifetime.closed and not self._released:
+            raise GraphReflyRuntimeError(self._lifetime.closed_message)
+
+    def _check_attachable(self) -> None:
+        self._check_thread()
+        if self._released:
+            raise GraphReflyRuntimeError("wire bridge facade is released")
+
+
+class WireBridgeProtobuf:
+    def __init__(self, native: _native._WireBridgeProtobuf, graph: Graph) -> None:
+        self._native = native
+        self._owner_thread = graph._owner_thread
+        self._lifetime = graph._lifetime
+        self.inbound_bytes: Node[bytes] = Node(
+            native.inbound_bytes,
+            owner_thread=self._owner_thread,
+            lifetime=self._lifetime,
+            writable=True,
+        )
+        self.outbound_bytes: Node[bytes] = Node(
+            native.outbound_bytes,
+            owner_thread=self._owner_thread,
+            lifetime=self._lifetime,
+        )
+        self.status: Node[WireBridgeProtobufStatus] = _MappedNode(
+            native.status,
+            owner_thread=self._owner_thread,
+            lifetime=self._lifetime,
+            mapper=_wire_bridge_protobuf_status,
+        )
+        self.issues: Node[WireBridgeProtobufIssue] = _MappedNode(
+            native.issues,
+            owner_thread=self._owner_thread,
+            lifetime=self._lifetime,
+            mapper=_wire_bridge_protobuf_issue,
+        )
+        self._released = False
+        self._lifetime.register_resource(self)
+
+    def __enter__(self) -> WireBridgeProtobuf:
+        self._check_thread()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.release()
+
+    def release(self) -> None:
+        self._check_thread()
+        if self._released:
+            return
+        self._native.release()
+        self._released = True
+        self._lifetime.unregister_resource(self)
+
+    def _close_from_graph(self) -> None:
+        if self._released:
+            return
+        self._native.release()
+        self._released = True
+
+    def _check_thread(self) -> None:
+        if get_ident() != self._owner_thread:
+            msg = "GraphReFly Python protobuf facades are owner-thread bound"
+            raise GraphReflyRuntimeError(msg)
+        if self._lifetime.closed and not self._released:
+            raise GraphReflyRuntimeError(self._lifetime.closed_message)
+
+
+class WireEdgeGroup:
+    def __init__(self, native: _native._WireEdgeGroup, graph: Graph) -> None:
+        self._native = native
+        self._owner_thread = graph._owner_thread
+        self._lifetime = graph._lifetime
+        self.inbound_edges: dict[str, Node[bytes]] = {
+            str(edge_id): Node(
+                native_node,
+                owner_thread=self._owner_thread,
+                lifetime=self._lifetime,
+            )
+            for edge_id, native_node in dict(native.inbound_edges).items()
+        }
+        self.status: Node[WireEdgeGroupStatus] = _MappedNode(
+            native.status,
+            owner_thread=self._owner_thread,
+            lifetime=self._lifetime,
+            mapper=_wire_edge_group_status,
+        )
+        self.issues: Node[WireEdgeGroupIssue] = _MappedNode(
+            native.issues,
+            owner_thread=self._owner_thread,
+            lifetime=self._lifetime,
+            mapper=_wire_edge_group_issue,
+        )
+        self._released = False
+        self._lifetime.register_resource(self)
+
+    def __enter__(self) -> WireEdgeGroup:
+        self._check_thread()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.release()
+
+    def release(self) -> None:
+        self._check_thread()
+        if self._released:
+            return
+        self._native.release()
+        self._released = True
+        self._lifetime.unregister_resource(self)
+
+    def _close_from_graph(self) -> None:
+        if self._released:
+            return
+        self._native.release()
+        self._released = True
+
+    def _check_thread(self) -> None:
+        if get_ident() != self._owner_thread:
+            msg = "GraphReFly Python wire edge groups are owner-thread bound"
+            raise GraphReflyRuntimeError(msg)
+        if self._lifetime.closed and not self._released:
+            raise GraphReflyRuntimeError(self._lifetime.closed_message)
+
+
+class WireBridgeAckDriver:
+    def __init__(self, native: _native._WireBridgeAckDriver, graph: Graph) -> None:
+        self._native = native
+        self._owner_thread = graph._owner_thread
+        self._lifetime = graph._lifetime
+        self.timeouts: Node[WireBridgeAckTimeout] = _MappedNode(
+            native.timeouts,
+            owner_thread=self._owner_thread,
+            lifetime=self._lifetime,
+            mapper=_wire_bridge_ack_timeout,
+        )
+        self.status: Node[WireBridgeAckDriverStatus] = _MappedNode(
+            native.status,
+            owner_thread=self._owner_thread,
+            lifetime=self._lifetime,
+            mapper=_wire_bridge_ack_driver_status,
+        )
+        self.issues: Node[WireBridgeAckDriverIssue] = _MappedNode(
+            native.issues,
+            owner_thread=self._owner_thread,
+            lifetime=self._lifetime,
+            mapper=_wire_bridge_ack_driver_issue,
+        )
+        self._released = False
+        self._lifetime.register_resource(self)
+
+    def __enter__(self) -> WireBridgeAckDriver:
+        self._check_thread()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.release()
+
+    def release(self) -> None:
+        self._check_thread()
+        if self._released:
+            return
+        self._native.release()
+        self._released = True
+        self._lifetime.unregister_resource(self)
+
+    def _close_from_graph(self) -> None:
+        if self._released:
+            return
+        self._native.release()
+        self._released = True
+
+    def _check_thread(self) -> None:
+        if get_ident() != self._owner_thread:
+            raise GraphReflyRuntimeError("GraphReFly Python ack drivers are owner-thread bound")
+        if self._lifetime.closed and not self._released:
+            raise GraphReflyRuntimeError(self._lifetime.closed_message)
+
+
 class Graph:
     """Graph-first authoring facade over the native Rust engine."""
 
@@ -2322,6 +2791,84 @@ def version() -> str:
         return metadata.version("graphrefly")
     except PackageNotFoundError:
         return _VERSION
+
+
+def wire_bridge(graph: Graph, *, session_id: str, name: str | None = None) -> WireBridge:
+    if not isinstance(graph, Graph):
+        raise GraphReflyValueError("wire_bridge requires a graphrefly.Graph")
+    graph._check_thread()
+    if not isinstance(session_id, str) or session_id == "":
+        raise GraphReflyValueError("wire_bridge session_id must be a non-empty str")
+    native = graph._native._wire_bridge(session_id, name)
+    return WireBridge(native, graph)
+
+
+def wire_bridge_protobuf(
+    graph: Graph,
+    bridge: WireBridge,
+    *,
+    name: str | None = None,
+) -> WireBridgeProtobuf:
+    if not isinstance(graph, Graph):
+        raise GraphReflyValueError("wire_bridge_protobuf requires a graphrefly.Graph")
+    graph._check_thread()
+    bridge._check_attachable()
+    if bridge._lifetime is not graph._lifetime:
+        raise GraphReflyRuntimeError("wire_bridge_protobuf bridge must belong to graph")
+    native = graph._native._wire_bridge_protobuf(bridge._native, name)
+    return WireBridgeProtobuf(native, graph)
+
+
+def wire_edge_group(
+    graph: Graph,
+    bridge: WireBridge,
+    *,
+    name: str | None = None,
+    inbound_edges: Iterable[str] | None = None,
+    outbound_edges: dict[str, Node[bytes]] | None = None,
+) -> WireEdgeGroup:
+    if not isinstance(graph, Graph):
+        raise GraphReflyValueError("wire_edge_group requires a graphrefly.Graph")
+    graph._check_thread()
+    bridge._check_attachable()
+    if bridge._lifetime is not graph._lifetime:
+        raise GraphReflyRuntimeError("wire_edge_group bridge must belong to graph")
+    has_inbound = inbound_edges is not None
+    has_outbound = outbound_edges is not None
+    if has_inbound == has_outbound:
+        raise GraphReflyValueError(
+            "wire_edge_group requires exactly one of inbound_edges or outbound_edges"
+        )
+    if outbound_edges is not None:
+        raise GraphReflyRuntimeError(
+            "wire_edge_group outbound_edges facade is pending native bytes-proxy coverage"
+        )
+    edges = list(inbound_edges or ())
+    if not edges or any(not isinstance(edge, str) or edge == "" for edge in edges):
+        raise GraphReflyValueError("wire_edge_group inbound_edges must be non-empty strings")
+    native = graph._native._wire_edge_group(bridge._native, edges, name)
+    return WireEdgeGroup(native, graph)
+
+
+def wire_bridge_ack_driver(
+    graph: Graph,
+    bridge: WireBridge,
+    *,
+    clock: Node[int],
+    timeout_ms: int,
+    name: str | None = None,
+) -> WireBridgeAckDriver:
+    if not isinstance(graph, Graph):
+        raise GraphReflyValueError("wire_bridge_ack_driver requires a graphrefly.Graph")
+    graph._check_thread()
+    bridge._check_attachable()
+    graph._native_node(clock)
+    if bridge._lifetime is not graph._lifetime:
+        raise GraphReflyRuntimeError("wire_bridge_ack_driver bridge must belong to graph")
+    if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int) or timeout_ms < 0:
+        raise GraphReflyValueError("wire_bridge_ack_driver timeout_ms must be non-negative int")
+    native = graph._native._wire_bridge_ack_driver(clock._native, timeout_ms, name)
+    return WireBridgeAckDriver(native, graph)
 
 
 def restore_ref(
