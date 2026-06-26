@@ -367,6 +367,7 @@ class _GraphLifetime:
         self.closed = False
         self.poisoned = False
         self.subscriptions: list[ReferenceType[Subscription]] = []
+        self.retains: list[Retain] = []
         self.async_jobs: list[ReferenceType[_AsyncJob]] = []
         self.reentry_queues: list[ReferenceType[GraphReentryQueue]] = []
         self.resources: list[ReferenceType[object]] = []
@@ -395,6 +396,21 @@ class _GraphLifetime:
                 for item in self.subscriptions
                 if (live := item()) is not None and live is not subscription
             ]
+
+    def register_retain(self, retain: Retain) -> None:
+        should_close = False
+        with self._lock:
+            if self.closed:
+                should_close = True
+            elif retain not in self.retains:
+                self.retains.append(retain)
+        if should_close:
+            retain._close_from_graph()
+            raise GraphReflyRuntimeError(self.closed_message)
+
+    def unregister_retain(self, retain: Retain) -> None:
+        with self._lock:
+            self.retains = [item for item in self.retains if item is not retain]
 
     def register_async_job(self, job: _AsyncJob) -> None:
         cancel = False
@@ -454,7 +470,16 @@ class _GraphLifetime:
             resources = tuple(item() for item in reversed(self.resources))
             queues = tuple(item() for item in self.reentry_queues)
             jobs = tuple(item() for item in self.async_jobs)
-            subscriptions = tuple(item() for item in self.subscriptions)
+            retains = tuple(self.retains)
+            retained_subscriptions = tuple(retain._subscription for retain in retains)
+            weak_subscriptions = tuple(item() for item in self.subscriptions)
+            subscriptions = tuple(
+                subscription
+                for subscription in weak_subscriptions
+                if subscription is not None
+                and all(subscription is not retained for retained in retained_subscriptions)
+            )
+            self.retains.clear()
             self.resources.clear()
             self.reentry_queues.clear()
             self.async_jobs.clear()
@@ -467,13 +492,18 @@ class _GraphLifetime:
         self._close_reentry_queues(queues)
         self._cancel_async_jobs(jobs)
         first_error: BaseException | None = None
+        for retain in retains:
+            try:
+                retain._close_from_graph()
+            except BaseException as error:
+                if first_error is None:
+                    first_error = error
         for subscription in subscriptions:
-            if subscription is not None:
-                try:
-                    subscription._close_from_graph()
-                except BaseException as error:
-                    if first_error is None:
-                        first_error = error
+            try:
+                subscription._close_from_graph()
+            except BaseException as error:
+                if first_error is None:
+                    first_error = error
         if first_error is not None and not suppress_errors:
             raise first_error
 
@@ -788,6 +818,50 @@ class Subscription:
                 _poison_on_fatal(self._lifetime, error)
             raise
         self._closed = True
+
+
+class Retain:
+    """Graph-owned activation root release token."""
+
+    def __init__(
+        self,
+        subscription: Subscription,
+        *,
+        owner_thread: int,
+        lifetime: _GraphLifetime,
+    ) -> None:
+        self._subscription = subscription
+        self._owner_thread = owner_thread
+        self._lifetime = lifetime
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def release(self) -> None:
+        self._check_thread()
+        if not self._closed:
+            self._subscription.unsubscribe()
+            self._closed = True
+            self._lifetime.unregister_retain(self)
+
+    def __enter__(self) -> Retain:
+        self._check_thread()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.release()
+
+    def _close_from_graph(self) -> None:
+        if not self._closed:
+            self._subscription._close_from_graph()
+            self._closed = True
+
+    def _check_thread(self) -> None:
+        if get_ident() != self._owner_thread:
+            msg = "GraphReFly Python retain handles are bound to their creating thread in v0"
+            raise GraphReflyRuntimeError(msg)
 
 
 class _AsyncCompletionGate:
@@ -2195,6 +2269,34 @@ class Graph:
                 _token=_GRAPH_REENTRY_QUEUE_TOKEN,
             )
         return self._reentry_queue
+
+    def retain(self, node: Node[T], *, reason: str | None = None) -> Retain:
+        """Keep a graph-local node active until the returned retain token is released."""
+
+        self._check_thread()
+        if reason is not None and not isinstance(reason, str):
+            msg = "retain reason must be a string when provided"
+            raise GraphReflyValueError(msg)
+        native = self._native_node(node)
+
+        try:
+            subscription = Subscription(
+                native.subscribe(lambda _kind, _value: None),
+                owner_thread=self._owner_thread,
+                lifetime=self._lifetime,
+            )
+            self._lifetime.register(subscription)
+            retain = Retain(
+                subscription,
+                owner_thread=self._owner_thread,
+                lifetime=self._lifetime,
+            )
+            self._lifetime.register_retain(retain)
+            return retain
+        except RuntimeError as error:
+            raise GraphReflyRuntimeError(str(error)) from error
+        except BaseException as error:
+            _poison_on_fatal(self._lifetime, error)
 
     def state(self, value: T, name: str | None = None) -> Node[T]:
         self._check_thread()

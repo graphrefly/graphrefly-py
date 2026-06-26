@@ -34,6 +34,7 @@ The Python-owned facade exposes:
 - `Node[T]`
 - `Ctx`
 - `PullContext`
+- `Retain`
 - `Subscription`
 - `DataMessage[T]`, `ErrorMessage`, `ControlMessage`, `Message[T]`, and `GraphEvent`
 - `SENTINEL`, the Python protocol marker used inside raw ctx `wave_data` for INVALIDATE/no-DATA projection
@@ -41,10 +42,10 @@ The Python-owned facade exposes:
 - explicit-Graph decorator sugar for `producer`, `derived`, and `effect`
 - advanced `Ctx` helpers for dep DATA presence/value reads, raw `wave_data`, `terminal(index)`, `emit`, per-node `state`, `on_invalidate`, `on_deactivation`, read-only `pull` / `pull_params()`, narrow `request_pull(...)` / `request_pull_next(...)`, and `ctx.rewire_next`
 - `Node.set`, `Node.cache(default=...)`, `Node.has_value`, `Node.status`, `Node.subscribe`
-- graph-owned control convenience: `Graph.pause(node, lock_id)`, `Graph.resume(node, lock_id)`, and `Graph.invalidate(node)`
+- graph-owned activation and control convenience: `Graph.retain(node, reason=...)`, `Graph.pause(node, lock_id)`, `Graph.resume(node, lock_id)`, and `Graph.invalidate(node)`
 - `Graph.describe` and `Graph.observe`
 - framework-neutral async runner helpers: `from_awaitable(graph, runner, factory, ...)`, `from_async_iter(graph, runner, factory, ...)`, `async_node(graph, deps, runner, callback, ...)`, the `AsyncRunner` protocol, `Graph.reentry_queue().wrap_runner(runner)` for explicit owner-thread completion draining, and optional caller-owned `asyncio_runner(...)`, `trio_runner(nursery)`, and `anyio_runner(task_group)` adapters
-- `Graph.close`, `Graph.closed`, and `Subscription.closed`
+- `Graph.close`, `Graph.closed`, `Retain.closed`, and `Subscription.closed`
 
 ## Boundary Notes
 
@@ -56,7 +57,8 @@ The Python-owned facade exposes:
 - Pull-mode nodes use `Graph.node(..., pull_id="name", pausable=True | "resumeAll")`. During a PULL invocation, `ctx.pull` is a read-only `PullContext` and `ctx.pull_params(default=None)` reads the demand params. Downstream nodes may issue only narrow PULL demand via `ctx.request_pull(...)` or boundary-deferred `ctx.request_pull_next(...)`; these helpers do not expose arbitrary message construction.
 - Deferred topology mutation uses `ctx.rewire_next.subscribe_dep(dep, callback)`, `ctx.rewire_next.unsubscribe_dep(dep, callback)`, or `ctx.rewire_next.replace_deps(deps, callback)`. The callback is required so each dep-shape change explicitly re-declares the positional fn/deps pairing. This is a narrow facade over the existing deferred rewire protocol, not raw `ctx.up`, raw message construction, cross-graph rewire, or immediate in-fn topology mutation.
 - `Node.cache()` returns cached DATA, including `None`, or raises `GraphReflyNoDataError` when no DATA is present. Use `Node.cache(default=...)` or `Node.has_value` for non-exceptional absence handling.
-- `Graph.close()` and `with Graph(...)` are Python host lifetime scopes. They release facade-created subscriptions/observers and reject later facade use without emitting protocol `TEARDOWN` or `COMPLETE`. Fatal host-boundary aborts automatically close/poison the facade after propagating the original fatal exception.
+- `Graph.retain(node, reason=...)` is a graph-owned activation root for graph-local helper nodes. It returns a dedicated `Retain` release token, not an observer `Subscription`; dropping that token does not release the retain root, while `Retain.release()` and `Graph.close()` do. It does not expose callbacks, raw native handles, observer errors, or protocol terminal messages.
+- `Graph.close()` and `with Graph(...)` are Python host lifetime scopes. They release facade-created subscriptions/observers, graph-owned retain roots, and reject later facade use without emitting protocol `TEARDOWN` or `COMPLETE`. Fatal host-boundary aborts automatically close/poison the facade after propagating the original fatal exception.
 - Async work enters only through the explicit runner helpers. Ordinary `Graph.node`, `Graph.derived`, `Graph.effect`, `Graph.batch`, `Node.subscribe`, `Graph.observe`, lifecycle hooks, and rewire callbacks remain synchronous and reject awaitables. The core API does not own an asyncio loop, Trio nursery, AnyIO task group, background thread, portal, or hidden pump; `asyncio_runner(...)`, `trio_runner(nursery)`, and `anyio_runner(task_group)` are only convenience adapters over caller-owned runtime objects. Trio/AnyIO convenience adapters must spawn and cancel from the same thread that created the adapter; if the runtime lives on another thread, supply a custom `AsyncRunner` with that runtime's thread-safe ingress. When a runner completes on a non-owner thread, use the graph-owned re-entry queue: `queue = graph.reentry_queue()`, pass `queue.wrap_runner(runner)` into the async helper, then call `queue.drain(max_items=None)` from the graph owner thread. The queue accepts only GraphReFly-owned private completions; it is not a public callable enqueue or graph mutation channel.
 - Node callback failures become graph `ERROR` observations wrapped as `GraphCallbackError`. Subscribe/observe callback failures stay at the Python observer boundary as `SubscriberCallbackError`. Public API value/runtime failures use `GraphReflyValueError` and `GraphReflyRuntimeError`.
 - Fatal Python `BaseException` process-control failures such as `KeyboardInterrupt`, `SystemExit`, and `GeneratorExit` propagate back to the initiating Python caller instead of becoming graph `ERROR` or `SubscriberCallbackError`. Per D431/D436, a fatal first observed after native batch commit has begun aborts the host boundary but does not claim full transactional rollback of graph effects already committed; the facade is then closed/poisoned and later use is rejected.

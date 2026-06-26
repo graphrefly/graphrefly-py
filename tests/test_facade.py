@@ -22,6 +22,7 @@ from graphrefly import (
     RestoreContext,
     RestoreDescriptor,
     RestoreRef,
+    Retain,
     RewireNext,
     SubscriberCallbackError,
     Subscription,
@@ -38,6 +39,7 @@ def test_import_package_surface():
     assert graphrefly.DataIssue("missing", "reserved").code == "missing"
     assert graphrefly.Ctx is Ctx
     assert graphrefly.RewireNext is RewireNext
+    assert graphrefly.Retain is Retain
     assert graphrefly.RestoreContext is RestoreContext
     assert graphrefly.RestoreDescriptor is RestoreDescriptor
     assert graphrefly.RestoreRef is RestoreRef
@@ -1141,6 +1143,104 @@ def test_graph_close_releases_facade_subscriptions_and_rejects_later_use():
         source.cache()
     with pytest.raises(GraphReflyRuntimeError, match="graph is closed"):
         graph.state(2, name="after_close")
+
+
+def test_graph_retain_keeps_node_active_after_returned_handle_is_dropped():
+    graph = Graph("py-retain-drop-smoke")
+    source = graph.state(1, name="source")
+    runs: list[int] = []
+
+    def double(value: int) -> int:
+        runs.append(value)
+        return value * 2
+
+    retained = graph.derived([source], double, name="retained")
+    graph.retain(retained, reason="test.keepalive")
+    gc.collect()
+
+    assert retained.cache() == 2
+    source.set(2)
+
+    assert runs == [1, 2]
+    assert retained.cache() == 4
+    graph.close()
+
+
+def test_graph_retain_release_is_idempotent_and_stops_activation_root():
+    graph = Graph("py-retain-release-smoke")
+    source = graph.state(1, name="source")
+    runs: list[int] = []
+
+    retained = graph.derived(
+        [source],
+        lambda value: runs.append(value) or value,
+        name="retained",
+    )
+    keepalive = graph.retain(retained)
+
+    assert runs == [1]
+    keepalive.release()
+    keepalive.release()
+    source.set(2)
+
+    assert keepalive.closed is True
+    assert runs == [1]
+
+
+def test_graph_retain_close_releases_handle_and_rejects_cross_graph_nodes():
+    graph = Graph("py-retain-close-smoke")
+    other = Graph("py-retain-other")
+    source = graph.state(1, name="source")
+    retained = graph.derived([source], lambda value: value, name="retained")
+    keepalive = graph.retain(retained)
+
+    assert keepalive.closed is False
+    with pytest.raises(GraphReflyRuntimeError, match="node must belong"):
+        other.retain(retained)
+    graph.close()
+
+    assert keepalive.closed is True
+    other.close()
+
+
+def test_graph_retain_is_release_token_not_observer_subscription():
+    graph = Graph("py-retain-shape-smoke")
+    node = graph.state(1, name="source")
+    keepalive = graph.retain(node)
+
+    assert isinstance(keepalive, Retain)
+    assert not isinstance(keepalive, Subscription)
+    assert not hasattr(keepalive, "unsubscribe")
+    assert not hasattr(keepalive, "callback_errors")
+
+    keepalive.release()
+
+
+def test_graph_retain_context_manager_releases_activation_root():
+    graph = Graph("py-retain-context-smoke")
+    source = graph.state(1, name="source")
+    runs: list[int] = []
+    retained = graph.derived(
+        [source],
+        lambda value: runs.append(value) or value,
+        name="retained",
+    )
+
+    with graph.retain(retained) as keepalive:
+        assert keepalive.closed is False
+        assert runs == [1]
+
+    assert keepalive.closed is True
+    source.set(2)
+    assert runs == [1]
+
+
+def test_graph_retain_rejects_non_string_reason():
+    graph = Graph("py-retain-reason-smoke")
+    node = graph.state(1, name="source")
+
+    with pytest.raises(GraphReflyValueError, match="retain reason"):
+        graph.retain(node, reason=object())  # type: ignore[arg-type]
 
 
 def test_dropped_subscription_handle_releases_native_subscription():
