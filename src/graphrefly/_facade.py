@@ -422,6 +422,31 @@ def _close_lifecycle_resource(resource: object) -> None:
         close()
 
 
+class _PublicSubscriptionOwner(Protocol):
+    def _register_public_subscription(self, subscription: Subscription) -> None: ...
+
+
+class _FacadePublicSubscriptions:
+    def __init__(self) -> None:
+        self._public_subscriptions: list[ReferenceType[Subscription]] = []
+
+    def _register_public_subscription(self, subscription: Subscription) -> None:
+        self._public_subscriptions.append(ref(subscription))
+
+    def _close_public_subscriptions(self) -> None:
+        subscriptions = tuple(item() for item in self._public_subscriptions)
+        self._public_subscriptions.clear()
+        first_error: BaseException | None = None
+        for subscription in subscriptions:
+            if subscription is not None:
+                first_error = _record_lifecycle_error(
+                    first_error,
+                    subscription._close_from_graph,
+                )
+        if first_error is not None:
+            raise first_error
+
+
 def _record_lifecycle_error(
     first_error: BaseException | None,
     cleanup: Callable[[], object],
@@ -1718,11 +1743,13 @@ class Node[T]:
         owner_thread: int,
         lifetime: _GraphLifetime,
         writable: bool = False,
+        subscription_owner: _PublicSubscriptionOwner | None = None,
     ) -> None:
         self._native = native
         self._owner_thread = owner_thread
         self._lifetime = lifetime
         self._writable = writable
+        self._subscription_owner = subscription_owner
 
     def set(self, value: T) -> None:
         self._check_thread()
@@ -1809,6 +1836,8 @@ class Node[T]:
                 callback_errors=callback_errors,
             )
             self._lifetime.register(subscription)
+            if self._subscription_owner is not None:
+                self._subscription_owner._register_public_subscription(subscription)
             return subscription
         except RuntimeError as error:
             raise GraphReflyRuntimeError(str(error)) from error
@@ -1831,8 +1860,14 @@ class _MappedNode(Node[T]):
         owner_thread: int,
         lifetime: _GraphLifetime,
         mapper: Callable[[object], T],
+        subscription_owner: _PublicSubscriptionOwner | None = None,
     ) -> None:
-        super().__init__(native, owner_thread=owner_thread, lifetime=lifetime)
+        super().__init__(
+            native,
+            owner_thread=owner_thread,
+            lifetime=lifetime,
+            subscription_owner=subscription_owner,
+        )
         self._mapper = mapper
 
     @overload
@@ -2050,13 +2085,14 @@ class WireBridge:
             raise first_error
 
 
-class WireBridgeProtobuf:
+class WireBridgeProtobuf(_FacadePublicSubscriptions):
     def __init__(
         self,
         native: _native._WireBridgeProtobuf,
         graph: Graph,
         bridge: WireBridge,
     ) -> None:
+        _FacadePublicSubscriptions.__init__(self)
         self._native = native
         self._owner_thread = graph._owner_thread
         self._lifetime = graph._lifetime
@@ -2067,23 +2103,27 @@ class WireBridgeProtobuf:
             owner_thread=self._owner_thread,
             lifetime=self._lifetime,
             writable=True,
+            subscription_owner=self,
         )
         self.outbound_bytes: Node[bytes] = Node(
             native.outbound_bytes,
             owner_thread=self._owner_thread,
             lifetime=self._lifetime,
+            subscription_owner=self,
         )
         self.status: Node[WireBridgeProtobufStatus] = _MappedNode(
             native.status,
             owner_thread=self._owner_thread,
             lifetime=self._lifetime,
             mapper=_wire_bridge_protobuf_status,
+            subscription_owner=self,
         )
         self.issues: Node[WireBridgeProtobufIssue] = _MappedNode(
             native.issues,
             owner_thread=self._owner_thread,
             lifetime=self._lifetime,
             mapper=_wire_bridge_protobuf_issue,
+            subscription_owner=self,
         )
         self._released = False
         self._bridge._register_child(self)
@@ -2100,7 +2140,8 @@ class WireBridgeProtobuf:
         self._check_thread()
         if self._released:
             return
-        first_error = _record_lifecycle_error(None, self._scope.close)
+        first_error = _record_lifecycle_error(None, self._close_public_subscriptions)
+        first_error = _record_lifecycle_error(first_error, self._scope.close)
         self._native.release()
         self._released = True
         self._bridge._unregister_child(self)
@@ -2111,7 +2152,8 @@ class WireBridgeProtobuf:
     def _close_from_graph(self) -> None:
         if self._released:
             return
-        first_error = _record_lifecycle_error(None, self._scope.close)
+        first_error = _record_lifecycle_error(None, self._close_public_subscriptions)
+        first_error = _record_lifecycle_error(first_error, self._scope.close)
         self._native.release()
         self._released = True
         if first_error is not None:
@@ -2120,7 +2162,8 @@ class WireBridgeProtobuf:
     def _release_from_bridge(self) -> None:
         if self._released:
             return
-        first_error = _record_lifecycle_error(None, self._scope.close)
+        first_error = _record_lifecycle_error(None, self._close_public_subscriptions)
+        first_error = _record_lifecycle_error(first_error, self._scope.close)
         self._native.release()
         self._released = True
         self._lifetime.unregister_resource(self)
@@ -2135,13 +2178,14 @@ class WireBridgeProtobuf:
             raise GraphReflyRuntimeError(self._lifetime.closed_message)
 
 
-class WireEdgeGroup:
+class WireEdgeGroup(_FacadePublicSubscriptions):
     def __init__(
         self,
         native: _native._WireEdgeGroup,
         graph: Graph,
         bridge: WireBridge,
     ) -> None:
+        _FacadePublicSubscriptions.__init__(self)
         self._native = native
         self._owner_thread = graph._owner_thread
         self._lifetime = graph._lifetime
@@ -2152,6 +2196,7 @@ class WireEdgeGroup:
                 native_node,
                 owner_thread=self._owner_thread,
                 lifetime=self._lifetime,
+                subscription_owner=self,
             )
             for edge_id, native_node in dict(native.inbound_edges).items()
         }
@@ -2160,12 +2205,14 @@ class WireEdgeGroup:
             owner_thread=self._owner_thread,
             lifetime=self._lifetime,
             mapper=_wire_edge_group_status,
+            subscription_owner=self,
         )
         self.issues: Node[WireEdgeGroupIssue] = _MappedNode(
             native.issues,
             owner_thread=self._owner_thread,
             lifetime=self._lifetime,
             mapper=_wire_edge_group_issue,
+            subscription_owner=self,
         )
         self._released = False
         self._bridge._register_child(self)
@@ -2182,7 +2229,8 @@ class WireEdgeGroup:
         self._check_thread()
         if self._released:
             return
-        first_error = _record_lifecycle_error(None, self._scope.close)
+        first_error = _record_lifecycle_error(None, self._close_public_subscriptions)
+        first_error = _record_lifecycle_error(first_error, self._scope.close)
         self._native.release()
         self._released = True
         self._bridge._unregister_child(self)
@@ -2193,7 +2241,8 @@ class WireEdgeGroup:
     def _close_from_graph(self) -> None:
         if self._released:
             return
-        first_error = _record_lifecycle_error(None, self._scope.close)
+        first_error = _record_lifecycle_error(None, self._close_public_subscriptions)
+        first_error = _record_lifecycle_error(first_error, self._scope.close)
         self._native.release()
         self._released = True
         if first_error is not None:
@@ -2202,7 +2251,8 @@ class WireEdgeGroup:
     def _release_from_bridge(self) -> None:
         if self._released:
             return
-        first_error = _record_lifecycle_error(None, self._scope.close)
+        first_error = _record_lifecycle_error(None, self._close_public_subscriptions)
+        first_error = _record_lifecycle_error(first_error, self._scope.close)
         self._native.release()
         self._released = True
         self._lifetime.unregister_resource(self)
@@ -2217,13 +2267,14 @@ class WireEdgeGroup:
             raise GraphReflyRuntimeError(self._lifetime.closed_message)
 
 
-class WireBridgeAckDriver:
+class WireBridgeAckDriver(_FacadePublicSubscriptions):
     def __init__(
         self,
         native: _native._WireBridgeAckDriver,
         graph: Graph,
         bridge: WireBridge,
     ) -> None:
+        _FacadePublicSubscriptions.__init__(self)
         self._native = native
         self._owner_thread = graph._owner_thread
         self._lifetime = graph._lifetime
@@ -2234,18 +2285,21 @@ class WireBridgeAckDriver:
             owner_thread=self._owner_thread,
             lifetime=self._lifetime,
             mapper=_wire_bridge_ack_timeout,
+            subscription_owner=self,
         )
         self.status: Node[WireBridgeAckDriverStatus] = _MappedNode(
             native.status,
             owner_thread=self._owner_thread,
             lifetime=self._lifetime,
             mapper=_wire_bridge_ack_driver_status,
+            subscription_owner=self,
         )
         self.issues: Node[WireBridgeAckDriverIssue] = _MappedNode(
             native.issues,
             owner_thread=self._owner_thread,
             lifetime=self._lifetime,
             mapper=_wire_bridge_ack_driver_issue,
+            subscription_owner=self,
         )
         self._released = False
         self._scope.adopt(
@@ -2277,7 +2331,8 @@ class WireBridgeAckDriver:
         self._check_thread()
         if self._released:
             return
-        first_error = _record_lifecycle_error(None, self._scope.close)
+        first_error = _record_lifecycle_error(None, self._close_public_subscriptions)
+        first_error = _record_lifecycle_error(first_error, self._scope.close)
         self._native.release()
         self._released = True
         self._bridge._unregister_child(self)
@@ -2288,7 +2343,8 @@ class WireBridgeAckDriver:
     def _close_from_graph(self) -> None:
         if self._released:
             return
-        first_error = _record_lifecycle_error(None, self._scope.close)
+        first_error = _record_lifecycle_error(None, self._close_public_subscriptions)
+        first_error = _record_lifecycle_error(first_error, self._scope.close)
         self._native.release()
         self._released = True
         if first_error is not None:
@@ -2297,7 +2353,8 @@ class WireBridgeAckDriver:
     def _release_from_bridge(self) -> None:
         if self._released:
             return
-        first_error = _record_lifecycle_error(None, self._scope.close)
+        first_error = _record_lifecycle_error(None, self._close_public_subscriptions)
+        first_error = _record_lifecycle_error(first_error, self._scope.close)
         self._native.release()
         self._released = True
         self._lifetime.unregister_resource(self)

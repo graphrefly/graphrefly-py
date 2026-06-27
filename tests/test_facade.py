@@ -497,6 +497,94 @@ def test_d542_bridge_release_cascades_children_and_late_child_release_is_noop():
         graphrefly.wire_bridge_protobuf(graph, bridge)
 
 
+def test_b100_explicit_child_release_closes_live_public_child_observers():
+    graph = Graph("py-b100-explicit-child-release-live-observers")
+    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
+    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
+    group = graphrefly.wire_edge_group(graph, bridge, inbound_edges=["edge-a"], name="group")
+    ack = graphrefly.wire_bridge_ack_driver(
+        graph,
+        bridge,
+        clock=graph.state(0, name="clock"),
+        timeout_ms=5,
+        name="ack",
+    )
+
+    protobuf_sub = protobuf.outbound_bytes.subscribe(lambda _msg: None)
+    group_status_sub = group.status.subscribe(lambda _msg: None)
+    group_edge_sub = group.inbound_edges["edge-a"].subscribe(lambda _msg: None)
+    ack_sub = ack.timeouts.subscribe(lambda _msg: None)
+
+    group.release()
+    ack.release()
+    protobuf.release()
+
+    assert group_status_sub.closed is True
+    assert group_edge_sub.closed is True
+    assert ack_sub.closed is True
+    assert protobuf_sub.closed is True
+    assert group._released is True  # noqa: SLF001
+    assert ack._released is True  # noqa: SLF001
+    assert protobuf._released is True  # noqa: SLF001
+    assert not _describe_has_prefix(
+        graph.describe(),
+        "group/",
+        "group.",
+        "ack/",
+        "ack.",
+        "protobuf/",
+    )
+
+
+def test_b100_deferred_live_graph_observer_still_blocks_child_release():
+    graph = Graph("py-b100-deferred-live-graph-observer")
+    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
+    group = graphrefly.wire_edge_group(graph, bridge, inbound_edges=["edge-a"], name="group")
+    graph_events: list[GraphEvent] = []
+
+    graph_observer = graph.observe(graph_events.append)
+    group_status_sub = group.status.subscribe(lambda _msg: None)
+
+    with pytest.raises(BaseException, match="still has live subscribers") as error:
+        group.release()
+
+    assert error.type.__name__ == "PanicException"
+    assert group_status_sub.closed is True
+    assert graph_observer.closed is False
+
+    graph_observer.unsubscribe()
+    group.release()
+
+
+def test_b100_bridge_cascade_release_closes_live_public_child_observers():
+    graph = Graph("py-b100-bridge-cascade-live-child-observers")
+    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
+    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
+    group = graphrefly.wire_edge_group(graph, bridge, inbound_edges=["edge-a"], name="group")
+    ack = graphrefly.wire_bridge_ack_driver(
+        graph,
+        bridge,
+        clock=graph.state(0, name="clock"),
+        timeout_ms=5,
+        name="ack",
+    )
+
+    protobuf_sub = protobuf.status.subscribe(lambda _msg: None)
+    group_sub = group.issues.subscribe(lambda _msg: None)
+    ack_sub = ack.status.subscribe(lambda _msg: None)
+
+    bridge.release()
+
+    assert protobuf_sub.closed is True
+    assert group_sub.closed is True
+    assert ack_sub.closed is True
+    assert protobuf._released is True  # noqa: SLF001
+    assert group._released is True  # noqa: SLF001
+    assert ack._released is True  # noqa: SLF001
+    assert bridge._released is True  # noqa: SLF001
+    assert bridge._children == []  # noqa: SLF001
+
+
 def test_d542_wire_edge_group_outbound_non_bytes_is_public_issue_status():
     graph = Graph("py-c1-outbound-non-bytes")
     bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
