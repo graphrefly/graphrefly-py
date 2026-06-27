@@ -337,6 +337,47 @@ def test_recent_replay_after_release_is_issue_not_second_release() -> None:
     assert statuses[-1].released == 2
 
 
+def test_failed_cause_replay_is_issue_not_resurrection() -> None:
+    _graph, protobuf, group = _group_graph("py-c1b-failed-replay")
+    a_values: list[object] = []
+    b_values: list[object] = []
+    issues: list[object] = []
+    statuses: list[object] = []
+
+    with (
+        group.inbound_edges["a"].subscribe(_record_data(a_values)),
+        group.inbound_edges["b"].subscribe(_record_data(b_values)),
+        group.issues.subscribe(_record_data(issues)),
+        group.status.subscribe(_record_data(statuses)),
+    ):
+        _send_frames(
+            protobuf,
+            [
+                ("dirty", "a", "c1", None),
+                ("dirty", "b", "c1", None),
+                ("data", "a", "c1", b"A1"),
+                ("data", "a", "c1", b"A2"),
+                ("data", "b", "c1", b"B1"),
+                ("dirty", "a", "c1", None),
+                ("dirty", "b", "c1", None),
+                ("data", "a", "c1", b"A3"),
+                ("data", "b", "c1", b"B2"),
+            ],
+        )
+
+    assert a_values == []
+    assert b_values == []
+    codes = [issue.code for issue in issues if isinstance(issue, graphrefly.WireEdgeGroupIssue)]
+    assert "duplicate_data" in codes
+    assert "incomplete_cause" in codes
+    assert statuses[-1].state == "issues"
+    assert statuses[-1].active_cause_id is None
+    assert statuses[-1].dirty == 0
+    assert statuses[-1].data == 0
+    assert group.issues.status != "errored"
+    assert group.status.status != "errored"
+
+
 def test_replay_tombstone_is_bounded_recent_memory_without_public_limit() -> None:
     graph = Graph("py-c1b-bounded-replay")
     bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")

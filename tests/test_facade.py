@@ -85,6 +85,30 @@ def _ack_envelope(seq: int, ack_for_seq: int, *, session_id: str = "s1") -> byte
     )
 
 
+def _wire_edge_envelope(
+    seq: int,
+    *,
+    edge_id: str,
+    cause_id: str,
+    value: bytes | None = None,
+    session_id: str = "s1",
+) -> bytes:
+    frame = [
+        _varint_field(1, 1 if value is None else 2),
+        _string_field(2, edge_id),
+        _string_field(3, cause_id),
+    ]
+    if value is not None:
+        frame.append(_bytes_field(4, value))
+    return b"".join(
+        [
+            _string_field(1, session_id),
+            _message_field(2, _metadata(seq, session_id)),
+            _message_field(4, _message_field(2, b"".join(frame))),
+        ]
+    )
+
+
 def _record_data(target: list[Any]):
     def record(message: Message[object]) -> None:
         if isinstance(message, DataMessage):
@@ -633,25 +657,51 @@ def test_d559_wire_edge_group_outbound_bytearray_is_copied_to_bytes():
     graph = Graph("py-d559-bytearray-copy")
     bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
     protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
-    source = graph.state(bytearray(b"ok"), name="edge-source")
+    mutable = bytearray(b"first")
+    source = graph.state(mutable, name="edge-source")
+    trigger = graph.state(b"trigger-0", name="edge-trigger")
     graphrefly.wire_edge_group(
         graph,
         bridge,
-        outbound_edges={"edge-a": source},
+        outbound_edges={"edge-a": source, "edge-b": trigger},
         name="group",
     )
     outbound: list[bytes] = []
-    mutable = bytearray(b"first")
 
     with protobuf.outbound_bytes.subscribe(_record_data(outbound)):
         outbound.clear()
-        source.set(mutable)
         mutable[:] = b"later"
+        trigger.set(b"trigger-1")
 
     assert outbound
     assert all(isinstance(value, bytes) for value in outbound)
     assert any(b"first" in value for value in outbound)
     assert not any(b"later" in value for value in outbound)
+
+
+def test_d559_wire_edge_group_inbound_bytearray_is_copied_to_bytes():
+    graph = Graph("py-d559-inbound-bytearray-copy")
+    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
+    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
+    group = graphrefly.wire_edge_group(
+        graph,
+        bridge,
+        inbound_edges=["edge-a"],
+        name="group",
+    )
+    released: list[bytes] = []
+    dirty = bytearray(_wire_edge_envelope(1, edge_id="edge-a", cause_id="c1"))
+    data = bytearray(
+        _wire_edge_envelope(2, edge_id="edge-a", cause_id="c1", value=b"first")
+    )
+
+    with group.inbound_edges["edge-a"].subscribe(_record_data(released)):
+        protobuf.inbound_bytes.set(dirty)
+        protobuf.inbound_bytes.set(data)
+        dirty[:] = b"later-dirty"
+        data[:] = b"later-data"
+
+    assert released == [b"first"]
 
 
 def test_python_callback_runs_through_rust_graph_and_subscription_observes_wave():
