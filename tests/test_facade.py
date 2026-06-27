@@ -629,6 +629,31 @@ def test_d542_wire_edge_group_outbound_non_bytes_is_public_issue_status():
     assert statuses[-1].last_issue == issues[-1]
 
 
+def test_d559_wire_edge_group_outbound_bytearray_is_copied_to_bytes():
+    graph = Graph("py-d559-bytearray-copy")
+    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
+    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
+    source = graph.state(bytearray(b"ok"), name="edge-source")
+    graphrefly.wire_edge_group(
+        graph,
+        bridge,
+        outbound_edges={"edge-a": source},
+        name="group",
+    )
+    outbound: list[bytes] = []
+    mutable = bytearray(b"first")
+
+    with protobuf.outbound_bytes.subscribe(_record_data(outbound)):
+        outbound.clear()
+        source.set(mutable)
+        mutable[:] = b"later"
+
+    assert outbound
+    assert all(isinstance(value, bytes) for value in outbound)
+    assert any(b"first" in value for value in outbound)
+    assert not any(b"later" in value for value in outbound)
+
+
 def test_python_callback_runs_through_rust_graph_and_subscription_observes_wave():
     seen: list[Message[object]] = []
     graph = Graph("py-smoke")
