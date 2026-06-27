@@ -536,24 +536,34 @@ def test_b100_explicit_child_release_closes_live_public_child_observers():
     )
 
 
-def test_b100_deferred_live_graph_observer_still_blocks_child_release():
-    graph = Graph("py-b100-deferred-live-graph-observer")
+def test_b100_live_graph_observer_survives_child_release():
+    graph = Graph("py-b100-live-graph-observer-child-release")
     bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
     group = graphrefly.wire_edge_group(graph, bridge, inbound_edges=["edge-a"], name="group")
+    unrelated = graph.state(0, name="unrelated")
     graph_events: list[GraphEvent] = []
 
     graph_observer = graph.observe(graph_events.append)
     group_status_sub = group.status.subscribe(lambda _msg: None)
 
-    with pytest.raises(BaseException, match="still has live subscribers") as error:
-        group.release()
+    group.release()
+    unrelated.set(1)
 
-    assert error.type.__name__ == "PanicException"
     assert group_status_sub.closed is True
     assert graph_observer.closed is False
-
     graph_observer.unsubscribe()
-    group.release()
+    assert group._released is True  # noqa: SLF001
+    assert not _describe_has_prefix(graph.describe(), "group/", "group.")
+    assert any(
+        event.path == "unrelated" and event.message == DataMessage(1)
+        for event in graph_events
+    )
+    assert not any(
+        event.path.startswith("group")
+        and isinstance(event.message, (ControlMessage, ErrorMessage))
+        and event.message.kind in {"COMPLETE", "ERROR", "TEARDOWN"}
+        for event in graph_events
+    )
 
 
 def test_b100_bridge_cascade_release_closes_live_public_child_observers():
