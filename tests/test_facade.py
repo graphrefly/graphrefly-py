@@ -657,8 +657,7 @@ def test_d559_wire_edge_group_outbound_bytearray_is_copied_to_bytes():
     graph = Graph("py-d559-bytearray-copy")
     bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
     protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
-    mutable = bytearray(b"first")
-    source = graph.state(mutable, name="edge-source")
+    source = graph.state(b"initial", name="edge-source")
     trigger = graph.state(b"trigger-0", name="edge-trigger")
     graphrefly.wire_edge_group(
         graph,
@@ -670,6 +669,9 @@ def test_d559_wire_edge_group_outbound_bytearray_is_copied_to_bytes():
 
     with protobuf.outbound_bytes.subscribe(_record_data(outbound)):
         outbound.clear()
+        mutable = bytearray(b"first")
+        source.set(mutable)
+        assert not outbound
         mutable[:] = b"later"
         trigger.set(b"trigger-1")
 
