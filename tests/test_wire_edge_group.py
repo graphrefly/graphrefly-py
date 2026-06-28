@@ -227,6 +227,43 @@ def test_public_outbound_group_emits_dirty_and_data_wire_edge_frames_for_one_cau
     assert data_count == 2
 
 
+def test_public_outbound_group_d561_initial_bootstrap_current_replay_and_same_bytes() -> None:
+    graph = Graph("py-d561-outbound-fresh-source")
+    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
+    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
+    edge_a = graph.state(b"A0", name="edge/a")
+    edge_b = graph.state(b"B0", name="edge/b")
+    outbound: list[object] = []
+
+    with protobuf.outbound_bytes.subscribe(_record_data(outbound)):
+        graphrefly.wire_edge_group(
+            graph,
+            bridge,
+            outbound_edges={"a": edge_a, "b": edge_b},
+            name="group",
+        )
+        assert len(outbound) == 4
+        assert all(isinstance(value, bytes) for value in outbound)
+        assert sum(b"group:cause:1" in value for value in outbound if isinstance(value, bytes)) == 4
+        outbound.clear()
+
+        late_current: list[object] = []
+        with protobuf.outbound_bytes.subscribe(_record_data(late_current)):
+            assert len(late_current) == 1
+
+        assert (
+            outbound == []
+        ), "D561: late-subscriber/current replay must not admit a new outbound cause"
+
+        graph.batch(lambda: (edge_a.set(b"A0"), edge_b.set(b"B0")))
+
+    assert len(outbound) == 4
+    assert all(isinstance(value, bytes) for value in outbound)
+    assert sum(b"group:cause:2" in value for value in outbound if isinstance(value, bytes)) == 4
+    assert any(b"\x08\x02\x12\x01a" in value and b"A0" in value for value in outbound)
+    assert any(b"\x08\x02\x12\x01b" in value and b"B0" in value for value in outbound)
+
+
 @pytest.mark.parametrize(
     ("name", "frames", "expected_code"),
     [

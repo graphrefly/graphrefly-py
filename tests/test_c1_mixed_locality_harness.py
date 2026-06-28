@@ -225,9 +225,9 @@ def _classify_replay_source(trace: list[TraceRow]) -> str:
 
 @pytest.mark.xfail(
     reason=(
-        "B98/C-1: executable preparatory harness shape only; D560 removed the "
-        "g1->g2 outbound stale-snapshot source, but the return leg still "
-        "classifies as inbound WireEdgeGroup gate and must not flip C-1"
+        "B98/C-1: executable preparatory harness shape only; D560/D561 removed "
+        "focused outbound stale-snapshot/current-replay sources, but the return "
+        "leg still classifies as inbound WireEdgeGroup gate and must not flip C-1"
     ),
     strict=True,
 )
