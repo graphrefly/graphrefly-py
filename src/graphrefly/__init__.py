@@ -1,6 +1,5 @@
 """Python-owned facade for the GraphReFly native engine."""
 
-from graphrefly import _native as _native
 from graphrefly._facade import (
     _VERSION,
     SENTINEL,
@@ -128,3 +127,5 @@ __all__ = [
 ]
 
 __version__ = _VERSION
+
+globals().pop("_native", None)

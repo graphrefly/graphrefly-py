@@ -1,4 +1,6 @@
 import gc
+import subprocess
+import sys
 from dataclasses import FrozenInstanceError, is_dataclass
 from importlib import import_module
 from inspect import signature
@@ -130,8 +132,10 @@ def _describe_has_prefix(snapshot: dict[str, object], *prefixes: str) -> bool:
 
 
 def test_import_package_surface():
-    assert graphrefly.__version__ == "0.21.0a0"
-    assert graphrefly.version() == "0.21.0a0"
+    assert graphrefly.__version__ == "0.22.0"
+    assert graphrefly.version() == "0.22.0"
+    assert "_native" not in graphrefly.__all__
+    assert not hasattr(graphrefly, "_native")
     assert Graph("smoke").describe()["name"] == "smoke"
     assert graphrefly.DataIssue("missing", "reserved").code == "missing"
     assert graphrefly.Ctx is Ctx
@@ -152,6 +156,15 @@ def test_import_package_surface():
     assert issubclass(graphrefly.GraphReflyNoDataError, LookupError)
     assert hasattr(import_module("graphrefly._native"), "Graph")
     assert "_conformance" not in graphrefly.__all__
+
+
+def test_import_graphrefly_does_not_expose_native_module_attribute():
+    probe = (
+        "import graphrefly; "
+        "assert '_native' not in graphrefly.__all__; "
+        "assert not hasattr(graphrefly, '_native')"
+    )
+    subprocess.run([sys.executable, "-c", probe], check=True)
 
 
 def test_public_facade_has_no_equals_substitution_surface():

@@ -7,10 +7,11 @@ internals. It is deliberately not exported from ``graphrefly.__all__``.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from sys import modules
 from threading import get_ident
 from typing import Any, Literal
 
-from graphrefly import _native
+import graphrefly._native as _native
 from graphrefly._facade import (
     Ctx,
     Graph,
@@ -21,6 +22,9 @@ from graphrefly._facade import (
     _reject_sentinel_data,
 )
 from graphrefly.exceptions import GraphReflyRuntimeError, GraphReflyValueError
+
+if hasattr(modules["graphrefly"], "_native"):
+    delattr(modules["graphrefly"], "_native")
 
 PausableMode = Literal["true", "resumeAll", "false"]
 

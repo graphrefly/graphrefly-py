@@ -8,11 +8,12 @@ from dataclasses import dataclass
 from importlib import import_module, metadata
 from importlib.metadata import PackageNotFoundError
 from inspect import isawaitable, iscoroutine, iscoroutinefunction
+from sys import modules
 from threading import Lock, get_ident
 from typing import Any, ClassVar, Final, Literal, NoReturn, Protocol, TypeVar, cast, overload
 from weakref import ReferenceType, ref
 
-from graphrefly import _native
+import graphrefly._native as _native
 from graphrefly.exceptions import (
     CallbackError,
     GraphCallbackError,
@@ -26,10 +27,13 @@ from graphrefly.exceptions import (
 
 T = TypeVar("T")
 U = TypeVar("U")
-_VERSION = "0.21.0a0"
+_VERSION = "0.22.0"
 _MAX_CALLBACK_ERRORS = 32
 _NO_DEFAULT = object()
 _GRAPH_REENTRY_QUEUE_TOKEN = object()
+
+if hasattr(modules["graphrefly"], "_native"):
+    delattr(modules["graphrefly"], "_native")
 
 
 class Sentinel:

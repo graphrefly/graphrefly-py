@@ -1,15 +1,46 @@
 # GraphReFly Python
 
-`graphrefly` is the Python host package for GraphReFly. The package is published under the legal PyPI distribution name `graphrefly` and imported as `graphrefly`; `@graphrefly/py` is only the product/repository label.
+`graphrefly` is the Python host package for GraphReFly: a reactive graph runtime
+with a Python-owned facade over the native Rust engine.
 
-This clean-slate foundation layers a small Python-owned facade over the Rust native graph engine from `~/src/graphrefly-rs/crates/graphrefly-bindings-py`. It does not implement a second Python wave core, and it does not expose the raw PyO3 module as the final public API.
+Install it from PyPI:
 
-## v1 Foundation Surface
+```bash
+pip install graphrefly
+```
+
+GraphReFly is alpha software, but the Python host/native binding closeout is now
+backed by the clean-slate conformance suite. The package requires Python 3.12+.
+
+## Quick Start
 
 ```python
 from graphrefly import Graph
 
+
+with Graph("hello") as graph:
+    count = graph.state(1, name="count")
+    doubled = graph.derived([count], lambda value: value * 2, name="doubled")
+
+    with doubled.subscribe(lambda msg: print(msg.kind, msg.value)):
+        count.set(2)
+        count.set(3)
+
+    assert doubled.cache() == 6
+```
+
+The subscription receives the initial cached value and each later update. The
+graph owns the node topology; `with Graph(...)` closes facade resources when the
+scope exits.
+
+## Core Shape
+
+```python
+from graphrefly import Graph
+
+
 graph = Graph("demo")
+
 source = graph.state(1, name="source")
 plus_one = graph.derived([source], lambda value: value + 1, name="plus_one")
 advanced = graph.node(
@@ -18,9 +49,7 @@ advanced = graph.node(
     name="advanced",
 )
 
-with plus_one.subscribe(lambda msg: print(msg.kind, msg.value)), advanced.subscribe(
-    lambda _msg: None
-):
+with plus_one.subscribe(lambda msg: print(msg.kind, msg.value)):
     source.set(4)
 
 assert plus_one.cache() == 5
@@ -28,57 +57,69 @@ assert advanced.cache() == 14
 assert plus_one.status in {"settled", "resolved"}
 ```
 
-The Python-owned facade exposes:
+Use `Graph.derived(...)` for value-level functions. Use `Graph.node(...)` when
+you need the callback-scoped `Ctx` surface for advanced graph behavior such as
+per-node state, raw wave data reads, invalidation hooks, pull demand, or
+deferred rewire.
 
-- `Graph`
-- `Node[T]`
-- `Ctx`
-- `PullContext`
-- `Retain`
-- `Subscription`
-- `DataMessage[T]`, `ErrorMessage`, `ControlMessage`, `Message[T]`, and `GraphEvent`
-- `SENTINEL`, the Python protocol marker used inside raw ctx `wave_data` for INVALIDATE/no-DATA projection
-- synchronous `Graph.state`, `Graph.producer`, `Graph.node`, `Graph.derived`, `Graph.effect`, and `Graph.batch`
-- explicit-Graph decorator sugar for `producer`, `derived`, and `effect`
-- advanced `Ctx` helpers for dep DATA presence/value reads, raw `wave_data`, `terminal(index)`, `emit`, per-node `state`, `on_invalidate`, `on_deactivation`, read-only `pull` / `pull_params()`, narrow `request_pull(...)` / `request_pull_next(...)`, and `ctx.rewire_next`
-- `Node.set`, `Node.cache(default=...)`, `Node.has_value`, `Node.status`, `Node.subscribe`
-- graph-owned activation and control convenience: `Graph.retain(node, reason=...)`, `Graph.pause(node, lock_id)`, `Graph.resume(node, lock_id)`, and `Graph.invalidate(node)`
-- `Graph.describe` and `Graph.observe`
-- framework-neutral async runner helpers: `from_awaitable(graph, runner, factory, ...)`, `from_async_iter(graph, runner, factory, ...)`, `async_node(graph, deps, runner, callback, ...)`, the `AsyncRunner` protocol, `Graph.reentry_queue().wrap_runner(runner)` for explicit owner-thread completion draining, and optional caller-owned `asyncio_runner(...)`, `trio_runner(nursery)`, and `anyio_runner(task_group)` adapters
-- `Graph.close`, `Graph.closed`, `Retain.closed`, and `Subscription.closed`
+## Public Surface
+
+The Python facade exports:
+
+- `Graph`, `Node[T]`, `Ctx`, `PullContext`, `RewireNext`
+- `Subscription`, `Retain`, `GraphReentryQueue`
+- `DataMessage[T]`, `ErrorMessage`, `ControlMessage`, `Message[T]`,
+  `GraphEvent`
+- `SENTINEL` for raw `ctx.wave_data` INVALIDATE/no-DATA projection
+- checkpoint and restore helpers: `GraphCheckpoint`, `RestoreRef`,
+  `RestoreContext`, `RestoreDescriptor`, `RestoreRegistry`, `restore_ref`,
+  `restore_registry`, `restore_graph`
+- async boundary helpers: `AsyncRunner`, `from_awaitable`, `from_async_iter`,
+  `async_node`, `asyncio_runner`, `trio_runner`, `anyio_runner`
+- wire bridge facades: `wire_bridge`, `wire_bridge_protobuf`,
+  `wire_edge_group`, `wire_bridge_ack_driver`
+- public exceptions under `GraphReflyError`
+
+The private native extension is loaded as `graphrefly._native`; it is not the
+public API.
 
 ## Boundary Notes
 
-- The sync wave protocol runs in Rust; Python callbacks enter through the native dispatcher path.
+- The sync wave protocol runs in Rust. Python callbacks enter through the native
+  dispatcher path; Python does not reimplement the wave core.
 - Native graph handles are single-thread host objects in this foundation slice.
-- Python values are held as strong object references by the native engine. No serialization, copy, or immutability promise is made yet.
-- `None` is valid Python DATA. Absence of DATA is represented by private native presence flags, not by a public `None` sentinel.
-- Raw advanced ctx input is `ctx.wave_data`: `dep -> waves -> values`, where `[]` means no wave for that dep, `[[]]` means a RESOLVED-only wave, DATA payloads appear directly, and INVALIDATE appears as the exported `graphrefly.SENTINEL` object. `ctx.terminal(index)` is separate metadata: `False` for no terminal, `True` for COMPLETE, or an ERROR diagnostic payload. Ergonomic `ctx.data()` / `ctx.has_data()` are derived helpers, not the raw protocol shape. `graphrefly.SENTINEL` itself is not legal DATA.
-- Pull-mode nodes use `Graph.node(..., pull_id="name", pausable=True | "resumeAll")`. During a PULL invocation, `ctx.pull` is a read-only `PullContext` and `ctx.pull_params(default=None)` reads the demand params. Downstream nodes may issue only narrow PULL demand via `ctx.request_pull(...)` or boundary-deferred `ctx.request_pull_next(...)`; these helpers do not expose arbitrary message construction.
-- Deferred topology mutation uses `ctx.rewire_next.subscribe_dep(dep, callback)`, `ctx.rewire_next.unsubscribe_dep(dep, callback)`, or `ctx.rewire_next.replace_deps(deps, callback)`. The callback is required so each dep-shape change explicitly re-declares the positional fn/deps pairing. This is a narrow facade over the existing deferred rewire protocol, not raw `ctx.up`, raw message construction, cross-graph rewire, or immediate in-fn topology mutation.
-- `Node.cache()` returns cached DATA, including `None`, or raises `GraphReflyNoDataError` when no DATA is present. Use `Node.cache(default=...)` or `Node.has_value` for non-exceptional absence handling.
-- `Graph.retain(node, reason=...)` is a graph-owned activation root for graph-local helper nodes. It returns a dedicated `Retain` release token, not an observer `Subscription`; dropping that token does not release the retain root, while `Retain.release()` and `Graph.close()` do. It does not expose callbacks, raw native handles, observer errors, or protocol terminal messages.
-- `Graph.close()` and `with Graph(...)` are Python host lifetime scopes. They release facade-created subscriptions/observers, graph-owned retain roots, and reject later facade use without emitting protocol `TEARDOWN` or `COMPLETE`. Fatal host-boundary aborts automatically close/poison the facade after propagating the original fatal exception.
-- Async work enters only through the explicit runner helpers. Ordinary `Graph.node`, `Graph.derived`, `Graph.effect`, `Graph.batch`, `Node.subscribe`, `Graph.observe`, lifecycle hooks, and rewire callbacks remain synchronous and reject awaitables. The core API does not own an asyncio loop, Trio nursery, AnyIO task group, background thread, portal, or hidden pump; `asyncio_runner(...)`, `trio_runner(nursery)`, and `anyio_runner(task_group)` are only convenience adapters over caller-owned runtime objects. Trio/AnyIO convenience adapters must spawn and cancel from the same thread that created the adapter; if the runtime lives on another thread, supply a custom `AsyncRunner` with that runtime's thread-safe ingress. When a runner completes on a non-owner thread, use the graph-owned re-entry queue: `queue = graph.reentry_queue()`, pass `queue.wrap_runner(runner)` into the async helper, then call `queue.drain(max_items=None)` from the graph owner thread. The queue accepts only GraphReFly-owned private completions; it is not a public callable enqueue or graph mutation channel.
-- Node callback failures become graph `ERROR` observations wrapped as `GraphCallbackError`. Subscribe/observe callback failures stay at the Python observer boundary as `SubscriberCallbackError`. Public API value/runtime failures use `GraphReflyValueError` and `GraphReflyRuntimeError`.
-- Fatal Python `BaseException` process-control failures such as `KeyboardInterrupt`, `SystemExit`, and `GeneratorExit` propagate back to the initiating Python caller instead of becoming graph `ERROR` or `SubscriberCallbackError`. Per D431/D436, a fatal first observed after native batch commit has begun aborts the host boundary but does not claim full transactional rollback of graph effects already committed; the facade is then closed/poisoned and later use is rejected.
-- `DataIssue` is a reserved passive DATA envelope for future domain/material issue payloads; this slice does not emit it and does not change protocol `ERROR` semantics.
-- Public Python does not expose raw `Node.up(msgs)`, raw `Node.down(msgs)`, arbitrary message construction/sending, raw `ctx.up(msgs)`, raw PyO3 handles, or parallel raw value aliases such as `latest`, `prevData`, `latestData`, or `depRecords[i].latest`.
+- `None` is valid Python DATA. Absence of DATA is separate and `Node.cache()`
+  raises `GraphReflyNoDataError` when no DATA is present. Use
+  `Node.cache(default=...)` or `Node.has_value` for non-exceptional absence
+  handling.
+- `ctx.wave_data` is the raw advanced dep input shape. Ergonomic helpers such as
+  `ctx.data()` and `ctx.has_data()` are derived from that shape.
+- `Graph.close()` and `with Graph(...)` are Python host lifetime scopes. They
+  release facade-created subscriptions/observers and graph-owned retain roots;
+  they do not emit protocol `TEARDOWN` or `COMPLETE`.
+- Public Python does not expose raw `Node.up(msgs)`, raw `Node.down(msgs)`,
+  arbitrary message construction/sending, raw `ctx.up(msgs)`, or raw PyO3
+  handles.
 
-## Async Runner Examples
+## Async Runners
 
-The Trio and AnyIO helpers are optional convenience adapters. Install the
-runtime extra when you want those adapters available:
+Async work enters only through explicit runner helpers. The core API does not
+own an asyncio loop, Trio nursery, AnyIO task group, background thread, portal,
+or hidden pump.
+
+Install optional runtime adapters with:
 
 ```bash
 pip install "graphrefly[async]"
 ```
 
-Trio and AnyIO adapters are caller-owned: GraphReFly uses the supplied nursery or task group on its owning thread, and does not create or drain the runtime for you.
-
 ```python
 import trio
 from graphrefly import Graph, from_awaitable, trio_runner
+
+
+async def fetch_value() -> int:
+    return 42
 
 
 async def main() -> None:
@@ -88,33 +129,15 @@ async def main() -> None:
         node = from_awaitable(
             graph,
             trio_runner(nursery),
-            lambda: fetch_value(),
+            fetch_value,
             name="value",
         )
-        with node.subscribe(lambda msg: print(msg.kind)):
+        with node.subscribe(lambda msg: print(msg.kind, msg.value)):
             await trio.lowlevel.checkpoint()
 ```
 
-```python
-import anyio
-from graphrefly import Graph, anyio_runner, from_async_iter
-
-
-async def main() -> None:
-    graph = Graph("anyio-demo")
-
-    async with anyio.create_task_group() as task_group:
-        node = from_async_iter(
-            graph,
-            anyio_runner(task_group),
-            stream_values,
-            name="values",
-        )
-        with node.subscribe(lambda msg: print(msg.kind)):
-            await anyio.sleep(0)
-```
-
-If a host runtime completes work away from the graph owner thread, keep re-entry explicit:
+When a host runtime completes work away from the graph owner thread, keep
+re-entry explicit:
 
 ```python
 graph = Graph("queued-demo")
@@ -123,14 +146,22 @@ runner = queue.wrap_runner(host_owned_runner)
 node = from_awaitable(graph, runner, fetch_value, name="queued")
 
 with node.subscribe(lambda msg: None):
-    # Schedule this from the graph owner thread when your host loop/timer says
-    # work may be ready. GraphReFly does not spin or block until idle.
     queue.drain(max_items=None)
 ```
 
+The queue accepts only GraphReFly-owned private completions; it is not a public
+callable enqueue or graph mutation channel.
+
+## Documentation
+
+- Python docs: https://graphrefly.dev/py/
+- API reference: https://graphrefly.dev/py/api/
+- Language-neutral spec: https://graphrefly.dev/spec/
+- Repository: https://github.com/graphrefly/graphrefly-py
+
 ## Local Development
 
-This package expects a sibling checkout:
+This package expects sibling checkouts:
 
 ```text
 ~/src/graphrefly-py
@@ -140,11 +171,14 @@ This package expects a sibling checkout:
 Install and test:
 
 ```bash
-uv sync --group dev
-uv run maturin develop --release
+uv sync --group dev --group docs
+cd ../graphrefly-rs
+mise exec -- bash -lc 'cd ../graphrefly-py && uv run maturin develop --release'
+cd ../graphrefly-py
 uv run pytest
 uv run ruff check .
 uv run mypy src
+uv run mkdocs build --strict
 python -c "import graphrefly; print(graphrefly.version())"
 ```
 
