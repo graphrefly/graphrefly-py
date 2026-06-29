@@ -1,6 +1,6 @@
 # graphrefly-py -- agent context (Python host package)
 
-GraphReFly Python is the host-language package for Python users. The language-neutral authority lives in `~/src/graphrefly` on branch `clean-slate`; when this repo disagrees with that authority, the authority wins.
+GraphReFly Python is the host-language package for Python users. The language-neutral authority lives in `~/src/graphrefly` on branch `main`; when this repo disagrees with that authority, the authority wins.
 
 ## Authority
 
