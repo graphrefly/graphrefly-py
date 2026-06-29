@@ -1,261 +1,190 @@
-# GraphReFly
+# GraphReFly Python
 
-**The reactive harness layer for agent workflows.** Describe in plain language, review visually, run persistently, trace every decision.
+`graphrefly` is the Python host package for GraphReFly: a reactive graph runtime
+with a Python-owned facade over the native Rust engine.
 
-GraphReFly makes long-running human + LLM co-operation reactive, resumable, and causally explainable. State pushes downstream on change (no re-reading), nodes have lifecycles (not infinite append), and every decision has a traceable causal chain — the substrate underneath tools, agents, and personal automations.
-
-[![PyPI](https://img.shields.io/pypi/v/graphrefly?color=blue)](https://pypi.org/project/graphrefly/)
-[![license](https://img.shields.io/github/license/graphrefly/graphrefly-py)](./LICENSE)
-[![Python](https://img.shields.io/pypi/pyversions/graphrefly)](https://pypi.org/project/graphrefly/)
-
-[Docs](https://graphrefly.dev/py/) | [Spec](https://graphrefly.dev/spec/) | [TypeScript](https://graphrefly.dev) | [Python API](https://graphrefly.dev/py/api/)
-
----
-
-<!-- TODO: Demo 0 GIF/video — NL → flow view → running → "why was this flagged?" -->
-
-## What can you do with it?
-
-**Email triage** — "Watch my inbox. Urgent emails from my team go to a priority list. Newsletters get summarized weekly. Everything else, count by sender." It watches, classifies, and alerts — and when you ask "why was this flagged?", it walks you through the reasoning.
-
-**Spending alerts** — Connect bank transactions to budget categories. Get a push notification when monthly dining exceeds your target. No polling, no manual checks — changes propagate the moment data arrives.
-
-**Knowledge management** — Notes, bookmarks, highlights flow in. Contradictions surface automatically. Related ideas link themselves. Your second brain stays current without you maintaining it.
-
----
-
-## Quick start
+Install it from PyPI:
 
 ```bash
 pip install graphrefly
 ```
 
+GraphReFly is alpha software, but the Python host/native binding closeout is now
+backed by the clean-slate conformance suite. The package requires Python 3.12+.
+
+## Quick Start
+
 ```python
-from graphrefly import state, derived, effect
+from graphrefly import Graph
 
-count = state(0)
-doubled = derived([count], lambda deps, _: deps[0] * 2)
 
-effect([doubled], lambda deps, _: print("doubled:", deps[0]))
-# → doubled: 0
+with Graph("hello") as graph:
+    count = graph.state(1, name="count")
+    doubled = graph.derived([count], lambda value: value * 2, name="doubled")
 
-count.push(3)
-# → doubled: 6
+    with doubled.subscribe(lambda msg: print(msg.kind, msg.value)):
+        count.set(2)
+        count.set(3)
+
+    assert doubled.cache() == 6
 ```
 
-## How it works
+The subscription receives the initial cached value and each later update. The
+graph owns the node topology; `with Graph(...)` closes facade resources when the
+scope exits.
 
-You describe what you need — an LLM composes a reactive graph (like SQL for data flows). The graph runs persistently, checkpoints its state, and traces every decision through a causal chain. Ask "why?" at any point and get a human-readable explanation from source to conclusion.
-
-## Harness engineering coverage
-
-The eight requirements of a production agent harness cluster into a handful of composed blocks that sit on top of the reactive graph primitives:
-
-| Need | GraphReFly |
-|---|---|
-| Context & state | `persistent_state()` — `auto_checkpoint` + `snapshot` / `restore` + incremental diff |
-| Agent memory | `agent_memory()` — `distill` + vectors + knowledge graph + tiers, OpenViking decay |
-| Control flow & resilience | `resilient_pipeline()` — `rate_limiter → breaker → retry → timeout → fallback`, correct ordering built in |
-| Execution & policy | `guarded_execution()` — Actor / Guard ABAC + `policy()` + `budget_gate` + scoped describe |
-| Observability & causality | `graph_lens()` — reactive topology, health, flow, and `why(node)` causal chains as structured data |
-| Human governance | `gate` — reactive `pending` / `is_open` with `approve` / `reject` / `modify(fn, n)` |
-| Verification | Multi-model eval harness with regression gates |
-| Continuous improvement | Strategy model: `root_cause × intervention → success_rate` |
-
-The library computes structured facts reactively; LLMs and UIs render them. Natural language is never the library's job — which keeps the whole stack model-agnostic and testable.
-
-## Why GraphReFly?
-
-|  | Redux / Zustand | RxPY | Pydantic AI | LangGraph | TC39 Signals | **GraphReFly** |
-|--|-----------------|------|-------------|-----------|-------------|---------------|
-| Simple store API | yes | no | no | no | yes | **yes** |
-| Streaming operators | no | yes | no | no | no | **yes** |
-| Diamond resolution | no | n/a | n/a | n/a | partial | **glitch-free** |
-| Graph introspection | no | no | no | checkpoints | no | **describe / observe / diagram** |
-| Causal tracing | no | no | no | no | no | **explain every decision** |
-| Durable checkpoints | no | no | no | yes | no | **file / SQLite / IndexedDB** |
-| LLM orchestration | no | no | partial | yes | no | **agent_loop / chat_stream / tool_registry** |
-| NL → graph composition | no | no | no | no | no | **graph_from_spec / llm_compose** |
-| Async runners | n/a | asyncio | asyncio | asyncio | n/a | **asyncio / trio** |
-| Dependencies | varies | 0 | many | many | n/a | **0** |
-
-## One primitive
-
-Everything is a `node`. Sugar constructors give you the right shape:
+## Core Shape
 
 ```python
-from graphrefly import state, derived, producer, effect
-from graphrefly.core.messages import DATA
+from graphrefly import Graph
 
-# Writable state
-name = state("world")
 
-# Computed (re-runs when deps change)
-greeting = derived([name], lambda deps, _: f"Hello, {deps[0]}!")
+graph = Graph("demo")
 
-# Push source (timers, events, async streams)
-clock = producer(lambda emit, _: emit([(DATA, time.time())]))
-
-# Side effect
-effect([greeting], lambda deps, _: print(deps[0]))
-```
-
-## Streaming & operators
-
-70+ operators — transform, combine, buffer, window, rate-limit, retry, circuit-break:
-
-```python
-from graphrefly.extra.tier1 import map_op, filter_op, scan
-from graphrefly.extra.tier2 import switch_map, debounce_time
-from graphrefly.extra.resilience import retry
-from graphrefly import pipe
-
-search = pipe(
-    user_input,
-    debounce_time(0.3),
-    switch_map(lambda q: from_promise(fetch(f"/api?q={q}"))),
-    retry(strategy="exponential", max_attempts=3),
+source = graph.state(1, name="source")
+plus_one = graph.derived([source], lambda value: value + 1, name="plus_one")
+advanced = graph.node(
+    [source],
+    lambda ctx: ctx.emit(ctx.data(0) + 10),
+    name="advanced",
 )
+
+with plus_one.subscribe(lambda msg: print(msg.kind, msg.value)):
+    source.set(4)
+
+assert plus_one.cache() == 5
+assert advanced.cache() == 14
+assert plus_one.status in {"settled", "resolved"}
 ```
 
-## Graph container
+Use `Graph.derived(...)` for value-level functions. Use `Graph.node(...)` when
+you need the callback-scoped `Ctx` surface for advanced graph behavior such as
+per-node state, raw wave data reads, invalidation hooks, pull demand, or
+deferred rewire.
 
-Register nodes in a `Graph` for introspection, snapshot, and persistence:
+## Public Surface
 
-```python
-from graphrefly import Graph, state, derived
+The Python facade exports:
 
-g = Graph("pricing")
-price = g.register("price", state(100))
-tax   = g.register("tax", derived([price], lambda d, _: d[0] * 0.1))
-total = g.register("total", derived([price, tax], lambda d, _: d[0] + d[1]))
+- `Graph`, `Node[T]`, `Ctx`, `PullContext`, `RewireNext`
+- `Subscription`, `Retain`, `GraphReentryQueue`
+- `DataMessage[T]`, `ErrorMessage`, `ControlMessage`, `Message[T]`,
+  `GraphEvent`
+- `SENTINEL` for raw `ctx.wave_data` INVALIDATE/no-DATA projection
+- checkpoint and restore helpers: `GraphCheckpoint`, `RestoreRef`,
+  `RestoreContext`, `RestoreDescriptor`, `RestoreRegistry`, `restore_ref`,
+  `restore_registry`, `restore_graph`
+- async boundary helpers: `AsyncRunner`, `from_awaitable`, `from_async_iter`,
+  `async_node`, `asyncio_runner`, `trio_runner`, `anyio_runner`
+- wire bridge facades: `wire_bridge`, `wire_bridge_protobuf`,
+  `wire_edge_group`, `wire_bridge_ack_driver`
+- public exceptions under `GraphReflyError`
 
-g.describe()   # → full graph topology as dict
-g.diagram()    # → Mermaid diagram string
-g.observe(lambda e: print(e))  # → live change stream
-```
+The private native extension is loaded as `graphrefly._native`; it is not the
+public API.
 
-## AI & orchestration
+## Boundary Notes
 
-First-class patterns for LLM streaming, agent loops, and human-in-the-loop workflows:
+- The sync wave protocol runs in Rust. Python callbacks enter through the native
+  dispatcher path; Python does not reimplement the wave core.
+- Native graph handles are single-thread host objects in this foundation slice.
+- `None` is valid Python DATA. Absence of DATA is separate and `Node.cache()`
+  raises `GraphReflyNoDataError` when no DATA is present. Use
+  `Node.cache(default=...)` or `Node.has_value` for non-exceptional absence
+  handling.
+- `ctx.wave_data` is the raw advanced dep input shape. Ergonomic helpers such as
+  `ctx.data()` and `ctx.has_data()` are derived from that shape.
+- `Graph.close()` and `with Graph(...)` are Python host lifetime scopes. They
+  release facade-created subscriptions/observers and graph-owned retain roots;
+  they do not emit protocol `TEARDOWN` or `COMPLETE`.
+- Public Python does not expose raw `Node.up(msgs)`, raw `Node.down(msgs)`,
+  arbitrary message construction/sending, raw `ctx.up(msgs)`, or raw PyO3
+  handles.
 
-```python
-from graphrefly.patterns.ai import chat_stream, agent_loop, tool_registry
-from graphrefly.patterns.memory import collection, decay
+## Async Runners
 
-# Streaming chat with tool use
-chat = chat_stream("assistant", model="claude-sonnet-4-20250514",
-                   tools=tool_registry("tools", search=search_fn))
+Async work enters only through explicit runner helpers. The core API does not
+own an asyncio loop, Trio nursery, AnyIO task group, background thread, portal,
+or hidden pump.
 
-# Full agent loop: observe → think → act → memory
-agent = agent_loop("researcher", llm=chat,
-                   memory=agent_memory(decay="openviking"))
-```
-
-## Async runners
-
-Native asyncio and trio support for async sources and long-running graphs:
-
-```python
-from graphrefly.compat.asyncio_runner import AsyncioRunner
-from graphrefly.extra.sources import from_async_iter
-
-# Wrap an async generator as a reactive node
-async def sse_events():
-    async for event in httpx_client.stream("GET", "/events"):
-        yield event.data
-
-events = from_async_iter(sse_events())
-
-# Run the graph in an asyncio event loop
-runner = AsyncioRunner(graph)
-await runner.run()
-```
-
-## FastAPI integration
-
-Drop-in integration for reactive backends:
-
-```python
-from graphrefly.integrations.fastapi import GraphReflyRouter
-
-router = GraphReflyRouter(graph)
-app.include_router(router, prefix="/graph")
-# GET /graph/describe  → graph topology
-# GET /graph/snapshot  → current state
-# WS  /graph/observe   → live change stream
-```
-
-## Resilience & checkpoints
-
-Built-in retry, circuit breakers, rate limiters, and persistent checkpoints:
-
-```python
-from graphrefly.extra.resilience import retry, circuit_breaker, rate_limiter
-from graphrefly.extra.checkpoint import FileCheckpointAdapter, save_graph_checkpoint
-
-# Retry with exponential backoff
-resilient = pipe(source, retry(strategy="exponential"))
-
-# Circuit breaker
-breaker = circuit_breaker(threshold=5, reset_timeout=30.0)
-
-# Checkpoint to file system
-adapter = FileCheckpointAdapter("./checkpoints")
-save_graph_checkpoint(graph, adapter)
-```
-
-## Project layout
-
-| Path | Contents |
-|------|----------|
-| `src/graphrefly/core/` | Message protocol, `node` primitive, batch, sugar constructors |
-| `src/graphrefly/extra/` | Operators, sources, data structures, resilience, checkpoints |
-| `src/graphrefly/graph/` | `Graph` container, describe/observe, snapshot, persistence |
-| `src/graphrefly/patterns/` | Orchestration, messaging, memory, AI, CQRS, reactive layout |
-| `src/graphrefly/compat/` | Async runners (asyncio, trio) |
-| `src/graphrefly/integrations/` | Framework integrations (FastAPI) |
-| `docs/` | Roadmap, guidance, benchmarks |
-| `website/` | Astro + Starlight docs site ([py.graphrefly.dev](https://py.graphrefly.dev)) |
-
-## Scripts
+Install optional runtime adapters with:
 
 ```bash
-uv run pytest              # run tests
-uv run ruff check .        # lint
-uv run mypy src/           # type check
-uv run pytest --benchmark  # benchmarks
+pip install "graphrefly[async]"
 ```
 
-## Requirements
+```python
+import trio
+from graphrefly import Graph, from_awaitable, trio_runner
 
-Python 3.12 or later. Zero runtime dependencies.
 
-## Acknowledgments
+async def fetch_value() -> int:
+    return 42
 
-GraphReFly builds on ideas from many projects and papers:
 
-**Protocol & predecessor:**
-- **[Callbag](https://github.com/callbag/callbag)** (Andre Staltz) — the original reactive protocol spec. GraphReFly's message-based node communication descends from callbag's function-calling-function model.
-- **[callbag-recharge](https://github.com/Callbag-Recharge/callbag-recharge)** & **[callbag-recharge-py](https://github.com/Callbag-Recharge/callbag-recharge-py)** — GraphReFly's direct predecessors. The Python port (6 primitives, 18 operators, 100+ tests) established cross-language parity patterns carried forward.
+async def main() -> None:
+    graph = Graph("trio-demo")
 
-**Reactive design patterns:**
-- **[SolidJS](https://github.com/solidjs/solid)** — two-phase execution (DIRTY propagation + value flow), automatic caching, and effect batching. Closest philosophical neighbor.
-- **[Preact Signals](https://github.com/preactjs/signals)** — fine-grained reactivity and cached-flag optimization patterns that informed RESOLVED signal design.
-- **[TC39 Signals Proposal](https://github.com/tc39/proposal-signals)** — the `.get()/.set()` contract and the push toward language-level reactivity.
-- **[RxJS](https://github.com/ReactiveX/rxjs)** / **[RxPY](https://github.com/ReactiveX/RxPY)** — operator naming conventions and the DevTools observability philosophy that inspired the Inspector pattern.
+    async with trio.open_nursery() as nursery:
+        node = from_awaitable(
+            graph,
+            trio_runner(nursery),
+            fetch_value,
+            name="value",
+        )
+        with node.subscribe(lambda msg: print(msg.kind, msg.value)):
+            await trio.lowlevel.checkpoint()
+```
 
-**AI & memory:**
-- **[OpenViking](https://github.com/volcengine/openviking)** (Volcengine) — the memory decay formula (`sigmoid(log1p(count)) * exp_decay(age, 7d)`) and L0/L1/L2 progressive loading strategy used in `agent_memory()`.
-- **[FadeMem](https://arxiv.org/abs/2501.09399)** (Wei et al., ICASSP 2026) — biologically-inspired dual-layer memory with adaptive exponential decay.
-- **[MAGMA](https://arxiv.org/abs/2501.13920)** (Jiang et al., 2026) — four-parallel-graph model (semantic/temporal/causal/entity) that informed `knowledge_graph()` design.
-- **[Letta/MemGPT](https://github.com/letta-ai/letta)**, **[Mem0](https://github.com/mem0ai/mem0)**, **[Zep/Graphiti](https://github.com/getzep/graphiti)**, **[Cognee](https://github.com/topoteretes/cognee)** — production memory architectures surveyed during `agent_memory()` design.
+When a host runtime completes work away from the graph owner thread, keep
+re-entry explicit:
 
-**Layout & other:**
-- **[Pretext](https://github.com/chenglou/pretext)** (Cheng Lou) — inspired the reactive layout engine's DOM-free text measurement pipeline.
-- **[CASL](https://github.com/stalniy/casl)** — declarative `allow()`/`deny()` policy builder DX that inspired `policy()`.
-- **[Nanostores](https://github.com/nanostores/nanostores)** — tiny framework-agnostic API with `.get()/.set()/.subscribe()` mapping that validated the store ergonomics.
+```python
+graph = Graph("queued-demo")
+queue = graph.reentry_queue()
+runner = queue.wrap_runner(host_owned_runner)
+node = from_awaitable(graph, runner, fetch_value, name="queued")
 
-## License
+with node.subscribe(lambda msg: None):
+    queue.drain(max_items=None)
+```
 
-[MIT](./LICENSE)
+The queue accepts only GraphReFly-owned private completions; it is not a public
+callable enqueue or graph mutation channel.
+
+## Documentation
+
+- Python docs: https://graphrefly.dev/py/
+- API reference: https://graphrefly.dev/py/api/
+- Language-neutral spec: https://graphrefly.dev/spec/
+- Repository: https://github.com/graphrefly/graphrefly-py
+
+## Local Development
+
+This package expects sibling checkouts:
+
+```text
+~/src/graphrefly-py
+~/src/graphrefly-rs
+```
+
+Install and test:
+
+```bash
+uv sync --group dev --group docs
+cd ../graphrefly-rs
+mise exec -- bash -lc 'cd ../graphrefly-py && uv run maturin develop --release'
+cd ../graphrefly-py
+uv run pytest
+uv run ruff check .
+uv run mypy src
+uv run mkdocs build --strict
+python -c "import graphrefly; print(graphrefly.version())"
+```
+
+The Rust foundation can be checked directly from the sibling repo:
+
+```bash
+cd ~/src/graphrefly-rs
+mise exec -- cargo test -p graphrefly-bindings-py
+```
