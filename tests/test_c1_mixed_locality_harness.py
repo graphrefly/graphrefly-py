@@ -225,9 +225,9 @@ def _classify_replay_source(trace: list[TraceRow]) -> str:
 
 @pytest.mark.xfail(
     reason=(
-        "B98/C-1: executable preparatory harness shape only; D560/D561 removed "
-        "focused outbound stale-snapshot/current-replay sources, but the return "
-        "leg still classifies as inbound WireEdgeGroup gate and must not flip C-1"
+        "B98/C-1: executable preparatory harness shape only; D560/D561/D562 "
+        "remove the focused outbound and inbound WireEdgeGroup replay classes, "
+        "but C-1 authority remains todo until the full proof review is accepted"
     ),
     strict=True,
 )
@@ -362,6 +362,7 @@ def test_c1_preparatory_two_graph_bridge_diamond_harness_shape():
         assert runs == [(b"B-out:B-in:a1", b"C-out:C-in:a1")], (
             f"C-1 replay source classification: {classification}; trace={trace}"
         )
+        pytest.xfail("C-1 proof passes diagnostically; authority review is still pending")
     finally:
         pump_g2_to_g1.unsubscribe()
         pump_g1_to_g2.unsubscribe()

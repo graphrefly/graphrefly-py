@@ -192,6 +192,58 @@ def test_public_inbound_group_gates_until_all_expected_dirty_and_data() -> None:
     assert statuses[-1].data == 0
 
 
+def test_public_inbound_group_partial_progress_does_not_reemit_cached_edges_or_fan_in() -> None:
+    graph, protobuf, group = _group_graph("py-d562-inbound-release-cohort")
+    joined = graph.derived(
+        [group.inbound_edges["a"], group.inbound_edges["b"]],
+        lambda a, b: a + b,
+        name="join",
+    )
+    a_values: list[object] = []
+    b_values: list[object] = []
+    joined_values: list[object] = []
+    statuses: list[object] = []
+    issues: list[object] = []
+
+    with (
+        group.inbound_edges["a"].subscribe(_record_data(a_values)),
+        group.inbound_edges["b"].subscribe(_record_data(b_values)),
+        joined.subscribe(_record_data(joined_values)),
+        group.status.subscribe(_record_data(statuses)),
+        group.issues.subscribe(_record_data(issues)),
+    ):
+        _complete_two_edge_cause(
+            protobuf,
+            "c1",
+            start_seq=1,
+            a_value=b"A1",
+            b_value=b"B1",
+        )
+        assert a_values == [b"A1"]
+        assert b_values == [b"B1"]
+        assert joined_values == [b"A1B1"]
+
+        protobuf.inbound_bytes.set(_wire_edge_envelope(5, "dirty", "a", "c2"))
+        protobuf.inbound_bytes.set(_wire_edge_envelope(6, "data", "a", "c2", b"A2"))
+
+        assert a_values == [b"A1"]
+        assert b_values == [b"B1"]
+        assert joined_values == [b"A1B1"]
+        assert issues == []
+        assert statuses[-1].state == "collecting"
+
+        protobuf.inbound_bytes.set(_wire_edge_envelope(7, "dirty", "b", "c2"))
+        assert joined_values == [b"A1B1"]
+
+        protobuf.inbound_bytes.set(_wire_edge_envelope(8, "data", "b", "c2", b"B2"))
+
+    assert a_values == [b"A1", b"A2"]
+    assert b_values == [b"B1", b"B2"]
+    assert joined_values == [b"A1B1", b"A2B2"]
+    assert statuses[-1].state == "released"
+    assert statuses[-1].released == 4
+
+
 def test_public_outbound_group_emits_dirty_and_data_wire_edge_frames_for_one_cause() -> None:
     graph = Graph("py-c1b-outbound")
     bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
@@ -557,14 +609,21 @@ def test_describe_exposes_wire_edge_group_adapter_lanes() -> None:
     edges = {(edge["from"], edge["to"]) for edge in _walk_edges(snapshot)}
 
     assert {"out/events", "out/gate", "out/commands", "out/status", "out/issues"} <= names
-    assert {"in/events", "in/gate", "in/status", "in/issues", "in/inbound/a"} <= names
+    assert {
+        "in/events",
+        "in/gate",
+        "in/release",
+        "in/status",
+        "in/issues",
+        "in/inbound/a",
+    } <= names
     assert ("bridge/inbound", "in/events") in edges
     assert ("in/events", "in/gate") in edges
     assert ("in/events", "in/issues") in edges
     assert ("in/gate", "in/issues") in edges
     assert ("in/events", "in/status") in edges
     assert ("in/gate", "in/status") in edges
-    assert ("in/gate", "in/inbound/a") in edges
+    assert ("in/release", "in/inbound/a") in edges
     assert ("in/inbound/a", "in/py/inbound/a") in edges
     assert ("edge/a", "out/py/outbound/a") in edges
     assert ("out/py/outbound/a", "out/events") in edges
