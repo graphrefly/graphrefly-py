@@ -85,38 +85,46 @@ jobs:
             runner: ubuntu-22.04
             target: x86_64
             python_arch: x64
+            interpreter: python3.12
             manylinux: "2014"
           - name: linux-aarch64
             runner: ubuntu-22.04
             target: aarch64
             python_arch: x64
+            interpreter: python3.12
             manylinux: "2014"
           - name: musllinux-x86_64
             runner: ubuntu-22.04
             target: x86_64
             python_arch: x64
+            interpreter: python3.12
             manylinux: musllinux_1_2
           - name: musllinux-aarch64
             runner: ubuntu-22.04
             target: aarch64
             python_arch: x64
+            interpreter: python3.12
             manylinux: musllinux_1_2
           - name: macos-x86_64
             runner: macos-15-intel
             target: x86_64
             python_arch: x64
+            interpreter: python3.12
           - name: macos-arm64
             runner: macos-latest
             target: aarch64
             python_arch: arm64
+            interpreter: python3.12
           - name: windows-x64
             runner: windows-latest
             target: x64
             python_arch: x64
+            interpreter: python
           - name: windows-arm64
             runner: windows-11-arm
             target: aarch64
             python_arch: arm64
+            interpreter: python
             experimental: true
     steps:
       - name: Checkout Python host package
@@ -142,7 +150,7 @@ jobs:
         with:
           working-directory: graphrefly-py
           target: ${{ matrix.platform.target }}
-          args: --release --out dist --interpreter python
+          args: --release --out dist --interpreter ${{ matrix.platform.interpreter }}
           manylinux: ${{ matrix.platform.manylinux || 'auto' }}
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
