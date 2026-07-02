@@ -76,6 +76,10 @@ The Python facade exports:
   `restore_registry`, `restore_graph`
 - async boundary helpers: `AsyncRunner`, `from_awaitable`, `from_async_iter`,
   `async_node`, `asyncio_runner`, `trio_runner`, `anyio_runner`
+- network source adapters: `HttpRequest`, `HttpResponse`, `HttpStreamHead`,
+  `HttpStreamHeadEvent`, `HttpStreamChunkEvent`, `HttpStreamErrorEvent`,
+  `HttpStreamCompleteEvent`, `HttpStreamDriverEvent`, `SseEvent`,
+  `LocalHttpDriver`, `LocalHttpStreamDriver`, `from_http`, `from_sse`
 - wire bridge facades: `wire_bridge`, `wire_bridge_protobuf`,
   `wire_edge_group`, `wire_bridge_ack_driver`
 - public exceptions under `GraphReflyError`
@@ -151,6 +155,12 @@ with node.subscribe(lambda msg: None):
 
 The queue accepts only GraphReFly-owned private completions; it is not a public
 callable enqueue or graph mutation channel.
+
+`from_http` and `from_sse` follow the same boundary rule: callers provide both
+an explicit `AsyncRunner` and a host-owned driver. The package does not own an
+event loop or ship a default HTTP client in this slice; `from_sse` parses
+`text/event-stream` bytes from `LocalHttpStreamDriver` without hidden retry,
+reconnect, or `Last-Event-ID` management.
 
 ## Documentation
 
