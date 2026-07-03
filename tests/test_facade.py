@@ -1,4 +1,5 @@
 import gc
+import json
 import subprocess
 import sys
 from dataclasses import FrozenInstanceError, is_dataclass
@@ -68,7 +69,10 @@ def _metadata(seq: int, session_id: str, *, ack_for_seq: int | None = None) -> b
     encoded = [
         _varint_field(1, seq),
         _varint_field(2, 0),
-        _string_field(3, f"{session_id}:{seq}"),
+        _string_field(
+            3,
+            json.dumps([session_id, str(seq)], separators=(",", ":"), ensure_ascii=False),
+        ),
         _varint_field(4, 1),
         _varint_field(5, 2),
     ]

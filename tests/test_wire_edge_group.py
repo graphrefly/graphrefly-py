@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from typing import Literal
 
@@ -46,11 +47,22 @@ def _metadata(seq: int, session_id: str) -> bytes:
         [
             _varint_field(1, seq),
             _varint_field(2, 0),
-            _string_field(3, f"{session_id}:{seq}"),
+            _string_field(
+                3,
+                json.dumps([session_id, str(seq)], separators=(",", ":"), ensure_ascii=False),
+            ),
             _varint_field(4, 1),
             _varint_field(5, 1),
         ]
     )
+
+
+def _tuple_key(*parts: str) -> str:
+    return json.dumps(list(parts), separators=(",", ":"), ensure_ascii=False)
+
+
+def _wire_edge_cause_id(group_id: str, seq: int) -> bytes:
+    return f"wire-edge-group-cause:{_tuple_key(group_id, str(seq))}".encode()
 
 
 def _wire_edge_frame(
@@ -296,7 +308,14 @@ def test_public_outbound_group_d561_initial_bootstrap_current_replay_and_same_by
         )
         assert len(outbound) == 4
         assert all(isinstance(value, bytes) for value in outbound)
-        assert sum(b"group:cause:1" in value for value in outbound if isinstance(value, bytes)) == 4
+        assert (
+            sum(
+                _wire_edge_cause_id("group", 1) in value
+                for value in outbound
+                if isinstance(value, bytes)
+            )
+            == 4
+        )
         outbound.clear()
 
         late_current: list[object] = []
@@ -311,7 +330,14 @@ def test_public_outbound_group_d561_initial_bootstrap_current_replay_and_same_by
 
     assert len(outbound) == 4
     assert all(isinstance(value, bytes) for value in outbound)
-    assert sum(b"group:cause:2" in value for value in outbound if isinstance(value, bytes)) == 4
+    assert (
+        sum(
+            _wire_edge_cause_id("group", 2) in value
+            for value in outbound
+            if isinstance(value, bytes)
+        )
+        == 4
+    )
     assert any(b"\x08\x02\x12\x01a" in value and b"A0" in value for value in outbound)
     assert any(b"\x08\x02\x12\x01b" in value and b"B0" in value for value in outbound)
 

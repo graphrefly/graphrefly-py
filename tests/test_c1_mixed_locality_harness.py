@@ -1,9 +1,16 @@
+import json
+
 import pytest
 
 import graphrefly
 from graphrefly import DataMessage, Graph, Message
 
 TraceRow = dict[str, object]
+
+
+def _wire_edge_cause_id(group_id: str, seq: int) -> str:
+    tuple_key = json.dumps([group_id, str(seq)], separators=(",", ":"), ensure_ascii=False)
+    return f"wire-edge-group-cause:{tuple_key}"
 
 
 def _record_data(target: list[bytes]):
@@ -216,7 +223,7 @@ def _classify_replay_source(trace: list[TraceRow]) -> str:
         for row in trace
         if row["phase"] == "stimulus" and row["direction"] in {"g1_to_g2", "g2_to_g1"}
         and row["cause_id"] is not None
-        and str(row["cause_id"]).endswith(":1")
+        and row["cause_id"] == _wire_edge_cause_id("group", 1)
     ]
     if warmup_after_clear:
         return "warmup/activation drain boundary"
