@@ -1,4 +1,4 @@
-"""Typed Python facade over the private PyO3 foundation."""
+"""Typed Python facade over the private native GraphReFly engine."""
 
 from __future__ import annotations
 
@@ -98,6 +98,8 @@ type RestoreRegistry = Any
 
 @dataclass(frozen=True, slots=True)
 class HttpRequest:
+    """Host-driver HTTP request material for Python network source adapters."""
+
     method: str
     url: str
     headers: tuple[tuple[str, str], ...] = ()
@@ -106,6 +108,8 @@ class HttpRequest:
 
 @dataclass(frozen=True, slots=True)
 class HttpResponse:
+    """Host-driver HTTP response material emitted by `from_http`."""
+
     status: int
     headers: tuple[tuple[str, str], ...] = ()
     body: bytes = b""
@@ -113,35 +117,47 @@ class HttpResponse:
 
 @dataclass(frozen=True, slots=True)
 class HttpStreamHead:
+    """HTTP response head material for streaming source drivers."""
+
     status: int
     headers: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class HttpStreamHeadEvent:
+    """Streaming driver event carrying the HTTP response head."""
+
     head: HttpStreamHead
     kind: Literal["Head"] = "Head"
 
 
 @dataclass(frozen=True, slots=True)
 class HttpStreamChunkEvent:
+    """Streaming driver event carrying a bytes chunk."""
+
     chunk: bytes
     kind: Literal["Chunk"] = "Chunk"
 
 
 @dataclass(frozen=True, slots=True)
 class HttpStreamErrorEvent:
+    """Streaming driver event carrying a host-side stream error."""
+
     error: BaseException
     kind: Literal["Error"] = "Error"
 
 
 @dataclass(frozen=True, slots=True)
 class HttpStreamCompleteEvent:
+    """Streaming driver event marking normal stream completion."""
+
     kind: Literal["Complete"] = "Complete"
 
 
 @dataclass(frozen=True, slots=True)
 class SseEvent:
+    """Parsed server-sent event DATA emitted by `from_sse`."""
+
     data: str
     event: str | None = None
     id: str | None = None
@@ -158,15 +174,25 @@ type HttpStreamDriverEvent = (
 
 
 class LocalHttpDriver(Protocol):
-    def request(self, request: HttpRequest) -> Awaitable[HttpResponse]: ...
+    """Host-owned one-shot HTTP driver used by `from_http`."""
+
+    def request(self, request: HttpRequest) -> Awaitable[HttpResponse]:
+        """Start one HTTP request and resolve to an `HttpResponse`."""
+        ...
 
 
 class LocalHttpStreamDriver(Protocol):
-    def stream(self, request: HttpRequest) -> AsyncIterable[HttpStreamDriverEvent]: ...
+    """Host-owned streaming HTTP driver used by `from_sse`."""
+
+    def stream(self, request: HttpRequest) -> AsyncIterable[HttpStreamDriverEvent]:
+        """Start one HTTP stream and yield normalized stream events."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)
 class WireBridgeStatus:
+    """Graph-visible status DATA for a high-level wire bridge facade."""
+
     state: Literal["idle", "started", "open", "waiting", "closed", "errored", "exhausted"]
     session_id: str
     cursor: int = 0
@@ -182,12 +208,16 @@ class WireBridgeStatus:
 
 @dataclass(frozen=True, slots=True)
 class WireBridgeIssue:
+    """Graph-visible issue DATA emitted by a wire bridge facade."""
+
     code: Literal["bridge_error", "invalid"]
     message: str
 
 
 @dataclass(frozen=True, slots=True)
 class WireEdgeGroupIssue:
+    """Graph-visible issue DATA emitted by a wire edge group."""
+
     code: Literal[
         "missing_snapshot",
         "unknown_edge",
@@ -206,6 +236,8 @@ class WireEdgeGroupIssue:
 
 @dataclass(frozen=True, slots=True)
 class WireEdgeGroupStatus:
+    """Graph-visible status DATA for a wire edge group."""
+
     state: Literal["idle", "collecting", "released", "issues"]
     expected_edges: tuple[str, ...]
     active_cause_id: str | None = None
@@ -218,12 +250,16 @@ class WireEdgeGroupStatus:
 
 @dataclass(frozen=True, slots=True)
 class WireBridgeProtobufStatus:
+    """Graph-visible validation status for protobuf byte transport."""
+
     direction: Literal["inbound", "outbound"]
     state: Literal["valid", "invalid"]
 
 
 @dataclass(frozen=True, slots=True)
 class WireBridgeProtobufIssue:
+    """Graph-visible protobuf validation issue DATA."""
+
     direction: Literal["inbound", "outbound"]
     category: str
     message: str
@@ -231,6 +267,8 @@ class WireBridgeProtobufIssue:
 
 @dataclass(frozen=True, slots=True)
 class WireBridgeAckTimeout:
+    """Graph-visible ack timeout fact emitted by the ack driver."""
+
     seq: int
     attempt: int
     observed_at_ms: int | None = None
@@ -238,6 +276,8 @@ class WireBridgeAckTimeout:
 
 @dataclass(frozen=True, slots=True)
 class WireBridgeAckDriverStatus:
+    """Graph-visible status DATA for the bridge ack driver."""
+
     state: Literal["idle", "ready", "issues"]
     timeout_ms: int
     last_timeout: WireBridgeAckTimeout | None = None
@@ -245,6 +285,8 @@ class WireBridgeAckDriverStatus:
 
 @dataclass(frozen=True, slots=True)
 class WireBridgeAckDriverIssue:
+    """Graph-visible issue DATA emitted by the bridge ack driver."""
+
     code: Literal["invalid_clock", "invalid_timeout"]
     message: str
 
@@ -252,7 +294,9 @@ class WireBridgeAckDriverIssue:
 class AsyncRunner(Protocol):
     """Framework-neutral async job runner supplied explicitly by the host."""
 
-    def spawn(self, job: AsyncJobFactory) -> object: ...
+    def spawn(self, job: AsyncJobFactory) -> object:
+        """Schedule one async job in the caller-owned runtime."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,30 +312,46 @@ class RestoreContext(Protocol):
     """Descriptor construction context with no raw Node/Ctx/native handles."""
 
     @property
-    def id(self) -> str: ...
+    def id(self) -> str:
+        """Return the checkpoint node id being restored."""
+        ...
 
     @property
-    def name(self) -> str | None: ...
+    def name(self) -> str | None:
+        """Return the checkpoint node name, if one was recorded."""
+        ...
 
     @property
-    def deps(self) -> list[str]: ...
+    def deps(self) -> list[str]:
+        """Return dependency ids recorded for the checkpoint node."""
+        ...
 
     @property
-    def config(self) -> object | None: ...
+    def config(self) -> object | None:
+        """Return restore configuration material for this node."""
+        ...
 
     @property
-    def config_version(self) -> object | None: ...
+    def config_version(self) -> object | None:
+        """Return the optional restore configuration version."""
+        ...
 
     @property
-    def checkpoint(self) -> GraphCheckpoint: ...
+    def checkpoint(self) -> GraphCheckpoint:
+        """Return the full loaded graph checkpoint material."""
+        ...
 
-    def register_state(self) -> None: ...
+    def register_state(self) -> None:
+        """Register the checkpoint node as a restored state node."""
+        ...
 
     def register_node(
         self,
         callback: Callable[[Ctx], object],
         factory: str | None = None,
-    ) -> None: ...
+    ) -> None:
+        """Register the checkpoint node as a restored callback node."""
+        ...
 
 
 class RestoreDescriptor(Protocol):
@@ -299,7 +359,9 @@ class RestoreDescriptor(Protocol):
 
     ref: str
 
-    def create(self, ctx: RestoreContext) -> object: ...
+    def create(self, ctx: RestoreContext) -> object:
+        """Create restored graph material for one checkpoint node."""
+        ...
 
 
 class _BoundRestoreContext:
@@ -721,11 +783,15 @@ class GraphReentryQueue:
 
     @property
     def closed(self) -> bool:
+        """Return whether this re-entry queue has been closed."""
+
         with self._lock:
             return self._closed
 
     @property
     def pending_count(self) -> int:
+        """Return the number of private completions waiting to drain."""
+
         with self._lock:
             return len(self._items)
 
@@ -766,6 +832,8 @@ class GraphReentryQueue:
         return drained
 
     def close(self) -> None:
+        """Close this queue and cancel queued private completions."""
+
         self._check_owner_thread()
         self._close_from_graph()
         self._lifetime.unregister_reentry_queue(self)
@@ -912,7 +980,7 @@ class _GraphReentryCompletion:
 
 
 class Subscription:
-    """Idempotent subscription handle."""
+    """Idempotent subscription handle returned by observe and subscribe calls."""
 
     def __init__(
         self,
@@ -930,13 +998,19 @@ class Subscription:
 
     @property
     def closed(self) -> bool:
+        """Return whether this subscription has been unsubscribed."""
+
         return self._closed
 
     @property
     def callback_errors(self) -> tuple[SubscriberCallbackError, ...]:
+        """Return observer callback failures captured at the Python boundary."""
+
         return tuple(self._callback_errors)
 
     def unsubscribe(self) -> None:
+        """Detach this subscription from its graph node or observer."""
+
         self._check_thread()
         if not self._closed:
             self._unsubscribe_native()
@@ -988,9 +1062,13 @@ class Retain:
 
     @property
     def closed(self) -> bool:
+        """Return whether this retain token has been released."""
+
         return self._closed
 
     def release(self) -> None:
+        """Release this graph-owned activation root."""
+
         self._check_thread()
         if not self._closed:
             self._subscription.unsubscribe()
@@ -1504,6 +1582,8 @@ class Ctx:
 
     @property
     def dep_len(self) -> int:
+        """Return the number of declared dependencies for this invocation."""
+
         self._check_thread()
         try:
             return self._native.dep_len()
@@ -1513,6 +1593,8 @@ class Ctx:
             _poison_on_fatal(self._lifetime, error)
 
     def has_data(self, index: int) -> bool:
+        """Return whether dependency `index` has DATA for this invocation."""
+
         self._check_thread()
         try:
             has_value, _value = self._native.data_entry(index)
@@ -1531,6 +1613,8 @@ class Ctx:
     def data(self, index: int, default: U) -> object | U: ...
 
     def data(self, index: int, default: object = _NO_DEFAULT) -> object:
+        """Return dependency DATA or the provided default when absent."""
+
         self._check_thread()
         try:
             has_value, value = self._native.data_entry(index)
@@ -1549,6 +1633,8 @@ class Ctx:
 
     @property
     def wave_data(self) -> list[list[list[object]]]:
+        """Return raw dep-to-wave DATA projections for advanced callbacks."""
+
         self._check_thread()
         try:
             return self._native.wave_data(SENTINEL)
@@ -1558,6 +1644,8 @@ class Ctx:
             _poison_on_fatal(self._lifetime, error)
 
     def terminal(self, index: int) -> bool | object:
+        """Return terminal metadata for dependency `index` in this invocation."""
+
         self._check_thread()
         try:
             return self._native.terminal(index)
@@ -1570,6 +1658,8 @@ class Ctx:
 
     @property
     def pull(self) -> PullContext | None:
+        """Return the active PULL demand context, if this is a pull invocation."""
+
         self._check_thread()
         try:
             native_pull = self._native._pull_context()
@@ -1589,6 +1679,8 @@ class Ctx:
     def pull_params(self, default: U) -> object | U: ...
 
     def pull_params(self, default: object = None) -> object:
+        """Return active PULL params, or `default` outside a param-bearing pull."""
+
         pull = self.pull
         if pull is None or pull.params is None:
             return default
@@ -1596,10 +1688,14 @@ class Ctx:
 
     @property
     def rewire_next(self) -> RewireNext:
+        """Return the callback-scoped deferred rewire facade."""
+
         self._check_thread()
         return RewireNext(self)
 
     def emit(self, value: object) -> None:
+        """Emit one DATA value from this advanced node callback."""
+
         self._check_thread()
         _reject_awaitable(value)
         _reject_sentinel_data(value)
@@ -1612,6 +1708,8 @@ class Ctx:
 
     @property
     def has_state(self) -> bool:
+        """Return whether this node has private cross-wave state."""
+
         self._check_thread()
         try:
             has_value, _value = self._native.state_entry()
@@ -1623,6 +1721,8 @@ class Ctx:
 
     @property
     def state(self) -> object | None:
+        """Return this node's private cross-wave state value."""
+
         self._check_thread()
         try:
             _has_value, value = self._native.state_entry()
@@ -1645,6 +1745,8 @@ class Ctx:
             _poison_on_fatal(self._lifetime, error)
 
     def persist_state(self, on: bool = True) -> None:
+        """Opt this node's private state into checkpoint persistence."""
+
         self._check_thread()
         try:
             self._native.state_persist(on)
@@ -1654,6 +1756,8 @@ class Ctx:
             _poison_on_fatal(self._lifetime, error)
 
     def on_invalidate(self, callback: Callable[[], object]) -> None:
+        """Register a cleanup hook for the current callback's INVALIDATE."""
+
         self._check_thread()
         _reject_async_callable(callback)
 
@@ -1669,6 +1773,8 @@ class Ctx:
             _poison_on_fatal(self._lifetime, error)
 
     def on_deactivation(self, callback: Callable[[], object]) -> None:
+        """Register a cleanup hook for this callback's deactivation."""
+
         self._check_thread()
         _reject_async_callable(callback)
 
@@ -1690,6 +1796,8 @@ class Ctx:
         *,
         toward_dep: int | None = None,
     ) -> None:
+        """Request a PULL wave toward dependencies during this invocation."""
+
         self._check_thread()
         _reject_non_string_pull_id(pull_id)
         _reject_awaitable(params)
@@ -1712,6 +1820,8 @@ class Ctx:
         *,
         toward_dep: int | None = None,
     ) -> None:
+        """Schedule one deferred PULL request after this invocation."""
+
         self._check_thread()
         _reject_non_string_pull_id(pull_id)
         _reject_awaitable(params)
@@ -1747,6 +1857,8 @@ class RewireNext:
         self._ctx = ctx
 
     def subscribe_dep(self, dep: Node[Any], callback: NodeCallback) -> None:
+        """Subscribe this node to an additional dependency on the next wave."""
+
         self._ctx._check_thread()
         callback = _validate_rewire_callback(callback)
         native_dep = self._native_node(dep)
@@ -1759,6 +1871,8 @@ class RewireNext:
             _poison_on_fatal(self._ctx._lifetime, error)
 
     def unsubscribe_dep(self, dep: Node[Any], callback: NodeCallback) -> None:
+        """Unsubscribe this node from a dependency on the next wave."""
+
         self._ctx._check_thread()
         callback = _validate_rewire_callback(callback)
         native_dep = self._native_node(dep)
@@ -1771,6 +1885,8 @@ class RewireNext:
             _poison_on_fatal(self._ctx._lifetime, error)
 
     def replace_deps(self, deps: Iterable[Node[Any]], callback: NodeCallback) -> None:
+        """Replace this node's dependency set on the next wave."""
+
         self._ctx._check_thread()
         callback = _validate_rewire_callback(callback)
         native_deps = [self._native_node(dep) for dep in deps]
@@ -1828,6 +1944,8 @@ class Node[T]:
         self._subscription_owner = subscription_owner
 
     def set(self, value: T) -> None:
+        """Set DATA on a writable state node."""
+
         self._check_thread()
         if not self._writable:
             msg = "set() is only available on state nodes in the v0 Python facade"
@@ -1850,6 +1968,8 @@ class Node[T]:
     def cache(self, default: U) -> T | U: ...
 
     def cache(self, default: object = _NO_DEFAULT) -> object:
+        """Return the latest cached DATA value or `default` when absent."""
+
         self._check_thread()
         try:
             has_value, value = self._native.cache_entry()
@@ -1866,6 +1986,8 @@ class Node[T]:
 
     @property
     def has_value(self) -> bool:
+        """Return whether this node currently has cached DATA."""
+
         self._check_thread()
         try:
             has_value, _value = self._native.cache_entry()
@@ -1877,6 +1999,8 @@ class Node[T]:
 
     @property
     def status(self) -> str:
+        """Return the node status string from the native graph."""
+
         self._check_thread()
         try:
             return self._native.status()
@@ -1891,6 +2015,8 @@ class Node[T]:
         *,
         on_error: ObserverErrorHandler | None = None,
     ) -> Subscription:
+        """Subscribe to this node's public observation messages."""
+
         self._check_thread()
         _reject_async_callable(callback)
         if on_error is not None:
@@ -2070,6 +2196,8 @@ def _wire_bridge_ack_driver_issue(value: object) -> WireBridgeAckDriverIssue:
 
 
 class WireBridge:
+    """Graph-owned wire bridge bundle with status and issue nodes."""
+
     def __init__(self, native: _native._WireBridge, graph: Graph) -> None:
         self._native = native
         self._owner_thread = graph._owner_thread
@@ -2101,6 +2229,8 @@ class WireBridge:
         self.release()
 
     def release(self) -> None:
+        """Release the bridge and its attached child facade bundles."""
+
         self._check_thread()
         if self._released:
             return
@@ -2162,6 +2292,8 @@ class WireBridge:
 
 
 class WireBridgeProtobuf(_FacadePublicSubscriptions):
+    """High-level protobuf byte transport facade for a wire bridge."""
+
     def __init__(
         self,
         native: _native._WireBridgeProtobuf,
@@ -2213,6 +2345,8 @@ class WireBridgeProtobuf(_FacadePublicSubscriptions):
         self.release()
 
     def release(self) -> None:
+        """Release the protobuf transport facade and owned subscriptions."""
+
         self._check_thread()
         if self._released:
             return
@@ -2255,6 +2389,8 @@ class WireBridgeProtobuf(_FacadePublicSubscriptions):
 
 
 class WireEdgeGroup(_FacadePublicSubscriptions):
+    """High-level wire edge group facade for inbound or outbound edge facts."""
+
     def __init__(
         self,
         native: _native._WireEdgeGroup,
@@ -2302,6 +2438,8 @@ class WireEdgeGroup(_FacadePublicSubscriptions):
         self.release()
 
     def release(self) -> None:
+        """Release the edge group facade and owned subscriptions."""
+
         self._check_thread()
         if self._released:
             return
@@ -2344,6 +2482,8 @@ class WireEdgeGroup(_FacadePublicSubscriptions):
 
 
 class WireBridgeAckDriver(_FacadePublicSubscriptions):
+    """Clock-driven ack timeout driver facade for a wire bridge."""
+
     def __init__(
         self,
         native: _native._WireBridgeAckDriver,
@@ -2404,6 +2544,8 @@ class WireBridgeAckDriver(_FacadePublicSubscriptions):
         self.release()
 
     def release(self) -> None:
+        """Release the ack driver and its owned timeout retain."""
+
         self._check_thread()
         if self._released:
             return
@@ -2479,10 +2621,14 @@ class Graph:
 
     @property
     def closed(self) -> bool:
+        """Return whether this graph facade has been closed."""
+
         self._check_thread(allow_closed=True)
         return self._lifetime.is_closed()
 
     def close(self) -> None:
+        """Close this graph facade and release Python-owned resources."""
+
         self._check_thread(allow_closed=True)
         try:
             self._native.raise_pending_fatal()
@@ -2492,6 +2638,8 @@ class Graph:
             self._lifetime.close()
 
     def checkpoint(self) -> GraphCheckpoint:
+        """Return a strict-JSON checkpoint for this graph."""
+
         self._check_thread()
         try:
             return self._native.checkpoint()
@@ -2543,6 +2691,8 @@ class Graph:
             _poison_on_fatal(self._lifetime, error)
 
     def state(self, value: T, name: str | None = None) -> Node[T]:
+        """Create a writable graph state node with initial DATA."""
+
         self._check_thread()
         _reject_awaitable(value)
         _reject_sentinel_data(value)
@@ -2575,6 +2725,8 @@ class Graph:
         callback: Callable[[], T] | None = None,
         name: str | None = None,
     ) -> Node[T] | Callable[[Callable[[], T]], Node[T]]:
+        """Create or decorate a zero-dependency producer node."""
+
         self._check_thread()
         if callback is None:
             return lambda fn: self.producer(fn, name or fn.__name__)
@@ -2619,6 +2771,8 @@ class Graph:
         callback: Callable[..., U] | None = None,
         name: str | None = None,
     ) -> Node[U] | Callable[[Callable[..., U]], Node[U]]:
+        """Create or decorate a value-level derived node over dependencies."""
+
         self._check_thread()
         deps = list(deps)
         if callback is None:
@@ -2689,6 +2843,8 @@ class Graph:
         pull_id: str | None = None,
         restore: RestoreRef | None = None,
     ) -> Node[object] | Callable[[Callable[[Ctx], object]], Node[object]]:
+        """Create or decorate an advanced `Ctx`-level graph node."""
+
         self._check_thread()
         deps = list(deps)
         _reject_non_bool("partial", partial)
@@ -2778,6 +2934,8 @@ class Graph:
         callback: Callable[..., object] | None = None,
         name: str | None = None,
     ) -> Node[object] | Callable[[Callable[..., object]], Node[object]]:
+        """Create or decorate a value-level effect node over dependencies."""
+
         self._check_thread()
         deps = list(deps)
         if callback is None:
@@ -2801,6 +2959,8 @@ class Graph:
             _poison_on_fatal(self._lifetime, error)
 
     def batch(self, callback: Callable[[], object]) -> None:
+        """Run synchronous graph mutations inside one native batch boundary."""
+
         self._check_thread()
         _reject_async_callable(callback)
 
@@ -2818,6 +2978,8 @@ class Graph:
             _poison_on_fatal(self._lifetime, error)
 
     def describe(self) -> dict[str, Any]:
+        """Return the current JSON-serializable topology snapshot."""
+
         self._check_thread()
         try:
             return _normalize_describe(self._native.describe())
@@ -2827,6 +2989,8 @@ class Graph:
             _poison_on_fatal(self._lifetime, error)
 
     def pause(self, node: Node[Any], lock_id: str) -> None:
+        """Pause a graph-local node using a caller-provided lock id."""
+
         self._check_thread()
         _reject_non_string_lock_id(lock_id)
         native = self._native_node(node)
@@ -2838,6 +3002,8 @@ class Graph:
             _poison_on_fatal(self._lifetime, error)
 
     def resume(self, node: Node[Any], lock_id: str) -> None:
+        """Resume a graph-local node for the given lock id."""
+
         self._check_thread()
         _reject_non_string_lock_id(lock_id)
         native = self._native_node(node)
@@ -2849,6 +3015,8 @@ class Graph:
             _poison_on_fatal(self._lifetime, error)
 
     def invalidate(self, node: Node[Any]) -> None:
+        """Invalidate a graph-local node through the public graph facade."""
+
         self._check_thread()
         native = self._native_node(node)
         try:
@@ -2864,6 +3032,8 @@ class Graph:
         *,
         on_error: ObserverErrorHandler | None = None,
     ) -> Subscription:
+        """Subscribe to graph-level observation events."""
+
         self._check_thread()
         _reject_async_callable(callback)
         if on_error is not None:
@@ -3413,6 +3583,8 @@ def version() -> str:
 
 
 def wire_bridge(graph: Graph, *, session_id: str, name: str | None = None) -> WireBridge:
+    """Create a graph-owned high-level wire bridge facade."""
+
     if not isinstance(graph, Graph):
         raise GraphReflyValueError("wire_bridge requires a graphrefly.Graph")
     graph._check_thread()
@@ -3428,6 +3600,8 @@ def wire_bridge_protobuf(
     *,
     name: str | None = None,
 ) -> WireBridgeProtobuf:
+    """Attach protobuf byte transport nodes to a wire bridge."""
+
     if not isinstance(graph, Graph):
         raise GraphReflyValueError("wire_bridge_protobuf requires a graphrefly.Graph")
     graph._check_thread()
@@ -3446,6 +3620,8 @@ def wire_edge_group(
     inbound_edges: Iterable[str] | None = None,
     outbound_edges: dict[str, Node[bytes]] | None = None,
 ) -> WireEdgeGroup:
+    """Attach inbound or outbound wire edge grouping to a bridge."""
+
     if not isinstance(graph, Graph):
         raise GraphReflyValueError("wire_edge_group requires a graphrefly.Graph")
     graph._check_thread()
@@ -3485,6 +3661,8 @@ def wire_bridge_ack_driver(
     timeout_ms: int,
     name: str | None = None,
 ) -> WireBridgeAckDriver:
+    """Attach a clock-driven ack timeout driver to a bridge."""
+
     if not isinstance(graph, Graph):
         raise GraphReflyValueError("wire_bridge_ack_driver requires a graphrefly.Graph")
     graph._check_thread()

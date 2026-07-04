@@ -196,9 +196,15 @@ cd ../graphrefly-py
 uv run pytest
 uv run ruff check .
 uv run mypy src
+uv run python scripts/check_api_docs.py
 uv run mkdocs build --strict
 python -c "import graphrefly; print(graphrefly.version())"
 ```
+
+The Python repo validates MkDocs and mkdocstrings output, but the shared
+`~/src/graphrefly` Pages workflow owns the final `graphrefly.dev` artifact. That
+workflow checks out this repo, builds `uv run mkdocs build --strict`, and copies
+the generated site into `website/dist/py/` before deploying.
 
 The Rust foundation can be checked directly from the sibling repo:
 

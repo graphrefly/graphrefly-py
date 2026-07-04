@@ -31,11 +31,14 @@ tag. The workflow uses OpenID Connect, not a long-lived PyPI API token.
 Before tagging, rebuild the package-local docs from source:
 
 ```bash
+uv run python scripts/check_api_docs.py
 uv run mkdocs build --strict
 ```
 
-Shared website/blog publishing remains owned by `~/src/graphrefly`; this package
-only owns the Python docs route inputs and generated API reference.
+Shared website/blog publishing remains owned by `~/src/graphrefly`; its Pages
+workflow builds this package's MkDocs output and places the generated files
+under `graphrefly.dev/py/`. This package only owns the Python docs route inputs
+and generated API reference source.
 
 ```bash
 git tag v0.22.0

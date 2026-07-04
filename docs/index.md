@@ -46,4 +46,4 @@ files by hand.
 
 - Native handles.
 - Raw protocol ingress or arbitrary message construction.
-- A second Python wave core.
+- A Python reimplementation of the native wave core.
