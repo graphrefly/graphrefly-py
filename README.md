@@ -101,9 +101,8 @@ public API.
 - `Graph.close()` and `with Graph(...)` are Python host lifetime scopes. They
   release facade-created subscriptions/observers and graph-owned retain roots;
   they do not emit protocol `TEARDOWN` or `COMPLETE`.
-- Public Python does not expose raw `Node.up(msgs)`, raw `Node.down(msgs)`,
-  arbitrary message construction/sending, raw `ctx.up(msgs)`, or raw PyO3
-  handles.
+- Public Python exposes facade methods only; raw protocol ingress, arbitrary
+  message construction/sending, and native handles remain hidden.
 
 ## Async Runners
 
@@ -168,6 +167,15 @@ reconnect, or `Last-Event-ID` management.
 - API reference: https://graphrefly.dev/py/api/
 - Language-neutral spec: https://graphrefly.dev/spec/
 - Repository: https://github.com/graphrefly/graphrefly-py
+
+This repo owns the Python package docs: public docstrings, generated Python API
+reference, MkDocs source pages, examples, PyPI install material, and package
+release notes. The package-local docs policy is `docs/docs.jsonl`.
+
+Shared graphrefly.dev website architecture, shared concepts, protocol authority,
+and the public blog stay in `~/src/graphrefly` under D563. Generated API output
+comes from docstrings through MkDocs/mkdocstrings; do not edit generated `site/`
+output by hand.
 
 ## Local Development
 

@@ -1,6 +1,6 @@
 # graphrefly-py -- agent context (Python host package)
 
-GraphReFly Python is the host-language package for Python users. The language-neutral authority lives in `~/src/graphrefly` on branch `main`; when this repo disagrees with that authority, the authority wins.
+GraphReFly Python is the host-language package for Python users. The language-neutral authority lives in `~/src/graphrefly`; when this repo disagrees with that authority, the authority wins.
 
 ## Authority
 
@@ -11,6 +11,14 @@ Read `~/src/graphrefly/CLAUDE.md` first. Key records for this repo:
 - `~/src/graphrefly/spec/conformance.jsonl`
 - `~/src/graphrefly/plan/phases.jsonl`
 - `~/src/graphrefly/sessions/active/SESSION-clean-slate-redesign.md`
+
+Python package-local documentation policy lives in `docs/docs.jsonl`. It is the
+source of truth for what this repo owns: Python docstrings, generated Python API
+docs, MkDocs source pages, examples, PyPI install/release notes, and local docs
+checks. Shared graphrefly.dev website architecture, public blog storage/rendering,
+shared guide records, protocol authority, and dashboard/control views stay in
+`~/src/graphrefly` under D563. Do not copy or migrate shared website/blog/docs
+material into this repo, and do not migrate skills.
 
 Sibling implementations:
 
@@ -42,7 +50,7 @@ Current Python value/message boundary:
   `graphrefly.SENTINEL`, and COMPLETE/ERROR live only in `terminal(index)`. Do not
   add raw `latest`, `prevData`, `latestData`, `depRecords[i].latest`, or equivalent
   parallel value aliases. `graphrefly.SENTINEL` itself is not legal DATA.
-- Public graph-owned control convenience is `Graph.pause(node, lock_id)`, `Graph.resume(node, lock_id)`, and `Graph.invalidate(node)`. Do not expose raw `Node.up(msgs)` or arbitrary public message sending.
+- Public graph-owned control convenience is `Graph.pause(node, lock_id)`, `Graph.resume(node, lock_id)`, and `Graph.invalidate(node)`. Do not expose raw protocol ingress or arbitrary public message sending.
 - Node callback failures become graph `ERROR` payloads wrapped as `GraphCallbackError`.
 - Subscribe/observe callback failures are Python observer-boundary failures captured as `SubscriberCallbackError`.
 - Fatal Python `BaseException` process-control failures must propagate to the Python caller, not become graph `ERROR` or `SubscriberCallbackError`. D431 narrows the native batch edge: batch-body rollback remains normal, but a fatal first observed after native commit has begun is a host-boundary abort without a full transactional rollback claim. D436 requires the public Python facade to auto-close/poison after such fatal propagation.
@@ -51,19 +59,23 @@ Current Python value/message boundary:
 ## Clean-Slate Floor
 
 - No protocol/tier/message/ctx/batch semantic changes from this repo. Route any such need through spec-amend in `~/src/graphrefly`.
-- Do not restore the old Python pure-core, `NodeImpl`, `Runner`, `Actor`, GraphSpec, subgraph locks, old Impl/facade/port model, or structural TS parity.
+- Do not restore retired pre-clean-slate Python core surfaces, subgraph locks,
+  the old port model, or structural cross-language parity.
 - Cross-runtime parity is behavioral conformance, not matching symbols.
 - Async belongs at source/pool/adapter boundaries, not inside the sync wave core.
 - Native handles are single-thread host objects in this foundation slice.
+- Generated documentation output must be regenerated through MkDocs/mkdocstrings,
+  not edited by hand.
 
 ## Commands
 
 ```bash
-uv sync --group dev
+uv sync --group dev --group docs
 uv run maturin develop --release
 uv run pytest
 uv run ruff check .
 uv run mypy src
+uv run mkdocs build --strict
 ```
 
 Rust foundation check:

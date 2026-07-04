@@ -23,6 +23,18 @@ Use `Graph.derived(...)` for value-level transforms, `Graph.node(...)` for
 advanced callback-scoped `Ctx` work, and `Graph.close()` or `with Graph(...)` for
 host lifetime cleanup.
 
+## Documentation Boundary
+
+The package-local docs policy is `docs/docs.jsonl`. This repo owns Python
+docstrings, generated Python API docs, MkDocs pages, examples, PyPI install
+material, and release notes.
+
+Shared graphrefly.dev website architecture, shared guide records, protocol
+authority, and public blog material stay in `~/src/graphrefly` under D563.
+Generated API output is built from public docstrings through MkDocs/mkdocstrings;
+rebuild it with `uv run mkdocs build --strict` and do not edit generated `site/`
+files by hand.
+
 ## What This Package Owns
 
 - Pythonic graph, node, subscription, message, and exception facades.
@@ -32,7 +44,6 @@ host lifetime cleanup.
 
 ## What It Does Not Expose
 
-- Raw PyO3 handles.
-- Raw protocol ingress.
-- Public `Node.up/down` or `ctx.up/down`.
+- Native handles.
+- Raw protocol ingress or arbitrary message construction.
 - A second Python wave core.

@@ -6,6 +6,10 @@ Install:
 pip install graphrefly
 ```
 
+These examples use the public Python facade over the native Rust graph engine.
+They intentionally avoid raw native handles, raw protocol ingress, and retired
+pure-Python runtime surfaces.
+
 Create a graph:
 
 ```python

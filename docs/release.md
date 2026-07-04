@@ -28,6 +28,15 @@ Release publishing is handled by GitHub Actions from tags matching `v*`.
 Configure PyPI Trusted Publishing for this repository before pushing a release
 tag. The workflow uses OpenID Connect, not a long-lived PyPI API token.
 
+Before tagging, rebuild the package-local docs from source:
+
+```bash
+uv run mkdocs build --strict
+```
+
+Shared website/blog publishing remains owned by `~/src/graphrefly`; this package
+only owns the Python docs route inputs and generated API reference.
+
 ```bash
 git tag v0.22.0
 git push origin v0.22.0
