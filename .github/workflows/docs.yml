@@ -1,4 +1,4 @@
-name: Docs
+name: Deploy docs to GitHub Pages
 
 on:
   pull_request:
@@ -8,13 +8,18 @@ on:
 
 permissions:
   contents: read
+  pages: write
+  id-token: write
 
 concurrency:
-  group: python-docs-${{ github.ref }}
+  group: python-pages-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  PY_DOCS_CUSTOM_DOMAIN: py.graphrefly.dev
+
 jobs:
-  check:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Python host package
@@ -44,4 +49,24 @@ jobs:
 
       - name: Build site
         working-directory: graphrefly-py
-        run: uv run zensical build --strict
+        run: |
+          uv run zensical build --strict
+          printf '%s\n' "$PY_DOCS_CUSTOM_DOMAIN" > site/CNAME
+
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: graphrefly-py/site
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

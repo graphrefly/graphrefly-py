@@ -1,7 +1,7 @@
 [project]
 site_name = "GraphReFly Python"
 site_description = "Python host package for GraphReFly over the native Rust graph engine."
-site_url = "https://graphrefly.dev/py/"
+site_url = "https://py.graphrefly.dev/"
 repo_url = "https://github.com/graphrefly/graphrefly-py"
 repo_name = "graphrefly/graphrefly-py"
 docs_dir = "docs"

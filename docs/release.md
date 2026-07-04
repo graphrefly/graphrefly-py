@@ -35,10 +35,10 @@ uv run python scripts/check_api_docs.py
 uv run zensical build --strict
 ```
 
-Shared website/blog publishing remains owned by `~/src/graphrefly`; its Pages
-workflow builds this package's Zensical output and places the generated files
-under `graphrefly.dev/py/`. This package only owns the Python docs route inputs
-and generated API reference source.
+Shared website/blog publishing remains owned by `~/src/graphrefly`. This package
+deploys its own Zensical output to `https://py.graphrefly.dev/`; the shared site
+links to that package-local artifact and does not copy generated Python API
+pages into the main `graphrefly.dev` artifact.
 
 ```bash
 git tag v0.22.0

@@ -24,9 +24,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://graphrefly.dev/py/"
+Homepage = "https://py.graphrefly.dev/"
 Repository = "https://github.com/graphrefly/graphrefly-py"
-Documentation = "https://graphrefly.dev/py/"
+Documentation = "https://py.graphrefly.dev/"
 Spec = "https://graphrefly.dev/spec/"
 
 [project.optional-dependencies]

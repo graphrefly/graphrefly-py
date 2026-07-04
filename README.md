@@ -163,8 +163,8 @@ reconnect, or `Last-Event-ID` management.
 
 ## Documentation
 
-- Python docs: https://graphrefly.dev/py/
-- API reference: https://graphrefly.dev/py/api/
+- Python docs: https://py.graphrefly.dev/
+- API reference: https://py.graphrefly.dev/api/
 - Language-neutral spec: https://graphrefly.dev/spec/
 - Repository: https://github.com/graphrefly/graphrefly-py
 
@@ -202,10 +202,10 @@ uv run zensical build --strict
 python -c "import graphrefly; print(graphrefly.version())"
 ```
 
-The Python repo validates Zensical and mkdocstrings output, but the shared
-`~/src/graphrefly` Pages workflow owns the final `graphrefly.dev` artifact. That
-workflow checks out this repo, builds `uv run zensical build --strict`, and copies
-the generated site into `website/dist/py/` before deploying.
+The Python repo validates Zensical and mkdocstrings output and deploys the
+package-local docs artifact to `https://py.graphrefly.dev/`. The shared
+`~/src/graphrefly` website links to this route but does not copy generated Python
+API pages into the main `graphrefly.dev` artifact.
 
 The Rust foundation can be checked directly from the sibling repo:
 
