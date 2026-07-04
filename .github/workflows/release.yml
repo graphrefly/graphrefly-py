@@ -70,7 +70,7 @@ jobs:
 
       - name: Build docs
         working-directory: graphrefly-py
-        run: uv run mkdocs build --strict
+        run: uv run zensical build --strict
 
   wheels:
     name: Wheels (${{ matrix.platform.name }})

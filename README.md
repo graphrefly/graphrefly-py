@@ -169,12 +169,13 @@ reconnect, or `Last-Event-ID` management.
 - Repository: https://github.com/graphrefly/graphrefly-py
 
 This repo owns the Python package docs: public docstrings, generated Python API
-reference, MkDocs source pages, examples, PyPI install material, and package
-release notes. The package-local docs policy is `docs/docs.jsonl`.
+reference, Zensical source pages, examples, PyPI install material, and package
+release notes, plus the package-local `zensical.toml` site configuration. The
+package-local docs policy is `docs/docs.jsonl`.
 
 Shared graphrefly.dev website architecture, shared concepts, protocol authority,
 and the public blog stay in `~/src/graphrefly` under D563. Generated API output
-comes from docstrings through MkDocs/mkdocstrings; do not edit generated `site/`
+comes from docstrings through Zensical/mkdocstrings; do not edit generated `site/`
 output by hand.
 
 ## Local Development
@@ -197,13 +198,13 @@ uv run pytest
 uv run ruff check .
 uv run mypy src
 uv run python scripts/check_api_docs.py
-uv run mkdocs build --strict
+uv run zensical build --strict
 python -c "import graphrefly; print(graphrefly.version())"
 ```
 
-The Python repo validates MkDocs and mkdocstrings output, but the shared
+The Python repo validates Zensical and mkdocstrings output, but the shared
 `~/src/graphrefly` Pages workflow owns the final `graphrefly.dev` artifact. That
-workflow checks out this repo, builds `uv run mkdocs build --strict`, and copies
+workflow checks out this repo, builds `uv run zensical build --strict`, and copies
 the generated site into `website/dist/py/` before deploying.
 
 The Rust foundation can be checked directly from the sibling repo:

@@ -44,4 +44,4 @@ jobs:
 
       - name: Build site
         working-directory: graphrefly-py
-        run: uv run mkdocs build --strict
+        run: uv run zensical build --strict
