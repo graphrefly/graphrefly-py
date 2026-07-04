@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.9,<2.0"]
+requires = ["maturin>=1.14,<2.0"]
 build-backend = "maturin"
 
 [project]
@@ -31,20 +31,23 @@ Spec = "https://graphrefly.dev/spec/"
 
 [project.optional-dependencies]
 async = [
-    "anyio>=4.0",
-    "trio>=0.25",
+    "anyio>=4.14",
+    "trio>=0.33",
 ]
 
 [dependency-groups]
 dev = [
-    "maturin>=1.9,<2.0",
-    "mypy>=1.18",
-    "pytest>=8.0",
-    "ruff>=0.14",
+    "maturin>=1.14,<2.0",
+    "mypy>=2.1",
+    "pytest>=9.1",
+    "ruff>=0.15",
 ]
 docs = [
-    "mkdocs-material>=9.6",
-    "mkdocstrings[python]>=0.30",
+    "mkdocs>=1.6,<2.0",
+    "mkdocs-material>=9.7.6",
+    "mkdocstrings[python]>=1.0.4",
+    "mkdocstrings-python>=2.0.5",
+    "pymdown-extensions>=11.0.1",
 ]
 
 [tool.uv]
