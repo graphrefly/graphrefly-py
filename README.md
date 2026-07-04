@@ -169,14 +169,14 @@ reconnect, or `Last-Event-ID` management.
 - Repository: https://github.com/graphrefly/graphrefly-py
 
 This repo owns the Python package docs: public docstrings, generated Python API
-reference, Zensical source pages, examples, PyPI install material, and package
-release notes, plus the package-local `zensical.toml` site configuration. The
+reference, Starlight source pages, examples, PyPI install material, and package
+release notes, plus the package-local `website/` site configuration. The
 package-local docs policy is `docs/docs.jsonl`.
 
 Shared graphrefly.dev website architecture, shared concepts, protocol authority,
 and the public blog stay in `~/src/graphrefly` under D563. Generated API output
-comes from docstrings through Zensical/mkdocstrings; do not edit generated `site/`
-output by hand.
+comes from docstrings through the `griffe`-backed Starlight generator; do not edit
+generated `website/src/content/docs/api/` output by hand.
 
 ## Local Development
 
@@ -198,11 +198,12 @@ uv run pytest
 uv run ruff check .
 uv run mypy src
 uv run python scripts/check_api_docs.py
-uv run zensical build --strict
+pnpm --dir website docs:gen:check
+pnpm --dir website build
 python -c "import graphrefly; print(graphrefly.version())"
 ```
 
-The Python repo validates Zensical and mkdocstrings output and deploys the
+The Python repo validates Starlight and griffe-generated API output and deploys the
 package-local docs artifact to `https://py.graphrefly.dev/`. The shared
 `~/src/graphrefly` website links to this route but does not copy generated Python
 API pages into the main `graphrefly.dev` artifact.

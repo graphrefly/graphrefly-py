@@ -14,7 +14,7 @@ Read `~/src/graphrefly/CLAUDE.md` first. Key records for this repo:
 
 Python package-local documentation policy lives in `docs/docs.jsonl`. It is the
 source of truth for what this repo owns: Python docstrings, generated Python API
-docs, Zensical source pages, examples, PyPI install/release notes, and local docs
+docs, Starlight source pages, examples, PyPI install/release notes, and local docs
 checks. Shared graphrefly.dev website architecture, public blog storage/rendering,
 shared guide records, protocol authority, and dashboard/control views stay in
 `~/src/graphrefly` under D563. Do not copy or migrate shared website/blog/docs
@@ -64,7 +64,7 @@ Current Python value/message boundary:
 - Cross-runtime parity is behavioral conformance, not matching symbols.
 - Async belongs at source/pool/adapter boundaries, not inside the sync wave core.
 - Native handles are single-thread host objects in this foundation slice.
-- Generated documentation output must be regenerated through Zensical/mkdocstrings,
+- Generated documentation output must be regenerated through the Starlight API generator,
   not edited by hand.
 
 ## Commands
@@ -75,7 +75,7 @@ uv run maturin develop --release
 uv run pytest
 uv run ruff check .
 uv run mypy src
-uv run zensical build --strict
+pnpm --dir website build
 ```
 
 Rust foundation check:

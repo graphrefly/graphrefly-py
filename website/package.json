@@ -1,0 +1,25 @@
+{
+	"name": "@graphrefly/py-docs-site",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"docs:gen": "cd .. && uv run python website/scripts/gen-api-docs.py",
+		"docs:gen:check": "cd .. && uv run python website/scripts/gen-api-docs.py --check",
+		"build:starlight-artifact": "pnpm docs:gen && astro build && node scripts/postbuild-python-starlight-artifact.mjs",
+		"build:py-artifact": "pnpm build:starlight-artifact",
+		"predev": "pnpm docs:gen",
+		"dev": "astro dev",
+		"start": "astro dev",
+		"build": "pnpm build:starlight-artifact",
+		"preview": "astro preview"
+	},
+	"dependencies": {
+		"@astrojs/starlight": "^0.37.2",
+		"astro": "^5.16.0",
+		"sharp": "^0.34.5",
+		"starlight-blog": "^0.25.3"
+	},
+	"devDependencies": {
+		"typescript": "^5.7.0"
+	}
+}

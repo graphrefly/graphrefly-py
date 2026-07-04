@@ -1,0 +1,45 @@
+/* GraphReFly website — entry stylesheet (Starlight customCss) */
+
+@import url("https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@400;500;600;700;800;900&family=Sora:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap");
+
+@import "./tokens.css";
+@import "./docs.css";
+
+/* ─── Splash (homepage) layout escape rules ─── */
+html:not([data-has-sidebar]) .main-frame {
+	padding-top: 0 !important;
+}
+
+main:has(.gr-home) {
+	margin: 0 !important;
+	padding: 0 !important;
+}
+
+html:not([data-has-sidebar]) .main-pane {
+	margin: 0 !important;
+}
+
+html:not([data-has-sidebar]) .main-frame > div:first-child {
+	margin-top: 0 !important;
+}
+
+.content-panel:has(.gr-home) .sl-container > .sl-markdown-content {
+	margin-top: 0 !important;
+}
+
+html:has(.gr-home) {
+	scroll-behavior: smooth;
+}
+
+.sl-markdown-content:has(.gr-home) > *:first-child {
+	margin-top: 0 !important;
+}
+
+html:not([data-has-sidebar]) .page > header.header {
+	background: var(--sl-color-bg-nav) !important;
+	border-bottom: 1px solid var(--sl-color-hairline);
+}
+
+.content-panel:has(.gr-home) > .sl-container > .hero {
+	display: none;
+}

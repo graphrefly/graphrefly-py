@@ -44,9 +44,24 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v6
 
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Enable Corepack (pnpm)
+        run: |
+          corepack enable
+          corepack install
+
       - name: Sync dependencies
         working-directory: graphrefly-py
         run: uv sync --group dev --group docs
+
+      - name: Install docs website dependencies
+        working-directory: graphrefly-py/website
+        run: pnpm install --frozen-lockfile
 
       - name: Build native extension
         working-directory: graphrefly-py
@@ -68,9 +83,13 @@ jobs:
         working-directory: graphrefly-py
         run: uv run mypy src
 
+      - name: Generated docs freshness
+        working-directory: graphrefly-py
+        run: pnpm --dir website docs:gen:check
+
       - name: Build docs
         working-directory: graphrefly-py
-        run: uv run zensical build --strict
+        run: pnpm --dir website build
 
   wheels:
     name: Wheels (${{ matrix.platform.name }})

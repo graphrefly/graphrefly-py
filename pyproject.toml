@@ -43,9 +43,7 @@ dev = [
     "ruff>=0.15",
 ]
 docs = [
-    "mkdocstrings-python>=2.0.5",
-    "pymdown-extensions>=11.0.1",
-    "zensical>=0.0.46",
+    "griffe>=2.1.0",
 ]
 
 [tool.uv]

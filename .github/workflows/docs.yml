@@ -27,37 +27,46 @@ jobs:
         with:
           path: graphrefly-py
 
-      - name: Checkout Rust native engine
-        uses: actions/checkout@v5
-        with:
-          repository: graphrefly/graphrefly-rs
-          ref: main
-          path: graphrefly-rs
-
       - name: Install uv
         uses: astral-sh/setup-uv@v6
 
-      - name: Install dependencies and native extension
-        working-directory: graphrefly-py
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Enable Corepack (pnpm)
         run: |
-          uv sync --group dev --group docs
-          uv run maturin develop --release
+          corepack enable
+          corepack install
+
+      - name: Install Python docs dependencies
+        working-directory: graphrefly-py
+        run: uv sync --group dev --group docs
+
+      - name: Install docs website dependencies
+        working-directory: graphrefly-py/website
+        run: pnpm install --frozen-lockfile
 
       - name: API docs coverage
         working-directory: graphrefly-py
         run: uv run python scripts/check_api_docs.py
 
+      - name: Generated docs freshness
+        working-directory: graphrefly-py
+        run: pnpm --dir website docs:gen:check
+
       - name: Build site
         working-directory: graphrefly-py
         run: |
-          uv run zensical build --strict
-          printf '%s\n' "$PY_DOCS_CUSTOM_DOMAIN" > site/CNAME
+          pnpm --dir website build
 
       - name: Upload Pages artifact
         if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
         with:
-          path: graphrefly-py/site
+          path: graphrefly-py/website/dist
 
   deploy:
     if: github.event_name != 'pull_request'

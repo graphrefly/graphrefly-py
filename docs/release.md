@@ -32,11 +32,12 @@ Before tagging, rebuild the package-local docs from source:
 
 ```bash
 uv run python scripts/check_api_docs.py
-uv run zensical build --strict
+pnpm --dir website docs:gen:check
+pnpm --dir website build
 ```
 
 Shared website/blog publishing remains owned by `~/src/graphrefly`. This package
-deploys its own Zensical output to `https://py.graphrefly.dev/`; the shared site
+deploys its own Starlight output to `https://py.graphrefly.dev/`; the shared site
 links to that package-local artifact and does not copy generated Python API
 pages into the main `graphrefly.dev` artifact.
 
