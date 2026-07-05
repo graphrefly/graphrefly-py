@@ -2,6 +2,7 @@
 	"name": "@graphrefly/py-docs-site",
 	"private": true,
 	"type": "module",
+	"packageManager": "pnpm@11.7.0",
 	"scripts": {
 		"docs:gen": "cd .. && uv run python website/scripts/gen-api-docs.py",
 		"docs:gen:check": "cd .. && uv run python website/scripts/gen-api-docs.py --check",
