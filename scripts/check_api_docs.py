@@ -1,4 +1,4 @@
-"""Check that exported Python APIs have source docstrings for mkdocstrings."""
+"""Check that exported Python APIs have source docstrings for generated docs."""
 
 from __future__ import annotations
 
