@@ -32,8 +32,8 @@ Before tagging, rebuild the package-local docs from source:
 
 ```bash
 uv run python scripts/check_api_docs.py
-pnpm --dir website docs:gen:check
-pnpm --dir website build
+cd website && pnpm docs:gen:check
+cd website && pnpm build
 ```
 
 Shared website/blog publishing remains owned by `~/src/graphrefly`. This package

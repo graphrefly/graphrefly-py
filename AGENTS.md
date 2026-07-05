@@ -75,7 +75,7 @@ uv run maturin develop --release
 uv run pytest
 uv run ruff check .
 uv run mypy src
-pnpm --dir website build
+cd website && pnpm build
 ```
 
 Rust foundation check:

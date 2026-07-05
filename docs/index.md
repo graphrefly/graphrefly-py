@@ -32,7 +32,7 @@ material, and release notes.
 Shared graphrefly.dev website architecture, shared guide records, protocol
 authority, and public blog material stay in `~/src/graphrefly` under D563.
 Generated API output is built from public docstrings through the `griffe`-backed
-Starlight generator; rebuild it with `pnpm --dir website build` and do not edit
+Starlight generator; rebuild it with `cd website && pnpm build` and do not edit
 generated `website/src/content/docs/api/` files by hand.
 
 ## What This Package Owns

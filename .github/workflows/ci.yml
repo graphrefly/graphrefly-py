@@ -76,9 +76,9 @@ jobs:
         run: uv run python scripts/check_api_docs.py
 
       - name: Generated docs freshness
-        working-directory: graphrefly-py
-        run: pnpm --dir website docs:gen:check
+        working-directory: graphrefly-py/website
+        run: pnpm docs:gen:check
 
       - name: Build docs
-        working-directory: graphrefly-py
-        run: pnpm --dir website build
+        working-directory: graphrefly-py/website
+        run: pnpm build

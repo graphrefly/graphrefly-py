@@ -198,8 +198,8 @@ uv run pytest
 uv run ruff check .
 uv run mypy src
 uv run python scripts/check_api_docs.py
-pnpm --dir website docs:gen:check
-pnpm --dir website build
+cd website && pnpm docs:gen:check
+cd website && pnpm build
 python -c "import graphrefly; print(graphrefly.version())"
 ```
 
