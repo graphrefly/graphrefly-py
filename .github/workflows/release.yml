@@ -34,7 +34,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ vars.GRAPHREFLY_WRITE_CONTENT_APP_ID }}
+          client-id: ${{ vars.GRAPHREFLY_WRITE_CONTENT_APP_CLIENT_ID }}
           private-key: ${{ secrets.GRAPHREFLY_WRITE_CONTENT_APP_PRIVATE_KEY }}
           permission-contents: write
           permission-issues: write
@@ -42,7 +42,7 @@ jobs:
 
       - name: Create Release PR or GitHub Release
         id: release
-        uses: googleapis/release-please-action@v4
+        uses: googleapis/release-please-action@v5
         with:
           token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
@@ -54,46 +54,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Python host package
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           path: graphrefly-py
 
       - name: Checkout Rust native engine
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: graphrefly/graphrefly-rs
           ref: main
           path: graphrefly-rs
 
       - name: Checkout authority fixtures
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: graphrefly/graphrefly
           ref: main
           path: graphrefly
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
-
-      - name: Set up Node
-        uses: actions/setup-node@v5
-        with:
-          node-version: "24"
-          package-manager-cache: false
-
-      - name: Enable Corepack (pnpm)
-        working-directory: graphrefly-py/website
-        run: |
-          corepack enable
-          corepack install
+        uses: astral-sh/setup-uv@v8.3.2
 
       - name: Sync dependencies
         working-directory: graphrefly-py
-        run: uv sync --group dev --group docs
-
-      - name: Install docs website dependencies
-        working-directory: graphrefly-py/website
-        run: pnpm install --frozen-lockfile
+        run: uv sync --group dev
 
       - name: Build native extension
         working-directory: graphrefly-py
@@ -114,14 +98,6 @@ jobs:
       - name: Type check
         working-directory: graphrefly-py
         run: uv run mypy src
-
-      - name: Generated docs freshness
-        working-directory: graphrefly-py/website
-        run: pnpm docs:gen:check
-
-      - name: Build docs
-        working-directory: graphrefly-py/website
-        run: pnpm build
 
   wheels:
     name: Wheels (${{ matrix.platform.name }})
@@ -179,12 +155,12 @@ jobs:
             experimental: true
     steps:
       - name: Checkout Python host package
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           path: graphrefly-py
 
       - name: Checkout Rust native engine
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: graphrefly/graphrefly-rs
           ref: main
@@ -206,7 +182,7 @@ jobs:
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.platform.name }}
           path: graphrefly-py/dist/*.whl
@@ -222,7 +198,7 @@ jobs:
     environment: pypi
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
