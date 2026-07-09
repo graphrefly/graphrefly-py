@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "graphrefly"
-version = "0.22.0"
+version = "0.23.0"
 description = "Python host package for GraphReFly over the native Rust graph engine."
 readme = "README.md"
 license = "MIT"
