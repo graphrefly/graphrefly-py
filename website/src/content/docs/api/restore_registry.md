@@ -9,7 +9,7 @@ description: "Build an explicit restore registry for `restore_graph`."
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_facade.py:3697`
+**Source:** `src/graphrefly/_facade.py:3694`
 
 ## Signature
 

@@ -3,7 +3,7 @@ import json
 import subprocess
 import sys
 from dataclasses import FrozenInstanceError, is_dataclass
-from importlib import import_module
+from importlib import import_module, metadata
 from inspect import signature
 from typing import Any
 
@@ -136,8 +136,9 @@ def _describe_has_prefix(snapshot: dict[str, object], *prefixes: str) -> bool:
 
 
 def test_import_package_surface():
-    assert graphrefly.__version__ == "0.22.0"
-    assert graphrefly.version() == "0.22.0"
+    expected_version = metadata.version("graphrefly")
+    assert graphrefly.__version__ == expected_version
+    assert graphrefly.version() == expected_version
     assert "_native" not in graphrefly.__all__
     assert not hasattr(graphrefly, "_native")
     assert Graph("smoke").describe()["name"] == "smoke"

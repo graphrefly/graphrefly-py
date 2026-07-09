@@ -9,7 +9,7 @@ description: "Attach inbound or outbound wire edge grouping to a bridge."
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_facade.py:3615`
+**Source:** `src/graphrefly/_facade.py:3612`
 
 ## Signature
 

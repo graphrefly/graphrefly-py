@@ -9,7 +9,7 @@ description: "Construct a fresh graph from an already-loaded strict-JSON checkpo
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_facade.py:3710`
+**Source:** `src/graphrefly/_facade.py:3707`
 
 ## Signature
 

@@ -9,7 +9,7 @@ description: "Attach protobuf byte transport nodes to a wire bridge."
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_facade.py:3597`
+**Source:** `src/graphrefly/_facade.py:3594`
 
 ## Signature
 

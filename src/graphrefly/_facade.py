@@ -3576,10 +3576,7 @@ def anyio_runner(task_group: object) -> AsyncRunner:
 def version() -> str:
     """Return the installed Python package version."""
 
-    try:
-        return metadata.version("graphrefly")
-    except PackageNotFoundError:
-        return _VERSION
+    return _VERSION
 
 
 def wire_bridge(graph: Graph, *, session_id: str, name: str | None = None) -> WireBridge:
@@ -4244,3 +4241,29 @@ def _normalize_describe(snapshot: dict[str, Any]) -> dict[str, Any]:
             _normalize_describe(cast("dict[str, Any]", subgraph)) for subgraph in subgraphs
         ]
     return normalized_snapshot
+
+
+def _source_tree_version() -> str | None:
+    import tomllib
+    from pathlib import Path
+
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    project = data.get("project")
+    if not isinstance(project, dict):
+        return None
+    version_value = project.get("version")
+    return version_value if isinstance(version_value, str) else None
+
+
+def _package_version() -> str:
+    try:
+        return metadata.version("graphrefly")
+    except PackageNotFoundError:
+        return _source_tree_version() or _VERSION
+
+
+_VERSION = _package_version()

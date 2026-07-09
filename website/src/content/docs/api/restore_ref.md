@@ -9,7 +9,7 @@ description: "Return strict-JSON factory metadata for a restorable function-back
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_facade.py:3679`
+**Source:** `src/graphrefly/_facade.py:3676`
 
 ## Signature
 

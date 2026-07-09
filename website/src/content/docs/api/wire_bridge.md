@@ -9,7 +9,7 @@ description: "Create a graph-owned high-level wire bridge facade."
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_facade.py:3585`
+**Source:** `src/graphrefly/_facade.py:3582`
 
 ## Signature
 
