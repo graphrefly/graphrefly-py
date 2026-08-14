@@ -6,7 +6,10 @@ GraphReFly Python is the host-language package for Python users. The language-ne
 
 Read `~/src/graphrefly/CLAUDE.md` first. Key records for this repo:
 
-- `~/src/graphrefly/decisions/decisions.jsonl`
+- `~/src/graphrefly/authority/ledgers.jsonl` and `authority/federation.mjs`
+- the root ledger resolved by `~/src/graphrefly/authority/ledgers.jsonl` for language-neutral/cross-project decisions
+- `decisions/decisions.jsonl` for Python package-local decisions (`graphrefly-py:<D#>`)
+- `decisions/root-origin-history.jsonl` for relocated root-origin Python history (`graphrefly:<D#>`; never for new records)
 - `~/src/graphrefly/spec/rules.jsonl`
 - `~/src/graphrefly/spec/conformance.jsonl`
 - `~/src/graphrefly/plan/phases.jsonl`
@@ -66,6 +69,9 @@ Current Python value/message boundary:
 - Native handles are single-thread host objects in this foundation slice.
 - Generated documentation output must be regenerated through the Starlight API generator,
   not edited by hand.
+- Decision admission is owner-first: Python-only facade, lifetime, packaging or ecosystem locks
+  belong in the local ledger; protocol, cross-runtime and cross-project locks remain upstream.
+  New cross-repo refs are origin-qualified and decision bodies are never copied.
 
 ## Commands
 
@@ -84,3 +90,6 @@ Rust foundation check:
 cd ~/src/graphrefly-rs
 mise exec -- cargo test -p graphrefly-bindings-py
 ```
+
+New Python-local decisions must satisfy ~/src/graphrefly/authority/README.md. The
+root-origin-history ledger is relocation-only.
