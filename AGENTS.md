@@ -13,6 +13,7 @@ Read `~/src/graphrefly/CLAUDE.md` first. Key records for this repo:
 - `~/src/graphrefly/spec/rules.jsonl`
 - `~/src/graphrefly/spec/conformance.jsonl`
 - `~/src/graphrefly/plan/phases.jsonl`
+- `plan/work.jsonl` for Python-owned implementation slices (`graphrefly-py:<work-id>`); it is currently empty and registered by the root work locator
 - `~/src/graphrefly/sessions/active/SESSION-clean-slate-redesign.md`
 
 Python package-local documentation policy lives in `docs/docs.jsonl`. It is the
