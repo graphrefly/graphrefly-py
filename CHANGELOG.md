@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.23.1](https://github.com/graphrefly/graphrefly-py/compare/v0.23.0...v0.23.1) (2026-08-28)
+
+
+### Documentation
+
+* **AGENTS:** add guidelines for project governance and cross-project permissions ([c75642d](https://github.com/graphrefly/graphrefly-py/commit/c75642d4dd4367492b7996d929458cf3003aa0e0))
+* **authority:** route Python decisions locally ([f17a064](https://github.com/graphrefly/graphrefly-py/commit/f17a064f58155dc87b0c53e073e0af4a0ec02a05))
+* **plan:** register Python work ledger ([ae02053](https://github.com/graphrefly/graphrefly-py/commit/ae020538ed91ca1058a7c7632b80ca0651b9122a))
+
 ## [0.23.0](https://github.com/graphrefly/graphrefly-py/compare/v0.22.0...v0.23.0) (2026-07-09)
 
 
