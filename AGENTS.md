@@ -62,6 +62,14 @@ Current Python value/message boundary:
 
 ## Clean-Slate Floor
 
+Before decision or work admission, design review, dispatch, QA, long-running goal progression,
+live/provider/spend authorization, retry, or stalled-work recovery, load and follow the personal
+`$project-governance` skill at `~/.codex/skills/project-governance/SKILL.md`. It governs
+cross-project record and permission classification; Python-local and root GraphReFly authorities
+remain canonical for their own concerns. The concrete GraphReFly family mapping is proposed as
+`graphrefly:B137`; do not invent that schema or migrate history before its separate approval, and do
+not mint a D# merely for an attempt, rerun, receipt, incident, provider/model change, or spend grant.
+
 - No protocol/tier/message/ctx/batch semantic changes from this repo. Route any such need through spec-amend in `~/src/graphrefly`.
 - Do not restore retired pre-clean-slate Python core surfaces, subgraph locks,
   the old port model, or structural cross-language parity.
