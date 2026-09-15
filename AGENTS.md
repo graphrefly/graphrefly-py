@@ -4,7 +4,8 @@ GraphReFly Python is the host-language package for Python users. The language-ne
 
 ## Authority
 
-Read `~/src/graphrefly/CLAUDE.md` first. Key records for this repo:
+For protocol or cross-project work, use `~/src/graphrefly/AGENTS.md` to locate the governing
+authority. Read the relevant records from this index:
 
 - `~/src/graphrefly/authority/ledgers.jsonl` and `authority/federation.mjs`
 - the root ledger resolved by `~/src/graphrefly/authority/ledgers.jsonl` for language-neutral/cross-project decisions
@@ -62,8 +63,8 @@ Current Python value/message boundary:
 
 ## Clean-Slate Floor
 
-Before decision or work admission, design review, dispatch, QA, long-running goal progression,
-live/provider/spend authorization, retry, or stalled-work recovery, load and follow the personal
+When changing authority records or resolving an execution, spend, retry, or stalled-work
+authorization boundary, load and follow the personal
 `$project-governance` skill at `~/.codex/skills/project-governance/SKILL.md`. It governs
 cross-project record and permission classification; Python-local and root GraphReFly authorities
 remain canonical for their own concerns. The concrete GraphReFly family mapping is proposed as
@@ -102,3 +103,13 @@ mise exec -- cargo test -p graphrefly-bindings-py
 
 New Python-local decisions must satisfy ~/src/graphrefly/authority/README.md. The
 root-origin-history ledger is relocation-only.
+
+## Shared build and human review
+
+Use the personal `~/.codex/skills/bmad-build/SKILL.md` inside the work selected by this repository's
+dispatch/Goal workflow. Use `~/.codex/skills/bmad-build/references/qa.md` for machine-review lenses,
+finding triage and repairs, together with this repository's own QA checks and completion gates.
+Use `~/.codex/skills/bmad-checkpoint-preview/SKILL.md` for the human review trail; it replaces the old
+repository-ownership-practice checks. Ordinary delivery uses build-handoff mode; explicit checkpoint
+or `--practice` requests use interactive review. The shared skills own only this personal workflow;
+project authority, semantic approvals, execution permissions and work records remain locally governed.
