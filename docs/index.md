@@ -47,3 +47,5 @@ generated `website/src/content/docs/api/` files by hand.
 - Native handles.
 - Raw protocol ingress or arbitrary message construction.
 - A Python reimplementation of the native wave core.
+
+Documentation categories and maintenance: [documentation map](README.md).
