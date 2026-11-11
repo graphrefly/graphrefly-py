@@ -299,11 +299,13 @@ class GraphEvent:
 class Subscription:
     """What subscribe, observe and retain return: call it to stop (R-graph-surface).
 
-    ``stop()`` is idempotent, and once it is called nothing more is delivered, also
-    when it is called during a wave. That is the shape every runtime shares (TS gives
-    ``() => void``, Rust ``FnOnce()``). Python adds two things: a ``with`` block stops
-    it on exit, and ``closed`` says whether it has stopped. ``Graph.close()`` stops
-    every one of them (graphrefly-py:D16).
+    ``stop()`` is idempotent. That is the shape every runtime shares (TS gives
+    ``() => void``, Rust ``FnOnce()``). For subscribe and retain it is an unsubscribe
+    request (R-request-order): called during a wave, the wave's remaining arrays are
+    still delivered and nothing is after it ends. For observe it takes effect at once:
+    nothing more is handed on (R-graph-surface). Python adds two things: a ``with``
+    block stops it on exit, and ``closed`` says whether it has stopped.
+    ``Graph.close()`` stops every one of them (graphrefly-py:D16, D17).
     """
 
     def __init__(
@@ -320,7 +322,7 @@ class Subscription:
 
     @property
     def closed(self) -> bool:
-        """Return whether this subscription has stopped (a Python extension)."""
+        """Return whether ``stop()`` has been called (a Python extension)."""
 
         return self._closed
 
@@ -591,22 +593,13 @@ class Node[T]:
         graph._check_thread()
         _reject_async_callable(callback)
 
-        stopped = False
-
         def sink(array: tuple[_k.Message, ...]) -> None:
-            if not stopped:
-                _observed(lambda: callback(cast("Array[T]", array)))
+            _observed(lambda: callback(cast("Array[T]", array)))
 
         sink_id = graph._new_sink_id()
         node_id = self._id
-
-        def stop() -> None:
-            nonlocal stopped
-            stopped = True  # a stop asked for during a wave runs after it
-            graph._kernel.unsubscribe(sink_id, node_id)
-
         subscription = Subscription(
-            stop,
+            lambda: graph._kernel.unsubscribe(sink_id, node_id),
             owner_thread=graph._owner_thread,
             lifetime=graph._lifetime,
         )

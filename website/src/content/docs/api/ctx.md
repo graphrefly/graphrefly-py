@@ -9,7 +9,7 @@ description: "What an advanced node callback receives for one invocation."
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:429`
+**Source:** `src/graphrefly/_facade.py:431`
 
 ## Signature
 
@@ -44,7 +44,7 @@ emit(*values: object) -> None
 
 Send one array of DATA, one message per value.
 
-Source: `src/graphrefly/_facade.py:454`
+Source: `src/graphrefly/_facade.py:456`
 
 ### `down`
 
@@ -58,7 +58,7 @@ Send one array, a list of messages: ``(DATA, v)``, ``(ERROR, e)``,
 START, PENDING and RESOLVED are the kernel's alone and are rejected, as is a
 terminal that is not last; the kernel checks the array before anything is sent.
 
-Source: `src/graphrefly/_facade.py:466`
+Source: `src/graphrefly/_facade.py:468`
 
 ### `rewire`
 
@@ -70,4 +70,4 @@ Change this node's own dependencies for its current lifetime.
 
 It runs after the current wave and is undone when the lifetime closes.
 
-Source: `src/graphrefly/_facade.py:511`
+Source: `src/graphrefly/_facade.py:513`

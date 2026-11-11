@@ -704,7 +704,9 @@ def test_a_dropped_subscription_handle_stays_subscribed_until_close() -> None:
 
 def test_subscribe_observe_and_retain_return_a_stop_to_call() -> None:
     """The shared shape is a function to call (graphrefly-py:D16); ``with`` and
-    ``closed`` are Python extensions, and there is no ``unsubscribe``."""
+    ``closed`` are Python extensions, and there is no ``unsubscribe``. The stop of a
+    subscribe or a retain is an unsubscribe request: called during a wave, it takes
+    effect when the wave ends (R-request-order, C-33; graphrefly-py:D17)."""
 
     with Graph("stop") as g:
         a = g.state(1, name="a")
@@ -719,13 +721,29 @@ def test_subscribe_observe_and_retain_return_a_stop_to_call() -> None:
         def stop_on_the_wave(array: tuple[Any, ...]) -> None:
             seen.append(array)
             if array[0] == ("PENDING",):
-                stop()  # during the wave: b's second array is not delivered
+                stop()  # during the wave: it waits until the wave ends
 
         stop = b.subscribe(stop_on_the_wave)
         a.set(2)
+        assert seen == [
+            (("START",), ("DATA", -1)),
+            (("PENDING",), ("DATA", 2)),
+            (("PENDING",), ("DATA", -1)),  # the same wave's second array still arrives
+        ]
         a.set(4)
-        assert seen == [(("START",), ("DATA", -1)), (("PENDING",), ("DATA", 2))]
-        assert stop.closed
+        assert len(seen) == 3 and stop.closed  # nothing after the wave ended
+
+        c = g.derived([a], lambda v: v, name="c")
+        release = g.retain(c)
+
+        def release_on_the_wave(array: tuple[Any, ...]) -> None:
+            if array[0] == ("PENDING",):
+                release()
+
+        stop_a = a.subscribe(release_on_the_wave)
+        a.set(5)
+        assert c.status.lifecycle == "inactive"  # gone once the wave ended
+        stop_a()
         for handle in (a.subscribe(lambda _: None), g.observe([a], lambda _: None), g.retain(b)):
             assert callable(handle) and not hasattr(handle, "unsubscribe")
             handle()

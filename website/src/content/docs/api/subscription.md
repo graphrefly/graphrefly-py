@@ -21,14 +21,16 @@ Subscription(detach: Callable[[], None], *, owner_thread: int, lifetime: _GraphL
 
 What subscribe, observe and retain return: call it to stop (R-graph-surface).
 
-``stop()`` is idempotent, and once it is called nothing more is delivered, also
-when it is called during a wave. That is the shape every runtime shares (TS gives
-``() => void``, Rust ``FnOnce()``). Python adds two things: a ``with`` block stops
-it on exit, and ``closed`` says whether it has stopped. ``Graph.close()`` stops
-every one of them (graphrefly-py:D16).
+``stop()`` is idempotent. That is the shape every runtime shares (TS gives
+``() => void``, Rust ``FnOnce()``). For subscribe and retain it is an unsubscribe
+request (R-request-order): called during a wave, the wave's remaining arrays are
+still delivered and nothing is after it ends. For observe it takes effect at once:
+nothing more is handed on (R-graph-surface). Python adds two things: a ``with``
+block stops it on exit, and ``closed`` says whether it has stopped.
+``Graph.close()`` stops every one of them (graphrefly-py:D16, D17).
 
 ## Attributes
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `closed` | `bool` | Return whether this subscription has stopped (a Python extension). |
+| `closed` | `bool` | Return whether ``stop()`` has been called (a Python extension). |

@@ -66,9 +66,11 @@ reference kernel on random graphs (needs `node`; reads the root checkout only).
   per node, deps current; `retain(node)` is a subscriber that ignores what it gets.
   None of `find` and `describe` activates anything.
 - `subscribe`, `observe` and `retain` return a stop to call, as TS (`() => void`)
-  and Rust (`FnOnce()`) do: `stop()` is idempotent and nothing is delivered after it.
-  Python adds a `with` block that stops on exit and `.closed`; there is no
-  `unsubscribe` (graphrefly-py:D16).
+  and Rust (`FnOnce()`) do; `stop()` is idempotent. For `subscribe` and `retain` it
+  is an unsubscribe request: called during a wave, the wave's remaining arrays still
+  arrive and nothing does after it (R-request-order, C-33). `observe`'s stop takes
+  effect at once (R-graph-surface). Python adds a `with` block that stops on exit and
+  `.closed`; there is no `unsubscribe` (graphrefly-py:D16, D17).
 - Host input lives only on `State` (`set`, `invalidate`, `complete`, `error`);
   `set(callable)` computes from the current value in request order. A plain `Node`
   has no write and no public `down`.
