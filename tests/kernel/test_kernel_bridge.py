@@ -392,3 +392,27 @@ def test_c1b_a_run_in_which_no_edge_brought_input_forms_no_cause() -> None:
     assert len(channel.sent) == 1  # no frame for a wave in which no edge sent
     sender.set("raw", b"next")
     assert [f.cause for f in channel.sent] == [1, 2]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "pending rule question (graphrefly-py phase 6, 2026-11-11): a new session's first "
+        "cause re-carries an edge that already ended at the receiver; R-bridge@1 refuses that "
+        "frame whole, so the INVALIDATE for the other edge is lost too. This test states "
+        "option (b), skipping the ended edge's arrays; Python follows (a) until root settles it."
+    ),
+)
+def test_c1b_a_new_session_after_an_edge_ended_still_invalidates_the_other_edge() -> None:
+    t = _groups()
+    sender, receiver, channel, group = t["sender"], t["receiver"], t["channel"], t["group"]
+    channel.flush()
+    sender.complete("y")
+    channel.flush()
+    assert receiver.get(group.inbound["y"]).ended == (COMPLETE,)
+    sender.unsubscribe("transport", "out")
+    sender.invalidate("xin")  # x has no value when the new session opens
+    sender.subscribe("transport", "out", frame_sink(channel.send))
+    channel.flush()
+    assert receiver.get(group.inbound["x"]).has is False  # the old session's x is dropped
+    assert t["issues"] == []
