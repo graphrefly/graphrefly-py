@@ -737,41 +737,53 @@ class Graph:
         return cast("State[Any]", self._register(State(self, node_id)))
 
     @overload
-    def producer(self, callback: Callable[[], T], name: str | None = None) -> Node[T]: ...
+    def producer(
+        self, callback: Callable[[], T], name: str | None = None, *, recipe: Recipe | None = None
+    ) -> Node[T]: ...
 
     @overload
     def producer(
-        self, callback: None = None, name: str | None = None
+        self, callback: None = None, name: str | None = None, *, recipe: Recipe | None = None
     ) -> Callable[[Callable[[], T]], Node[T]]: ...
 
     def producer(
-        self, callback: Callable[[], T] | None = None, name: str | None = None
+        self,
+        callback: Callable[[], T] | None = None,
+        name: str | None = None,
+        *,
+        recipe: Recipe | None = None,
     ) -> Node[T] | Callable[[Callable[[], T]], Node[T]]:
         """Create or decorate a dependency-free node whose callback's value it sends
-        once per activation (Python sugar)."""
+        once per activation (Python sugar). A ``recipe`` makes it restorable: its
+        factory gives this callback again."""
 
         self._check_thread()
+        _check_recipe(recipe)
         if callback is None:
-            return lambda fn: self.producer(fn, name or fn.__name__)
+            return lambda fn: self.producer(fn, name or fn.__name__, recipe=recipe)
         _reject_async_callable(callback)
-        produce = callback
-
-        def run(ctx: _k.Ctx) -> None:
-            value = produce()
-            _reject_awaitable(value)
-            _reject_sentinel_data(value)
-            ctx.down([(_k.DATA, value)])
-
-        return self._add_node(name, [], run, callback, None)
+        return self._add_node(
+            name, [], _producer_run(callback), callback, None, recipe=recipe, sugar="producer"
+        )
 
     @overload
     def derived(
-        self, deps: Iterable[Node[Any]], callback: Callable[..., U], name: str | None = None
+        self,
+        deps: Iterable[Node[Any]],
+        callback: Callable[..., U],
+        name: str | None = None,
+        *,
+        recipe: Recipe | None = None,
     ) -> Node[U]: ...
 
     @overload
     def derived(
-        self, deps: Iterable[Node[Any]], callback: None = None, name: str | None = None
+        self,
+        deps: Iterable[Node[Any]],
+        callback: None = None,
+        name: str | None = None,
+        *,
+        recipe: Recipe | None = None,
     ) -> Callable[[Callable[..., U]], Node[U]]: ...
 
     def derived(
@@ -779,39 +791,44 @@ class Graph:
         deps: Iterable[Node[Any]],
         callback: Callable[..., U] | None = None,
         name: str | None = None,
+        *,
+        recipe: Recipe | None = None,
     ) -> Node[U] | Callable[[Callable[..., U]], Node[U]]:
         """Create or decorate a value-level node over dependencies.
 
         Python sugar, not protocol: it runs once every dependency has a value and
-        recomputes when a dependency sent DATA in the wave.
+        recomputes when a dependency sent DATA in the wave. A ``recipe`` makes it
+        restorable: its factory gives this value-level callback again.
         """
 
         self._check_thread()
+        _check_recipe(recipe)
         dep_list = list(deps)
         if callback is None:
-            return lambda fn: self.derived(dep_list, fn, name or fn.__name__)
+            return lambda fn: self.derived(dep_list, fn, name or fn.__name__, recipe=recipe)
         _reject_async_callable(callback)
-        compute = callback
-
-        def run(ctx: _k.Ctx) -> None:
-            values = _gate(ctx)
-            if values is None:
-                return
-            value = compute(*values)
-            _reject_awaitable(value)
-            _reject_sentinel_data(value)
-            ctx.down([(_k.DATA, value)])
-
-        return self._add_node(name, dep_list, run, callback, None)
+        return self._add_node(
+            name, dep_list, _derived_run(callback), callback, None, recipe=recipe, sugar="derived"
+        )
 
     @overload
     def effect(
-        self, deps: Iterable[Node[Any]], callback: Callable[..., object], name: str | None = None
+        self,
+        deps: Iterable[Node[Any]],
+        callback: Callable[..., object],
+        name: str | None = None,
+        *,
+        recipe: Recipe | None = None,
     ) -> Node[object]: ...
 
     @overload
     def effect(
-        self, deps: Iterable[Node[Any]], callback: None = None, name: str | None = None
+        self,
+        deps: Iterable[Node[Any]],
+        callback: None = None,
+        name: str | None = None,
+        *,
+        recipe: Recipe | None = None,
     ) -> Callable[[Callable[..., object]], Node[object]]: ...
 
     def effect(
@@ -819,24 +836,22 @@ class Graph:
         deps: Iterable[Node[Any]],
         callback: Callable[..., object] | None = None,
         name: str | None = None,
+        *,
+        recipe: Recipe | None = None,
     ) -> Node[object] | Callable[[Callable[..., object]], Node[object]]:
         """Create or decorate a value-level side effect over dependencies (Python
-        sugar, with derived's gate); it sends nothing."""
+        sugar, with derived's gate); it sends nothing. A ``recipe`` makes it
+        restorable: its factory gives this callback again."""
 
         self._check_thread()
+        _check_recipe(recipe)
         dep_list = list(deps)
         if callback is None:
-            return lambda fn: self.effect(dep_list, fn, name or fn.__name__)
+            return lambda fn: self.effect(dep_list, fn, name or fn.__name__, recipe=recipe)
         _reject_async_callable(callback)
-        act = callback
-
-        def run(ctx: _k.Ctx) -> None:
-            values = _gate(ctx)
-            if values is None:
-                return
-            _reject_awaitable(act(*values))
-
-        return self._add_node(name, dep_list, run, callback, None)
+        return self._add_node(
+            name, dep_list, _effect_run(callback), callback, None, recipe=recipe, sugar="effect"
+        )
 
     @overload
     def node(
@@ -897,9 +912,7 @@ class Graph:
                 msg = f"{label} must be 'auto' or 'manual'"
                 raise GraphReflyValueError(msg)
         _reject_non_bool("quiet", quiet)
-        if recipe is not None and not isinstance(recipe, Recipe):
-            msg = "recipe must be a graphrefly.Recipe"
-            raise GraphReflyValueError(msg)
+        _check_recipe(recipe)
         if callback is None:
             return lambda fn: self.node(
                 dep_list,
@@ -958,9 +971,7 @@ class Graph:
         node_id = self._node_id(node)
         ids = [self._node_id(dep) for dep in deps]
         _reject_async_callable(callback)
-        if recipe is not None and not isinstance(recipe, Recipe):
-            msg = "recipe must be a graphrefly.Recipe"
-            raise GraphReflyValueError(msg)
+        _check_recipe(recipe)
         fn = _guard_fn(self._ctx_callback(callback), callback)
         kernel_setup = _guard_setup(self._ctx_setup(setup), setup)
         kernel_recipe = None if recipe is None else {"ref": recipe.ref, "config": recipe.config}
@@ -1156,10 +1167,11 @@ class Graph:
         invalidate: Policy = "auto",
         quiet: bool = False,
         recipe: Recipe | None = None,
+        sugar: str | None = None,
     ) -> Node[Any]:
         ids = [self._node_id(dep) for dep in deps]
         node_id = self._new_id(name)
-        kernel_recipe = None if recipe is None else {"ref": recipe.ref, "config": recipe.config}
+        kernel_recipe = _kernel_recipe(recipe, sugar)
         guarded = _guard_fn(fn, callback)
         guarded_setup = _guard_setup(kernel_setup, setup)
 
@@ -1252,6 +1264,65 @@ class Graph:
             raise GraphReflyRuntimeError(self._lifetime.closed_message)
 
 
+def _check_recipe(recipe: object) -> None:
+    if recipe is not None and not isinstance(recipe, Recipe):
+        msg = "recipe must be a graphrefly.Recipe"
+        raise GraphReflyValueError(msg)
+
+
+def _kernel_recipe(recipe: Recipe | None, sugar: str | None) -> dict[str, object] | None:
+    """The opaque recipe the kernel keeps: the ref, the config and, for sugar, which
+    sugar rebuilds the node's function on restore."""
+
+    if recipe is None:
+        return None
+    kept: dict[str, object] = {"ref": recipe.ref, "config": recipe.config}
+    if sugar is not None:
+        kept["sugar"] = sugar
+    return kept
+
+
+def _producer_run(produce: Callable[[], object]) -> Callable[[_k.Ctx], None]:
+    def run(ctx: _k.Ctx) -> None:
+        value = produce()
+        _reject_awaitable(value)
+        _reject_sentinel_data(value)
+        ctx.down([(_k.DATA, value)])
+
+    return run
+
+
+def _derived_run(compute: Callable[..., object]) -> Callable[[_k.Ctx], None]:
+    def run(ctx: _k.Ctx) -> None:
+        values = _gate(ctx)
+        if values is None:
+            return
+        value = compute(*values)
+        _reject_awaitable(value)
+        _reject_sentinel_data(value)
+        ctx.down([(_k.DATA, value)])
+
+    return run
+
+
+def _effect_run(act: Callable[..., object]) -> Callable[[_k.Ctx], None]:
+    def run(ctx: _k.Ctx) -> None:
+        values = _gate(ctx)
+        if values is None:
+            return
+        _reject_awaitable(act(*values))
+
+    return run
+
+
+# What restore rebuilds a sugar node's function with, from its factory's callback.
+_SUGAR: Final[dict[str, Callable[[Callable[..., Any]], Callable[[_k.Ctx], None]]]] = {
+    "producer": _producer_run,
+    "derived": _derived_run,
+    "effect": _effect_run,
+}
+
+
 def _gate(ctx: _k.Ctx) -> list[object] | None:
     """derived's sugar: every dependency has a value and one sent DATA in this wave."""
 
@@ -1283,7 +1354,9 @@ def restore_graph(
 
     ``registry`` maps each recipe's ``ref`` to a factory called as
     ``factory(config, RecipeContext(graph, name, make))``, returning the node callback or
-    a ``(callback, setup)`` pair; ``make`` builds another registered recipe. State
+    a ``(callback, setup)`` pair; ``make`` builds another registered recipe. A node
+    built with ``derived``, ``effect`` or ``producer`` and a recipe gets its value-level
+    callback from the factory, with no setup, and the same sugar again. State
     nodes need no recipe. A node built without a recipe is local-only, and restoring it
     fails, as do a missing recipe and a checkpoint in another format.
     """
@@ -1306,9 +1379,18 @@ def restore_graph(
             raise GraphReflyRestoreError(msg)
         return callback, setup
 
+    sugar_of = _sugar_by_node(checkpoint)
+
     def adapt(ref: str) -> _checkpoint.Factory:
         def make(config: object, at: _checkpoint.RecipeContext) -> _checkpoint.Built:
             callback, setup = build(ref, config, at.id)
+            sugar = sugar_of.get(at.id)
+            if sugar is not None:  # a derived, effect or producer: the same gate again
+                if setup is not None:
+                    msg = f"recipe {ref} for the {sugar} {at.id} gives a setup; sugar has none"
+                    raise GraphReflyRestoreError(msg)
+                _reject_async_callable(callback)
+                return _checkpoint.Built(_guard_fn(_SUGAR[sugar](callback), callback))
             return _checkpoint.Built(
                 _guard_fn(graph._ctx_callback(callback), callback),
                 _guard_setup(graph._ctx_setup(setup), setup),
@@ -1327,6 +1409,20 @@ def restore_graph(
         )
         graph._register(handle)
     return graph
+
+
+def _sugar_by_node(checkpoint: object) -> dict[str, str]:
+    """Which saved nodes were built with sugar, read from their recipes; the checkpoint
+    module checks the rest of the checkpoint."""
+
+    nodes = checkpoint.get("nodes") if isinstance(checkpoint, dict) else None
+    out: dict[str, str] = {}
+    for node in nodes if isinstance(nodes, list) else []:
+        recipe = node.get("recipe") if isinstance(node, dict) else None
+        sugar = recipe.get("sugar") if isinstance(recipe, dict) else None
+        if isinstance(sugar, str) and sugar in _SUGAR and isinstance(node.get("id"), str):
+            out[node["id"]] = sugar
+    return out
 
 
 def _poison_on_fatal(lifetime: _GraphLifetime, error: BaseException) -> NoReturn:

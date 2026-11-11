@@ -170,6 +170,10 @@ class _Unchanged(Dep):
         return []
 
     @property
+    def sent_data(self) -> bool:
+        return False
+
+    @property
     def terminal(self) -> Message | None:
         return self._end
 

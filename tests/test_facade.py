@@ -1108,3 +1108,81 @@ def test_value_sugar_sees_only_values_whatever_the_protocol_does() -> None:
         assert all(type(value) is int for value in seen)
         assert all(value is not SENTINEL for value in seen)
         assert d.status.output == "errored"
+
+
+# ---- recipes on the value-level sugar --------------------------------------------------
+
+
+def test_derived_effect_and_producer_take_a_recipe_and_restore_as_the_same_sugar() -> None:
+    runs: list[str] = []
+    effects: list[int] = []
+
+    def plus(config: object, at: RecipeContext) -> Callable[..., object]:
+        assert isinstance(config, int)
+
+        def add(v: int) -> int:
+            runs.append(at.name)
+            return v + config
+
+        return add
+
+    registry: dict[str, Any] = {
+        "plus": plus,
+        "log": lambda config, at: effects.append,
+        "seven": lambda config, at: lambda: 7,
+    }
+    g = Graph("sugar-recipes")
+    a = g.state(1, name="a")
+    d = g.derived([a], plus(10, RecipeContext(g, "d", _no_make)), "d", recipe=Recipe("plus", 10))
+    e = g.effect([d], effects.append, "e", recipe=Recipe("log"))
+    p = g.producer(lambda: 7, "p", recipe=Recipe("seven"))
+    assert g.definition(d).recipe == Recipe("plus", 10)
+    for node in (e, p):
+        g.retain(node)
+    a.set(2)
+    assert d.cache() == 12 and effects == [11, 12] and p.cache() == 7
+    checkpoint = g.checkpoint()
+    g.close()
+
+    runs.clear()
+    effects.clear()
+    r = graphrefly.restore_graph(checkpoint, registry=registry)
+    rd, re_, rp = r.find("d"), r.find("e"), r.find("p")
+    assert rd is not None and re_ is not None and rp is not None
+    for node in (re_, rp):
+        r.retain(node)
+    assert runs == [] and effects == [] and rd.cache() == 12  # nothing ran on restore
+    ra = r.find("a")
+    assert isinstance(ra, State)
+    ra.set(5)
+    assert rd.cache() == 15 and effects == [15] and rp.cache() == 7  # the same gate again
+    r.close()
+
+
+def test_a_restored_derived_whose_dependency_only_ended_does_not_recompute() -> None:
+    calls: list[tuple[int, int]] = []
+
+    def total(config: object, at: RecipeContext) -> Callable[..., int]:
+        def add(x: int, y: int) -> int:
+            calls.append((x, y))
+            return x + y
+
+        return add
+
+    g = Graph("ended-input")
+    a = g.state(1, name="a")
+    b = g.state(2, name="b")
+    d = g.derived([a, b], total(None, RecipeContext(g, "d", _no_make)), "d", recipe=Recipe("t"))
+    g.retain(d)
+    checkpoint = g.checkpoint()
+    g.close()
+    for node in checkpoint["nodes"]:
+        if node["id"] == "b":
+            node["saved"]["ended"] = ["COMPLETE"]  # b ended since, with the same value
+    calls.clear()
+    r = graphrefly.restore_graph(checkpoint, registry={"t": total})
+    rd = r.find("d")
+    assert rd is not None
+    r.retain(rd)
+    assert calls == [] and rd.cache() == 3  # an end alone brings no new value
+    r.close()

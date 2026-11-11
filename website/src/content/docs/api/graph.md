@@ -53,37 +53,40 @@ Source: `src/graphrefly/_facade.py:726`
 ### `producer`
 
 ```python
-producer(callback: Callable[[], T] | None = None, name: str | None = None) -> Node[T] | Callable[[Callable[[], T]], Node[T]]
+producer(callback: Callable[[], T] | None = None, name: str | None = None, *, recipe: Recipe | None = None) -> Node[T] | Callable[[Callable[[], T]], Node[T]]
 ```
 
 Create or decorate a dependency-free node whose callback's value it sends
-once per activation (Python sugar).
+once per activation (Python sugar). A ``recipe`` makes it restorable: its
+factory gives this callback again.
 
-Source: `src/graphrefly/_facade.py:747`
+Source: `src/graphrefly/_facade.py:749`
 
 ### `derived`
 
 ```python
-derived(deps: Iterable[Node[Any]], callback: Callable[..., U] | None = None, name: str | None = None) -> Node[U] | Callable[[Callable[..., U]], Node[U]]
+derived(deps: Iterable[Node[Any]], callback: Callable[..., U] | None = None, name: str | None = None, *, recipe: Recipe | None = None) -> Node[U] | Callable[[Callable[..., U]], Node[U]]
 ```
 
 Create or decorate a value-level node over dependencies.
 
 Python sugar, not protocol: it runs once every dependency has a value and
-recomputes when a dependency sent DATA in the wave.
+recomputes when a dependency sent DATA in the wave. A ``recipe`` makes it
+restorable: its factory gives this value-level callback again.
 
-Source: `src/graphrefly/_facade.py:777`
+Source: `src/graphrefly/_facade.py:789`
 
 ### `effect`
 
 ```python
-effect(deps: Iterable[Node[Any]], callback: Callable[..., object] | None = None, name: str | None = None) -> Node[object] | Callable[[Callable[..., object]], Node[object]]
+effect(deps: Iterable[Node[Any]], callback: Callable[..., object] | None = None, name: str | None = None, *, recipe: Recipe | None = None) -> Node[object] | Callable[[Callable[..., object]], Node[object]]
 ```
 
 Create or decorate a value-level side effect over dependencies (Python
-sugar, with derived's gate); it sends nothing.
+sugar, with derived's gate); it sends nothing. A ``recipe`` makes it
+restorable: its factory gives this callback again.
 
-Source: `src/graphrefly/_facade.py:817`
+Source: `src/graphrefly/_facade.py:834`
 
 ### `node`
 
@@ -99,7 +102,7 @@ policy; a quiet node passes no pending mark on. ``setup(ctx)`` runs once per
 lifetime before the first run and may return the lifetime's cleanup. A
 ``recipe`` makes the node restorable.
 
-Source: `src/graphrefly/_facade.py:871`
+Source: `src/graphrefly/_facade.py:886`
 
 ### `batch`
 
@@ -113,7 +116,7 @@ Nothing is delivered while it runs; it returns what ``callback`` returned. A
 callback that raises commits nothing. During a wave the commit waits until
 the wave ends.
 
-Source: `src/graphrefly/_facade.py:934`
+Source: `src/graphrefly/_facade.py:947`
 
 ### `replace`
 
@@ -123,7 +126,7 @@ replace(node: Node[Any], deps: Iterable[Node[Any]], callback: NodeCallback, *, s
 
 Give a computed node a new instance under the same name and subscribers.
 
-Source: `src/graphrefly/_facade.py:946`
+Source: `src/graphrefly/_facade.py:959`
 
 ### `definition`
 
@@ -133,7 +136,7 @@ definition(node: Node[Any]) -> NodeDefinition
 
 Return the node's current definition; reading changes nothing.
 
-Source: `src/graphrefly/_facade.py:975`
+Source: `src/graphrefly/_facade.py:986`
 
 ### `find`
 
@@ -146,7 +149,7 @@ Return the node with this id, or ``None``; it activates nothing (R-graph-surface
 A state node comes back as its ``State``, so it can be written after a lookup or
 a restore; narrow the result with ``isinstance(node, State)``.
 
-Source: `src/graphrefly/_facade.py:995`
+Source: `src/graphrefly/_facade.py:1006`
 
 ### `describe`
 
@@ -161,7 +164,7 @@ Every node in creation order as exactly ``&#123;"id", "kind", "deps", "quiet"&#1
 a ``ctx.rewire``'s included, while ``definition`` gives the declared ones. A
 value or a status is read from the node. It activates and runs nothing.
 
-Source: `src/graphrefly/_facade.py:1008`
+Source: `src/graphrefly/_facade.py:1019`
 
 ### `observe`
 
@@ -178,7 +181,7 @@ is observing every node ``describe`` gives. Calling the returned ``stop()`` stop
 it; nothing more is handed on after that. A callback that raises goes to the graph's
 reporter as a ``SubscriberCallbackError``, as a subscriber's does.
 
-Source: `src/graphrefly/_facade.py:1023`
+Source: `src/graphrefly/_facade.py:1034`
 
 ### `retain`
 
@@ -191,7 +194,7 @@ Hold a node active as a subscriber that ignores what it receives
 its own subscription, so a node retained twice stays active until both are
 released.
 
-Source: `src/graphrefly/_facade.py:1074`
+Source: `src/graphrefly/_facade.py:1085`
 
 ### `reentry_queue`
 
@@ -201,7 +204,7 @@ reentry_queue() -> GraphReentryQueue
 
 Return this graph's explicit owner-thread async re-entry queue.
 
-Source: `src/graphrefly/_facade.py:1092`
+Source: `src/graphrefly/_facade.py:1103`
 
 ### `checkpoint`
 
@@ -211,4 +214,4 @@ checkpoint() -> GraphCheckpoint
 
 Capture this graph at a wave boundary as strict JSON (R-checkpoint).
 
-Source: `src/graphrefly/_facade.py:1106`
+Source: `src/graphrefly/_facade.py:1117`
