@@ -10,15 +10,6 @@ description: "Generated graphrefly Python API reference."
 These pages are generated from `graphrefly.__all__` and source docstrings through `griffe`.
 Update Python docstrings or exports, then rerun `pnpm --dir website docs:gen`.
 
-## Messages and Data
-
-- [`SENTINEL`](/api/sentinel-attribute/)
-- [`ControlMessage`](/api/controlmessage/)
-- [`DataMessage`](/api/datamessage/)
-- [`ErrorMessage`](/api/errormessage/)
-- [`Message`](/api/message/)
-- [`Sentinel`](/api/sentinel-class/)
-
 ## Async and Network
 
 - [`AsyncRunner`](/api/asyncrunner/)
@@ -55,6 +46,15 @@ Update Python docstrings or exports, then rerun `pnpm --dir website docs:gen`.
 - [`GraphReflyValueError`](/api/graphreflyvalueerror/)
 - [`SubscriberCallbackError`](/api/subscribercallbackerror/)
 
+## Messages and Data
+
+- [`ControlMessage`](/api/controlmessage/)
+- [`DataMessage`](/api/datamessage/)
+- [`ErrorMessage`](/api/errormessage/)
+- [`Message`](/api/message/)
+- [`SENTINEL`](/api/sentinel-attribute/)
+- [`Sentinel`](/api/sentinel-class/)
+
 ## Core Facade
 
 - [`Ctx`](/api/ctx/)
@@ -72,11 +72,31 @@ Update Python docstrings or exports, then rerun `pnpm --dir website docs:gen`.
 - [`Signal`](/api/signal/)
 - [`State`](/api/state/)
 - [`Subscription`](/api/subscription/)
+- [`frame_sink`](/api/frame_sink/)
+- [`frame_source`](/api/frame_source/)
 
 ## Restore
 
 - [`GraphCheckpoint`](/api/graphcheckpoint/)
 - [`restore_graph`](/api/restore_graph/)
+
+## Wire Bridge
+
+- [`WireBridge`](/api/wirebridge/)
+- [`WireBridgeAckDriver`](/api/wirebridgeackdriver/)
+- [`WireBridgeAckDriverIssue`](/api/wirebridgeackdriverissue/)
+- [`WireBridgeAckDriverStatus`](/api/wirebridgeackdriverstatus/)
+- [`WireBridgeAckTimeout`](/api/wirebridgeacktimeout/)
+- [`WireBridgeIssue`](/api/wirebridgeissue/)
+- [`WireBridgeStatus`](/api/wirebridgestatus/)
+- [`WireEdgeArrays`](/api/wireedgearrays/)
+- [`WireEdgeCause`](/api/wireedgecause/)
+- [`WireEdgeGroupIn`](/api/wireedgegroupin/)
+- [`WireEdgeGroupIssue`](/api/wireedgegroupissue/)
+- [`wire_bridge`](/api/wire_bridge/)
+- [`wire_bridge_ack_driver`](/api/wire_bridge_ack_driver/)
+- [`wire_edge_group_in`](/api/wire_edge_group_in/)
+- [`wire_edge_group_out`](/api/wire_edge_group_out/)
 
 ## Utilities
 

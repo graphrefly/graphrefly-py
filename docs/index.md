@@ -41,11 +41,12 @@ generated `website/src/content/docs/api/` files by hand.
 - Pythonic graph, node, state, subscription, message, and exception facades.
 - Host lifetime and exception mapping, and Python sugar such as derived's gate.
 - Optional async runner adapters that use caller-owned runtimes.
+- Wire edge groups and the bridge's protobuf transport (`graphrefly._wire`).
 
 ## What It Does Not Expose
 
 - Raw kernel handles or arbitrary message sending outside `Ctx.down`.
-- Cross-graph wire bridge facades: withdrawn until the bridge model is settled
-  (graphrefly-py:D5).
+- Raw bridge envelope values: transports see canonical protobuf bytes and
+  `WireEdgeCause` frames (graphrefly-py:D8).
 
 Documentation categories and maintenance: [documentation map](README.md).

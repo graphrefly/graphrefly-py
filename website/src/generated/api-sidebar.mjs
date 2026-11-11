@@ -1,34 +1,5 @@
 export const apiSidebar = [
   {
-    "label": "Messages and Data",
-    "items": [
-      {
-        "label": "SENTINEL",
-        "link": "/api/sentinel-attribute"
-      },
-      {
-        "label": "ControlMessage",
-        "link": "/api/controlmessage"
-      },
-      {
-        "label": "DataMessage",
-        "link": "/api/datamessage"
-      },
-      {
-        "label": "ErrorMessage",
-        "link": "/api/errormessage"
-      },
-      {
-        "label": "Message",
-        "link": "/api/message"
-      },
-      {
-        "label": "Sentinel",
-        "link": "/api/sentinel-class"
-      }
-    ]
-  },
-  {
     "label": "Async and Network",
     "items": [
       {
@@ -159,6 +130,35 @@ export const apiSidebar = [
     ]
   },
   {
+    "label": "Messages and Data",
+    "items": [
+      {
+        "label": "ControlMessage",
+        "link": "/api/controlmessage"
+      },
+      {
+        "label": "DataMessage",
+        "link": "/api/datamessage"
+      },
+      {
+        "label": "ErrorMessage",
+        "link": "/api/errormessage"
+      },
+      {
+        "label": "Message",
+        "link": "/api/message"
+      },
+      {
+        "label": "SENTINEL",
+        "link": "/api/sentinel-attribute"
+      },
+      {
+        "label": "Sentinel",
+        "link": "/api/sentinel-class"
+      }
+    ]
+  },
+  {
     "label": "Core Facade",
     "items": [
       {
@@ -220,6 +220,14 @@ export const apiSidebar = [
       {
         "label": "Subscription",
         "link": "/api/subscription"
+      },
+      {
+        "label": "frame_sink",
+        "link": "/api/frame_sink"
+      },
+      {
+        "label": "frame_source",
+        "link": "/api/frame_source"
       }
     ]
   },
@@ -233,6 +241,71 @@ export const apiSidebar = [
       {
         "label": "restore_graph",
         "link": "/api/restore_graph"
+      }
+    ]
+  },
+  {
+    "label": "Wire Bridge",
+    "items": [
+      {
+        "label": "WireBridge",
+        "link": "/api/wirebridge"
+      },
+      {
+        "label": "WireBridgeAckDriver",
+        "link": "/api/wirebridgeackdriver"
+      },
+      {
+        "label": "WireBridgeAckDriverIssue",
+        "link": "/api/wirebridgeackdriverissue"
+      },
+      {
+        "label": "WireBridgeAckDriverStatus",
+        "link": "/api/wirebridgeackdriverstatus"
+      },
+      {
+        "label": "WireBridgeAckTimeout",
+        "link": "/api/wirebridgeacktimeout"
+      },
+      {
+        "label": "WireBridgeIssue",
+        "link": "/api/wirebridgeissue"
+      },
+      {
+        "label": "WireBridgeStatus",
+        "link": "/api/wirebridgestatus"
+      },
+      {
+        "label": "WireEdgeArrays",
+        "link": "/api/wireedgearrays"
+      },
+      {
+        "label": "WireEdgeCause",
+        "link": "/api/wireedgecause"
+      },
+      {
+        "label": "WireEdgeGroupIn",
+        "link": "/api/wireedgegroupin"
+      },
+      {
+        "label": "WireEdgeGroupIssue",
+        "link": "/api/wireedgegroupissue"
+      },
+      {
+        "label": "wire_bridge",
+        "link": "/api/wire_bridge"
+      },
+      {
+        "label": "wire_bridge_ack_driver",
+        "link": "/api/wire_bridge_ack_driver"
+      },
+      {
+        "label": "wire_edge_group_in",
+        "link": "/api/wire_edge_group_in"
+      },
+      {
+        "label": "wire_edge_group_out",
+        "link": "/api/wire_edge_group_out"
       }
     ]
   },

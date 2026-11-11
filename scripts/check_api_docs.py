@@ -13,6 +13,10 @@ SOURCE_BY_IMPORT = {
     "graphrefly._facade": PACKAGE / "_facade.py",
     "graphrefly._sentinel": PACKAGE / "_sentinel.py",
     "graphrefly._kernel.signal": PACKAGE / "_kernel" / "signal.py",
+    "graphrefly._wire.bridge": PACKAGE / "_wire" / "bridge.py",
+    "graphrefly._wire.envelope": PACKAGE / "_wire" / "envelope.py",
+    "graphrefly._wire.protobuf": PACKAGE / "_wire" / "protobuf.py",
+    "graphrefly._wire_facade": PACKAGE / "_wire_facade.py",
     "graphrefly.exceptions": PACKAGE / "exceptions.py",
     "graphrefly.issues": PACKAGE / "issues.py",
 }

@@ -89,6 +89,17 @@ def test_package_surface_is_the_d4_api() -> None:
         "GraphReflyNoDataError",
     }
     assert expected <= set(graphrefly.__all__)
+    wire = {  # back in the D803 shape (graphrefly-py:D8)
+        "wire_edge_group_out",
+        "wire_edge_group_in",
+        "frame_source",
+        "frame_sink",
+        "wire_bridge",
+        "wire_bridge_ack_driver",
+        "WireEdgeCause",
+        "WireEdgeGroupIssue",
+    }
+    assert wire <= set(graphrefly.__all__)
     removed = {
         "PullContext",
         "RewireNext",
@@ -98,14 +109,12 @@ def test_package_surface_is_the_d4_api() -> None:
         "RestoreRegistry",
         "restore_ref",
         "restore_registry",
-        "wire_bridge",
         "wire_edge_group",
         "wire_bridge_protobuf",
-        "wire_bridge_ack_driver",
-        "WireBridge",
         "WireEdgeGroup",
-        "WireBridgeStatus",
-        "WireEdgeGroupIssue",
+        "WireEdgeGroupStatus",
+        "WireEdgeFrame",
+        "WireBridgeProtobuf",
     }
     for name in removed:
         assert name not in graphrefly.__all__

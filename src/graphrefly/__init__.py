@@ -46,6 +46,26 @@ from graphrefly._facade import (
 )
 from graphrefly._kernel.signal import Signal
 from graphrefly._sentinel import SENTINEL, Sentinel
+from graphrefly._wire.bridge import WireEdgeGroupIssue
+from graphrefly._wire.envelope import (
+    WireBridgeAckDriverIssue,
+    WireBridgeAckDriverStatus,
+    WireBridgeAckTimeout,
+    WireBridgeIssue,
+    WireBridgeStatus,
+)
+from graphrefly._wire.protobuf import WireEdgeArrays, WireEdgeCause
+from graphrefly._wire_facade import (
+    WireBridge,
+    WireBridgeAckDriver,
+    WireEdgeGroupIn,
+    frame_sink,
+    frame_source,
+    wire_bridge,
+    wire_bridge_ack_driver,
+    wire_edge_group_in,
+    wire_edge_group_out,
+)
 from graphrefly.exceptions import (
     CallbackError,
     GraphCallbackError,
@@ -60,7 +80,6 @@ from graphrefly.exceptions import (
 from graphrefly.issues import DataIssue
 
 __all__ = [
-    "SENTINEL",
     "AsyncRunner",
     "CallbackError",
     "ControlMessage",
@@ -98,16 +117,30 @@ __all__ = [
     "RecipeContext",
     "RecipeFactory",
     "Retain",
+    "SENTINEL",
     "Sentinel",
     "Signal",
     "SseEvent",
     "State",
     "SubscriberCallbackError",
     "Subscription",
+    "WireBridge",
+    "WireBridgeAckDriver",
+    "WireBridgeAckDriverIssue",
+    "WireBridgeAckDriverStatus",
+    "WireBridgeAckTimeout",
+    "WireBridgeIssue",
+    "WireBridgeStatus",
+    "WireEdgeArrays",
+    "WireEdgeCause",
+    "WireEdgeGroupIn",
+    "WireEdgeGroupIssue",
     "__version__",
     "anyio_runner",
     "async_node",
     "asyncio_runner",
+    "frame_sink",
+    "frame_source",
     "from_async_iter",
     "from_awaitable",
     "from_http",
@@ -115,6 +148,10 @@ __all__ = [
     "restore_graph",
     "trio_runner",
     "version",
+    "wire_bridge",
+    "wire_bridge_ack_driver",
+    "wire_edge_group_in",
+    "wire_edge_group_out",
 ]
 
 __version__ = _VERSION

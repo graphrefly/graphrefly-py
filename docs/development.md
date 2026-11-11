@@ -35,6 +35,11 @@ reference kernel on random graphs (needs `node`; reads the root checkout only).
   graphrefly:D798, D799, D801 and D802 (graphrefly-py:D2). It is single-threaded,
   catches `Exception` only, and has no awaitables.
 - `graphrefly._checkpoint` is capture and restore over the kernel (R-checkpoint).
+- `graphrefly._wire` is the bridge module over the kernel (R-bridge): `bridge` (wire
+  edge groups, gate, frame source and sink), `envelope` (numbered envelopes, acks,
+  ack-timeout facts) and `protobuf` (the strict canonical codec, no dependency);
+  `graphrefly._wire_facade` is its public facade (graphrefly-py:D8). The C-1a tests
+  read the golden vectors from the sibling `graphrefly` checkout and skip without it.
 - `graphrefly._facade` is the public facade (graphrefly-py:D4); `graphrefly` exports it.
 - `tests/kernel/` qualifies the kernel scenarios against `graphrefly._kernel`;
   the other tests cover the facade.

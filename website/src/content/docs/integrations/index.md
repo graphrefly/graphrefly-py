@@ -23,5 +23,18 @@ source behavior.
 
 ## Cross-graph transport
 
-The wire bridge facades are withdrawn while the bridge model is settled in the
-root repository (graphrefly-py:D5); they return on the Python bridge.
+Wire edge groups carry a fixed set of edges from one graph to another
+(R-bridge, graphrefly-py:D8):
+
+- `wire_edge_group_out(graph, group=..., edges=...)` sends one `WireEdgeCause`
+  frame per sender wave in which an edge sent.
+- `frame_sink(send)` hands frames (or bytes) from a subscription to your transport.
+- `frame_source(graph, open)` is the receiving end: `open(deliver)` runs at each
+  activation, and each `deliver(frame)` is one wave.
+- `wire_edge_group_in(graph, group=..., frames=..., edges=...)` releases each cause
+  whole, in order and at most once; drops, gaps and refusals are values of its
+  `issues` node.
+
+`wire_bridge(...)` is the transport adapter over canonical protobuf bytes, with acks
+and retries on explicit ack-timeout facts; `wire_bridge_ack_driver(...)` derives
+those facts from a clock node you write. No timer is set.
