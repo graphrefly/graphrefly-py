@@ -13,6 +13,7 @@ from collections import deque
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
+from inspect import isasyncgenfunction, isawaitable, iscoroutinefunction
 from typing import Final, Literal
 
 from graphrefly._kernel.ctx import Ctx
@@ -23,8 +24,8 @@ from graphrefly._kernel.messages import (
     ERROR,
     INVALIDATE,
     INVALIDATE_MESSAGE,
-    PENDING,
     PENDING_MESSAGE,
+    RESOLVED,
     RESOLVED_MESSAGE,
     START_MESSAGE,
     Array,
@@ -32,8 +33,6 @@ from graphrefly._kernel.messages import (
     Message,
     check_message,
     is_terminal,
-    is_value,
-    marks,
     split,
 )
 
@@ -43,6 +42,21 @@ type SinkCallback = Callable[[tuple[Message, ...]], object]
 type Reporter = Callable[[Report], object]
 
 _NO_VALUE: Final = object()
+
+# What an input record saw in the current wave, accumulated as its arrays arrive, so
+# that a settlement needs no rescan in the common case.
+_SAW_VALUE: Final = 1
+_SAW_INVALIDATE: Final = 2
+_SAW_TERMINAL: Final = 4
+_SAW_ERROR: Final = 8
+_SAW: Final = {
+    DATA: _SAW_VALUE,
+    RESOLVED: _SAW_VALUE,
+    INVALIDATE: _SAW_INVALIDATE,
+    COMPLETE: _SAW_TERMINAL,
+    ERROR: _SAW_TERMINAL | _SAW_ERROR,
+}
+_MARKING: Final = frozenset(_SAW)
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +90,7 @@ class NodeState:
 class _Input:
     """A node's record of one dependency: latest value and terminal, this wave's arrays."""
 
-    __slots__ = ("ended", "frames", "has", "invalidated", "value")
+    __slots__ = ("ended", "frames", "has", "invalidated", "saw", "value")
 
     def __init__(
         self,
@@ -90,6 +104,7 @@ class _Input:
         self.ended = ended
         self.frames: list[Array] = [] if frames is None else frames
         self.invalidated = False
+        self.saw = _saw_of(self.frames)
 
 
 class _Lifetime:
@@ -138,6 +153,7 @@ class _Node:
         "pending",
         "pending_deps",
         "private_state",
+        "quiet",
         "subs",
         "values",
     )
@@ -151,6 +167,7 @@ class _Node:
         error_policy: Policy,
         invalidate_policy: Policy,
         values: list[object],
+        quiet: bool = False,
     ) -> None:
         self.id = node_id
         self.is_state = fn is None
@@ -160,6 +177,9 @@ class _Node:
         self.complete_policy = complete_policy
         self.error_policy = error_policy
         self.invalidate_policy = invalidate_policy
+        # A quiet node consumes its input waves without passing the pending mark on;
+        # what it sends is a later wave of its own (R-wave).
+        self.quiet = quiet
         self.subs: list[_Sink | _Edge] = []
         self.active = False
         self.lifetime: _Lifetime | None = None
@@ -174,6 +194,16 @@ class _Node:
         self.inputs = [_Input() for _ in deps]
 
 
+class _Staged:
+    """What a batch body staged for one node: its accumulated messages."""
+
+    __slots__ = ("lifetime", "msgs")
+
+    def __init__(self, lifetime: _Lifetime | None) -> None:
+        self.lifetime = lifetime
+        self.msgs: Array = []
+
+
 def _snapshot_of(node: _Node) -> Array:
     """What a new subscriber gets after START: the retained values, then the terminal."""
 
@@ -183,12 +213,28 @@ def _snapshot_of(node: _Node) -> Array:
     return snapshot
 
 
-def _has_mark(frames: Iterable[Array]) -> bool:
-    return any(marks(message) for frame in frames for message in frame)
+def _saw_of(frames: Iterable[Array]) -> int:
+    saw = 0
+    for frame in frames:
+        for message in frame:
+            saw |= _SAW.get(message[0], 0)
+    return saw
 
 
 def _settles(frame: Array) -> bool:
-    return any(marks(message) for message in frame)
+    """Whether an array marks its sender's cone pending and settles a mark (R-wave)."""
+
+    for message in frame:  # noqa: SIM110 - a loop is faster than any() here
+        if message[0] in _MARKING:
+            return True
+    return False
+
+
+def _clear(inputs: list[_Input]) -> None:
+    for record in inputs:
+        record.frames = []
+        record.invalidated = False
+        record.saw = 0
 
 
 class Graph:
@@ -200,6 +246,9 @@ class Graph:
         self.trace: list[TraceEntry] | None = [] if trace else None
         self._busy = False
         self._queue: deque[Callable[[], None]] = deque()
+        # While a batch body runs: what it staged per node, and the requests it made.
+        self._staging: dict[_Node, _Staged] | None = None
+        self._batch_requests: list[Callable[[], None]] | None = None
 
     # ---- Construction -----------------------------------------------------
 
@@ -221,6 +270,7 @@ class Graph:
         complete: Policy = "auto",
         error: Policy = "auto",
         invalidate: Policy = "auto",
+        quiet: bool = False,
     ) -> str:
         """Create a computed node over declared dependencies (R-node)."""
 
@@ -232,7 +282,7 @@ class Graph:
         for name, policy in (("complete", complete), ("error", error), ("invalidate", invalidate)):
             if policy not in ("auto", "manual"):
                 raise KernelError(f"{name} policy must be 'auto' or 'manual', not {policy!r}")
-        self._add(_Node(node_id, dep_ids, fn, complete, error, invalidate, []))
+        self._add(_Node(node_id, dep_ids, fn, complete, error, invalidate, [], bool(quiet)))
         return node_id
 
     def _add(self, node: _Node) -> None:
@@ -253,6 +303,9 @@ class Graph:
     # in arrival order, so a wave never grows after parts of it settled.
 
     def _request(self, op: Callable[[], None]) -> None:
+        if self._batch_requests is not None:
+            self._batch_requests.append(op)  # the batch's commit has not run yet
+            return
         if self._busy:
             self._queue.append(op)
             return
@@ -281,12 +334,12 @@ class Graph:
         """Reset in-wave state after a fatal BaseException; delivered arrays stay delivered."""
 
         self._queue.clear()
+        self._staging = None
+        self._batch_requests = None
         for node in self._nodes.values():
             node.pending = False
             node.pending_deps.clear()
-            for record in node.inputs:
-                record.frames = []
-                record.invalidated = False
+            _clear(node.inputs)
 
     def _report(self, source: str, error: Exception) -> None:
         if self._report_to is None:
@@ -316,8 +369,7 @@ class Graph:
             out: list[Array] = [[dep_error]]
         else:
             out = self._invoke(node)
-        for record in node.inputs:
-            record.frames = []
+        _clear(node.inputs)
         all_ended = bool(node.deps) and all(r.ended is not None for r in node.inputs)
         if node.complete_policy == "auto" and all_ended:
             out = [*out, [COMPLETE_MESSAGE]]
@@ -387,6 +439,9 @@ class Graph:
 
         if not frames:
             return
+        if self._staging is not None and lifetime.open:
+            self._stage(node, lifetime, [m for frame in frames for m in frame])
+            return
 
         def op() -> None:
             if lifetime.open and node.lifetime is lifetime:
@@ -406,7 +461,8 @@ class Graph:
             dependent.pending_deps.add(sub.index)
             if not dependent.pending:
                 dependent.pending = True
-                self._mark_pending(dependent)
+                if not dependent.quiet:
+                    self._mark_pending(dependent)
 
     def _deliver_to_sink(self, sink: _Sink, sender: str, array: tuple[Message, ...]) -> None:
         if self.trace is not None:
@@ -452,21 +508,35 @@ class Graph:
         return out
 
     def _deliver(self, node: _Node, out: list[Array]) -> None:
-        if node.pending and not any(_settles(frame) for frame in out):
+        marked = False
+        for frame in out:
+            if _settles(frame):
+                marked = True
+                break
+        if node.pending and not marked:
             out = [*out, [RESOLVED_MESSAGE]]  # a pending node that sent nothing
+            marked = True
         if not out:
             return
-        if not node.pending and _has_mark(out):
+        if marked and not node.pending:
+            # A source, later output, or a node answering a wave it was not marked in
+            # marks its own cone pending first.
             node.pending = True
             self._mark_pending(node)
         node.pending = False
-        sent = [[PENDING_MESSAGE, *frame] if _settles(frame) else frame for frame in out]
+        sent: list[tuple[Message, ...]] | None = None
         for sub in list(node.subs):
-            if isinstance(sub, _Sink):
-                for frame in sent:
-                    self._deliver_to_sink(sub, node.id, tuple(frame))
+            if type(sub) is _Edge:
+                self._receive(sub.node, sub.index, out)  # dependents never see PENDING
             else:
-                self._receive(sub.node, sub.index, sent)
+                assert isinstance(sub, _Sink)
+                if sent is None:
+                    sent = [
+                        (PENDING_MESSAGE, *frame) if _settles(frame) else tuple(frame)
+                        for frame in out
+                    ]
+                for array in sent:
+                    self._deliver_to_sink(sub, node.id, array)
         if node.ended is not None:
             self._close_lifetime(node)  # an ended node holds nothing upstream
 
@@ -474,99 +544,129 @@ class Graph:
         if node.ended is not None:
             return
         record = node.inputs[index]
-        settled = False
+        saw = 0
         for frame in frames:
-            kept = [message for message in frame if message[0] != PENDING]
-            for message in kept:
+            for message in frame:
                 kind = message[0]
                 if kind == DATA:
                     record.has = True
                     record.value = message[1]
-                elif kind == INVALIDATE:
-                    record.has = False
-                    record.value = None
-                elif kind in (COMPLETE, ERROR):
-                    record.ended = message
-            record.frames.append(kept)
-            settled = settled or _settles(kept)
-        if settled:
+                    saw |= _SAW_VALUE
+                else:
+                    bit = _SAW.get(kind, 0)
+                    saw |= bit
+                    if kind == INVALIDATE:
+                        record.has = False
+                        record.value = None
+                    elif bit & _SAW_TERMINAL:
+                        record.ended = message
+            record.frames.append(frame)
+        record.saw |= saw
+        if saw:
             node.pending_deps.discard(index)
         if not node.pending_deps:
             self._settle(node)
 
     def _settle(self, node: _Node) -> None:
         inputs = node.inputs
-        if not any(record.frames for record in inputs):
-            return
+        saw = 0
+        has_frames = False
+        for record in inputs:
+            if record.frames:
+                has_frames = True
+                saw |= record.saw
 
-        def clear() -> None:
-            for record in inputs:
-                record.frames = []
-                record.invalidated = False
+        if not has_frames:
+            return
 
         # Auto ERROR: a dependency's ERROR ends the node without running its function;
         # an INVALIDATE before it in the wave takes effect first (R-terminals).
-        dep_error = next(
-            (
+        if saw & _SAW_ERROR and node.error_policy == "auto":
+            dep_error = next(
                 message
                 for record in inputs
                 for frame in record.frames
                 for message in frame
                 if message[0] == ERROR
-            ),
-            None,
-        )
-        if dep_error is not None and node.error_policy == "auto":
+            )
             invalidated_first = any(
                 frame and frame[0][0] == INVALIDATE for record in inputs for frame in record.frames
             )
-            clear()
+            _clear(inputs)
             end: list[Array] = [[dep_error]]
             if invalidated_first:
                 end = [[INVALIDATE_MESSAGE], [dep_error]]
-            self._down(node, end)
+            if node.quiet:
+                node.pending = False
+                self._later_from(node, end)  # the INVALIDATE goes with the ERROR
+            else:
+                self._down(node, end)
             return
 
-        # What came before an input's last INVALIDATE is gone (R-invalidation).
-        invalidated = False
-        for record in inputs:
-            at = -1
-            for position, frame in enumerate(record.frames):
-                if frame and frame[0][0] == INVALIDATE:
-                    at = position
-            if at >= 0:
-                record.frames = record.frames[at + 1 :]
-                record.invalidated = True
-                invalidated = True
         lead: list[Array] = []
-        if invalidated and node.invalidate_policy == "auto":
-            lead = self._apply(node, [[INVALIDATE_MESSAGE]])
+        invalidated = False
+        if saw & _SAW_INVALIDATE:
+            # What came before an input's last INVALIDATE is gone (R-invalidation).
+            for record in inputs:
+                at = -1
+                for position, frame in enumerate(record.frames):
+                    if frame and frame[0][0] == INVALIDATE:
+                        at = position
+                if at >= 0:
+                    record.frames = record.frames[at + 1 :]
+                    record.invalidated = True
+                    invalidated = True
+                record.saw = _saw_of(record.frames)
+            saw = 0
+            for record in inputs:
+                saw |= record.saw
+            if invalidated and node.invalidate_policy == "auto":
+                lead = self._apply(node, [[INVALIDATE_MESSAGE]])
 
-        rest = [message for record in inputs for frame in record.frames for message in frame]
-        manual_terminal = any(
-            is_terminal(message)
-            and (node.complete_policy if message[0] == COMPLETE else node.error_policy) == "manual"
-            for message in rest
-        )
-        runs = (
-            any(is_value(message) for message in rest)
-            or manual_terminal
-            or (invalidated and node.invalidate_policy == "manual")
-        )
+        runs = bool(saw & _SAW_VALUE) or (invalidated and node.invalidate_policy == "manual")
+        if not runs and saw & _SAW_TERMINAL:
+            runs = any(
+                is_terminal(message)
+                and (node.complete_policy if message[0] == COMPLETE else node.error_policy)
+                == "manual"
+                for record in inputs
+                for frame in record.frames
+                for message in frame
+            )
         out = self._invoke(node) if runs else []
-        clear()
+        _clear(inputs)
 
-        all_ended = all(record.ended is not None for record in inputs)
-        sent_terminal = any(is_terminal(message) for frame in out for message in frame)
-        if node.complete_policy == "auto" and all_ended and not sent_terminal:
+        # Auto COMPLETE once every dependency has ended; dependencies only newly end in a
+        # wave that carries a terminal.
+        postlude = (
+            bool(saw & _SAW_TERMINAL)
+            and node.complete_policy == "auto"
+            and all(record.ended is not None for record in inputs)
+            and not any(is_terminal(message) for frame in out for message in frame)
+        )
+        if node.quiet:
+            # What a quiet node sends is a later wave; only an auto INVALIDATE goes on now.
+            if lead:
+                self._deliver(node, lead)
+            node.pending = False
+            self._later_from(node, out)
+            if postlude:
+                self._later_from(node, [[COMPLETE_MESSAGE]])
+            return
+        if postlude:
             out = [*out, [COMPLETE_MESSAGE]]
-        self._deliver(node, [*lead, *self._apply(node, out)])
+        self._deliver(node, [*lead, *self._apply(node, out)] if lead else self._apply(node, out))
+
+    def _later_from(self, node: _Node, frames: list[Array]) -> None:
+        lifetime = node.lifetime
+        if lifetime is not None:
+            self._later(node, lifetime, frames)
 
     def _run_wave(self, entries: list[tuple[_Node, list[Array]]]) -> None:
         live = [(node, frames) for node, frames in entries if node.ended is None]
         applied = [(node, self._apply(node, frames)) for node, frames in live]
         for node, out in applied:
-            if not node.pending and _has_mark(out):
+            if not node.pending and any(_settles(frame) for frame in out):
                 node.pending = True
                 self._mark_pending(node)
         for node, out in applied:
@@ -629,6 +729,9 @@ class Graph:
             raise KernelError(f"{node_id} is not a state node")
         if node.ended is not None:
             raise KernelError(f"{node_id} has ended")
+        if self._staging is not None:
+            self._stage(node, None, [message])
+            return
 
         def op() -> None:
             if node.ended is not None:
@@ -636,6 +739,73 @@ class Graph:
             self._run_wave([(node, split([message]))])
 
         self._request(op)
+
+    # ---- Batch (R-request-order) --------------------------------------------
+
+    def _stage(self, node: _Node, lifetime: _Lifetime | None, msgs: Array) -> None:
+        """Add to a node's accumulated batch array; a submission that would make it invalid
+        is rejected and leaves the earlier staging as it was."""
+
+        assert self._staging is not None
+        entry = self._staging.get(node)
+        accumulated = [*(entry.msgs if entry is not None else []), *msgs]
+        try:
+            split(accumulated)
+        except KernelError as error:
+            raise KernelError(f"{node.id}: {error} (batch)") from None
+        if entry is None:
+            entry = self._staging[node] = _Staged(lifetime)
+        entry.msgs = accumulated
+
+    def batch[R](self, body: Callable[[], R]) -> R:
+        """Run ``body`` at once and commit its host inputs as one wave (R-request-order).
+
+        Nothing is delivered while the body runs. Its topology requests run after the
+        commit; a body that throws commits nothing and drops its requests. The commit
+        is itself a request, so during a wave it waits until the wave ends. A batch
+        inside a batch body joins the outer one. An async function is refused before
+        it runs; a body that returns an awaitable commits its synchronous part, and the
+        host reporter is told.
+        """
+
+        if iscoroutinefunction(body) or isasyncgenfunction(body):
+            raise KernelError("batch body is an async function; await first, then batch the writes")
+        if self._staging is not None:
+            return self._report_awaitable(body())
+        self._staging = {}
+        self._batch_requests = []
+        try:
+            result = body()
+            staged = self._staging
+            requests = self._batch_requests
+        finally:
+            self._staging = None
+            self._batch_requests = None
+        self._report_awaitable(result)
+
+        def commit() -> None:
+            self._queue.extendleft(reversed(requests))
+            entries: list[tuple[_Node, list[Array]]] = []
+            for node, entry in staged.items():
+                lifetime = entry.lifetime
+                if lifetime is not None and not (lifetime.open and node.lifetime is lifetime):
+                    continue  # staged by a lifetime that has closed
+                entries.append((node, split(entry.msgs)))
+            self._run_wave(entries)
+
+        self._request(commit)
+        return result
+
+    def _report_awaitable[R](self, result: R) -> R:
+        if isawaitable(result):
+            self._report(
+                "batch",
+                KernelError(
+                    "batch body returned an awaitable; writes after its first await are"
+                    " separate waves"
+                ),
+            )
+        return result
 
     # ---- Reads ---------------------------------------------------------------
 

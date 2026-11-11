@@ -1,6 +1,7 @@
 """Phase 1: the closed message set and the checks on node output.
 
-Scenarios C-26, C-42, C-12 (c) and C-23 (f) of graphrefly spec/conformance.jsonl,
+Scenarios C-26, C-42 (as revised by graphrefly:D801), C-12 (c) and C-23 (f) of
+graphrefly spec/conformance.jsonl,
 qualified against graphrefly._kernel (graphrefly-py:D2). Also the failure
 semantics of graphrefly-py:D2: the kernel catches Exception only.
 """
@@ -93,7 +94,9 @@ def test_c26_the_first_retired_type_ends_the_node_so_later_ones_never_run(
 def test_c42_each_rejection_applies_nothing_and_later_data_is_retained(
     harness: Harness,
 ) -> None:
-    """C-42: rejected before anything is applied; the DATA sent afterwards is retained."""
+    """C-42 (as revised by graphrefly:D801): PAUSE, RESUME, PULL, TEARDOWN, PENDING, START
+    and unknown types are rejected before anything is applied; the DATA sent afterwards
+    is retained."""
 
     g = harness.graph
     g.state("A", 1)
@@ -105,6 +108,8 @@ def test_c42_each_rejection_applies_nothing_and_later_data_is_retained(
         [("TEARDOWN",)],
         [(PENDING,)],
         [(DATA, 0), (PENDING,)],
+        [(START,)],
+        [(DATA, 0), (START,)],
         [("NOT-A-TYPE",)],
         [(DATA, 0), ("NOT-A-TYPE", 1)],
     ]
@@ -144,11 +149,7 @@ def test_c42_uncaught_rejection_is_the_nodes_error(harness: Harness) -> None:
 
 @pytest.mark.parametrize("kind", [START, PENDING, RESOLVED])
 def test_kernel_only_types_are_rejected_in_node_output(harness: Harness, kind: str) -> None:
-    """START, PENDING and RESOLVED are the kernel's alone.
-
-    START is rejected by the user's decision of 2026-11-10; the C-42 clause that
-    states it is claimed only after the root amends R-failure and C-42.
-    """
+    """START, PENDING and RESOLVED are the kernel's alone (R-failure@3, graphrefly:D801)."""
 
     g = harness.graph
     g.state("A", 1)

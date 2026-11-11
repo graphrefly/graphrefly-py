@@ -143,7 +143,13 @@ def run_scenario(sc: dict[str, Any]) -> list[dict[str, Any]]:
                 g.error(op[1], op[2])
             elif kind == "batch":
                 graph: Any = g  # batch arrives in phase 2
-                graph.batch(lambda: [run(x) for x in op[1]])
+                ops = op[1]
+
+                def body() -> None:
+                    for inner in ops:
+                        run(inner)
+
+                graph.batch(body)
         except Exception as error:
             flush()
             out.append({"thrown": str(error)})

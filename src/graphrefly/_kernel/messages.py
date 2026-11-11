@@ -24,9 +24,8 @@ ERROR: Final = "ERROR"
 #: The closed set (R-messages). TEARDOWN, PAUSE, RESUME and PULL are not messages.
 MESSAGE_TYPES: Final = frozenset({START, PENDING, DATA, RESOLVED, INVALIDATE, COMPLETE, ERROR})
 
-#: Sent only by the kernel; rejected in node output (R-wave, R-failure). START joined
-#: PENDING and RESOLVED by the user's decision of 2026-11-10, pending the root
-#: amendment of R-failure and C-42.
+#: Sent only by the kernel; rejected in node output (R-wave@2, R-subscription@3 and
+#: R-failure@3; START by graphrefly:D801).
 KERNEL_ONLY: Final = frozenset({START, PENDING, RESOLVED})
 
 #: ``(TYPE,)`` or ``(TYPE, payload)``; the shape is checked at runtime (check_message).
@@ -122,12 +121,12 @@ def prepare_output(array: Sequence[object]) -> list[Array]:
     (R-failure).
     """
 
-    if isinstance(array, tuple | str | bytes) or not isinstance(array, Sequence):
-        raise KernelError("ctx.down takes a list of message tuples")
-    if len(array) == 1:
+    if type(array) is list and len(array) == 1:
         only = array[0]
         if type(only) is tuple and len(only) == 2 and only[0] == DATA and only[1] is not SENTINEL:
-            return [[only]]
+            return [[only]]  # the common case: one DATA
+    if isinstance(array, tuple | str | bytes) or not isinstance(array, Sequence):
+        raise KernelError("ctx.down takes a list of message tuples")
     checked: list[Message] = []
     for item in array:
         message = check_message(item)
