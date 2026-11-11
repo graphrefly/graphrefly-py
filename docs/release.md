@@ -18,9 +18,12 @@ This keeps one wheel usable across supported ordinary CPython 3.12, 3.13, and
 
 Free-threaded CPython wheels are not part of the 0.22 release policy.
 
-The release workflow checks out `graphrefly-rs@main`. Before merging a release
-PR or manually publishing, confirm Rust `main` contains the exact native binding
-commit intended for the Python release.
+The release and CI workflows check out graphrefly-rs at
+`cf02fc97070e32560c0b4b22481418c8163d6e80`, the last commit that builds
+`graphrefly-bindings-py`. graphrefly:D800 pins it there: the Rust D797
+migration no longer keeps the binding compiling, and the pin stays until the
+Python kernel replaces `graphrefly._native` and the package builds without
+graphrefly-rs.
 
 ## Publish
 

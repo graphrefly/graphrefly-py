@@ -15,7 +15,9 @@ pnpm docs:gen:check
 pnpm build
 ```
 
-Maturin needs the Rust toolchain from the sibling checkout. In an agent shell,
+Maturin needs the Rust toolchain from the sibling checkout, checked out at
+`cf02fc97070e32560c0b4b22481418c8163d6e80` (graphrefly:D800) until the Python
+kernel replaces `graphrefly._native`. In an agent shell,
 run it through that checkout's mise environment while keeping uv's working
 project here. Follow [Rust development](../../graphrefly-rs/docs/development.md)
 for toolchain and long-command observation. The native binding gate is

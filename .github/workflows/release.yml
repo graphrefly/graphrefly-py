@@ -62,7 +62,9 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: graphrefly/graphrefly-rs
-          ref: main
+          # Pinned by graphrefly:D800 to the last graphrefly-rs commit that builds
+          # graphrefly-bindings-py, until the Python kernel replaces graphrefly._native.
+          ref: cf02fc97070e32560c0b4b22481418c8163d6e80
           path: graphrefly-rs
 
       - name: Checkout authority fixtures
@@ -163,7 +165,9 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: graphrefly/graphrefly-rs
-          ref: main
+          # Pinned by graphrefly:D800 to the last graphrefly-rs commit that builds
+          # graphrefly-bindings-py, until the Python kernel replaces graphrefly._native.
+          ref: cf02fc97070e32560c0b4b22481418c8163d6e80
           path: graphrefly-rs
 
       - name: Setup Python
