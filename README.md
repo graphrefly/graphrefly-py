@@ -17,9 +17,9 @@ kernel, with a typed facade, host lifetimes and ecosystem integration.
 
 - **Work:** [local ledger](plan/work.jsonl), [root work locator](../graphrefly/authority/work-ledgers.jsonl).
 - **Rules, drafts and decisions:** [documentation map](docs/README.md).
-- **Package use:** [quick start](docs/quickstart.md), [API reference](docs/api.md)
+- **Package use:** [quick start](website/src/content/docs/quickstart.md), [API reference](website/src/content/docs/api/index.md)
   and [Python docs](https://py.graphrefly.dev/).
-- **Releases:** [release guide](docs/release.md) and [changelog](CHANGELOG.md).
+- **Releases:** [release guide](website/src/content/docs/release.md) and [changelog](CHANGELOG.md).
 
 ## Start
 
