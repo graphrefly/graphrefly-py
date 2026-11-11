@@ -870,3 +870,41 @@ def test_async_job_start_cancels_task_if_lifetime_closed_during_spawn():
 
     assert task.cancelled is True
     assert job.active is False
+
+
+def test_activated_sugar_keeps_no_private_state_so_checkpoint_succeeds() -> None:
+    """No value-level or async sugar keeps a cleanup, a task or a lock in the node's
+    private state, which would make every graph that ran it uncheckpointable; tasks
+    and cleanups live in the lifetime and its closures (R-checkpoint)."""
+
+    graph = Graph("sugar-checkpoint")
+    runner = ManualRunner()
+    a = graph.state(1, name="a")
+    seen: list[int] = []
+    d = graph.derived([a], lambda v: v + 1, name="d")
+    e = graph.effect([d], seen.append, name="e")
+    p = graph.producer(lambda: 7, name="p")
+
+    async def later(v: int) -> int:
+        return v * 2
+
+    n = async_node(graph, [a], runner, later, name="n")
+
+    def factory() -> Awaitable[int]:
+        async def work() -> int:
+            return 42
+
+        return work()
+
+    s = from_awaitable(graph, runner, factory, name="s")
+    stops = [graph.retain(node) for node in (e, p, n, s)]
+    a.set(2)
+    runner.run(len(runner.jobs) - 1)
+    assert seen == [2, 3] and d.cache() == 3
+    for node_id in ("d", "e", "p", "n", "s"):
+        assert graph._kernel.private_state(node_id) is None, node_id
+    checkpoint = graph.checkpoint()
+    assert [node["id"] for node in checkpoint["nodes"]] == ["a", "d", "e", "p", "n", "s"]
+    for stop in stops:
+        stop()
+    graph.close()
