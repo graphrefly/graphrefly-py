@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from graphrefly._kernel import COMPLETE, DATA, ERROR, INVALIDATE, Ctx, Dep, Graph, Message
@@ -38,20 +38,23 @@ def _same(fn: Callable[[Ctx], None]) -> Callable[[Ctx], None]:
 
 @dataclass(frozen=True, slots=True)
 class WireEdgeGroupIssue:
-    """A drop, gap, refusal or malformed frame at a group's gate (R-bridge).
+    """A drop, gap, refusal, ended edge or malformed frame at a group's gate (R-bridge).
 
     ``kind`` is ``stale`` (a cause at or below the last one taken; ``last`` names it),
     ``gap`` (causes ``missing_from`` to ``missing_to`` never came), ``refused`` (the
-    frame was refused whole; ``reason`` says why) or ``malformed``.
+    frame was refused whole; ``reason`` says why), ``ended`` (``edge``'s inbound node
+    has ended, yet the sender's edge goes on: its arrays were skipped without a terminal,
+    a divergence only a new group repairs, R-bridge@2) or ``malformed``.
     """
 
-    kind: Literal["stale", "gap", "refused", "malformed"]
+    kind: Literal["stale", "gap", "refused", "ended", "malformed"]
     session: str | None = None
     cause: int | None = None
     last: int | None = None
     missing_from: int | None = None
     missing_to: int | None = None
     reason: str | None = None
+    edge: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,10 +152,12 @@ def wire_edge_group_out(
         carried: list[WireEdgeArrays] = []
         for edge, dep in zip(edge_ids, ctx.deps, strict=True):
             arrays = _brought(dep)
+            if first and not any(array[0][0] == DATA for array in arrays):
+                # The first cause clears, on the receiver, a value an earlier session left for
+                # an edge without one now, also one whose snapshot is its terminal alone.
+                arrays.insert(0, ((INVALIDATE,),))
             if arrays:
                 carried.append(WireEdgeArrays(edge, _bytes_only(node_id, edge, arrays)))
-            elif first:
-                carried.append(WireEdgeArrays(edge, (((INVALIDATE,),),)))
         if not carried:
             return  # a run with no new input forms no cause
         state.cause += 1
@@ -244,13 +249,30 @@ class _BadFrame(Exception):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class _Checked:
+    view: dict[str, _EdgeView]
+    frame: WireEdgeCause
+    diverged: tuple[str, ...]
+
+
 def _view_after(
     frame: WireEdgeCause, known: frozenset[str], view: Mapping[str, _EdgeView]
-) -> dict[str, _EdgeView]:
-    """The view after ``frame``, or _BadFrame with the reason it is refused whole."""
+) -> _Checked:
+    """Check a frame against what its inbound nodes could send; raise _BadFrame with the
+    reason it is refused whole, or return the view after it with the frame to release.
+
+    An edge whose inbound node has ended takes nothing more (R-bridge@2): its arrays are
+    skipped and the rest of the frame is released. When the skipped arrays do not end
+    with a terminal, the sender's edge goes on while the receiver's has ended, and the
+    edge is reported as diverged; a new session's first cause repeating an ended edge's
+    snapshot and terminal is not.
+    """
 
     after = dict(view)
     seen: set[str] = set()
+    kept: list[WireEdgeArrays] = []
+    diverged: list[str] = []
     for entry in frame.edges:
         if not isinstance(entry, WireEdgeArrays):
             raise _BadFrame("an edge entry is not WireEdgeArrays")
@@ -262,12 +284,11 @@ def _view_after(
         seen.add(edge)
         if not entry.arrays:
             raise _BadFrame(f"edge {edge} carries no array")
-        prior = after.get(edge, _EdgeView(None, None))
-        values, terminal = prior.values, prior.terminal
+        ended = False  # within this frame
         for array in entry.arrays:
             if not array:
                 raise _BadFrame(f"edge {edge}: an empty array")
-            if terminal is not None:
+            if ended:
                 raise _BadFrame(f"edge {edge}: an array after its terminal")
             for index, message in enumerate(array):
                 kind = message[0] if isinstance(message, tuple) and message else None
@@ -279,6 +300,15 @@ def _view_after(
                     raise _BadFrame(f"edge {edge}: {kind} without bytes")
                 if kind in (COMPLETE, ERROR) and index != len(array) - 1:
                     raise _BadFrame(f"edge {edge}: a terminal not last")
+            ended = array[-1][0] in (COMPLETE, ERROR)
+        prior = after.get(edge, _EdgeView(None, None))
+        if prior.terminal is not None:
+            if not ended:
+                diverged.append(edge)
+            continue  # the ended inbound node takes nothing more
+        values: tuple[bytes, ...] | None = prior.values
+        terminal: Message | None = None
+        for array in entry.arrays:
             # As the kernel applies it: what came before the last INVALIDATE is gone, the
             # DATA after it is the value, and a terminal ends the edge.
             cut = max((i for i, m in enumerate(array) if m[0] == INVALIDATE), default=-1)
@@ -289,7 +319,9 @@ def _view_after(
                 values = data
             terminal = next((m for m in array if m[0] in (COMPLETE, ERROR)), None)
         after[edge] = _EdgeView(values, terminal)
-    return after
+        kept.append(entry)
+    released = frame if len(kept) == len(frame.edges) else replace(frame, edges=tuple(kept))
+    return _Checked(after, released, tuple(diverged))
 
 
 def _gate_fn(group: str, known: frozenset[str]) -> Callable[[Ctx], None]:
@@ -325,14 +357,16 @@ def _gate_fn(group: str, known: frozenset[str]) -> Callable[[Ctx], None]:
                     )
                 state.last = cause
                 try:
-                    view = _view_after(frame, known, state.view)
+                    checked = _view_after(frame, known, state.view)
                 except _BadFrame as bad:
                     issues.append(WireEdgeGroupIssue("refused", session, cause, reason=str(bad)))
                     continue
                 if gap is not None:
                     issues.append(gap)
-                state.view = view
-                released.append(frame)
+                for edge in checked.diverged:
+                    issues.append(WireEdgeGroupIssue("ended", session, cause, edge=edge))
+                state.view = checked.view
+                released.append(checked.frame)
         ctx.state = state
         if released or issues:
             ctx.down([(DATA, _GateOutput(tuple(released), tuple(issues), dict(state.view)))])

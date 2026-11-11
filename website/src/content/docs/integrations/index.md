@@ -32,8 +32,9 @@ Wire edge groups carry a fixed set of edges from one graph to another
 - `frame_source(graph, open)` is the receiving end: `open(deliver)` runs at each
   activation, and each `deliver(frame)` is one wave.
 - `wire_edge_group_in(graph, group=..., frames=..., edges=...)` releases each cause
-  whole, in order and at most once; drops, gaps and refusals are values of its
-  `issues` node.
+  in order and at most once. Arrays for an edge whose inbound node has ended are
+  skipped and the rest of the cause released; drops, gaps, refusals and such ended
+  edges are values of its `issues` node.
 
 `wire_bridge(...)` is the transport adapter over canonical protobuf bytes, with acks
 and retries on explicit ack-timeout facts; `wire_bridge_ack_driver(...)` derives

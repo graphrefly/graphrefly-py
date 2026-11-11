@@ -1,8 +1,8 @@
-"""Phase 6: graphs on one thread, and the wire bridge module (R-graph-domain@3, R-bridge@1).
+"""Phase 6: graphs on one thread, and the wire bridge module (R-graph-domain@3, R-bridge@2).
 
 Scenarios C-47, C-1 and C-1b of graphrefly spec/conformance.jsonl, qualified against
-graphrefly._kernel and graphrefly._wire.bridge (graphrefly:D803). The tests carry
-frames by hand.
+graphrefly._kernel and graphrefly._wire.bridge (graphrefly:D803; R-bridge@2 by
+graphrefly:D804). The tests carry frames by hand.
 """
 
 from __future__ import annotations
@@ -394,15 +394,6 @@ def test_c1b_a_run_in_which_no_edge_brought_input_forms_no_cause() -> None:
     assert [f.cause for f in channel.sent] == [1, 2]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "pending rule question (graphrefly-py phase 6, 2026-11-11): a new session's first "
-        "cause re-carries an edge that already ended at the receiver; R-bridge@1 refuses that "
-        "frame whole, so the INVALIDATE for the other edge is lost too. This test states "
-        "option (b), skipping the ended edge's arrays; Python follows (a) until root settles it."
-    ),
-)
 def test_c1b_a_new_session_after_an_edge_ended_still_invalidates_the_other_edge() -> None:
     t = _groups()
     sender, receiver, channel, group = t["sender"], t["receiver"], t["channel"], t["group"]
@@ -416,3 +407,68 @@ def test_c1b_a_new_session_after_an_edge_ended_still_invalidates_the_other_edge(
     channel.flush()
     assert receiver.get(group.inbound["x"]).has is False  # the old session's x is dropped
     assert t["issues"] == []
+
+
+def test_c1b_a_first_cause_invalidates_an_edge_whose_snapshot_is_its_terminal_alone() -> None:
+    t = _groups()
+    sender, receiver, channel, group = t["sender"], t["receiver"], t["channel"], t["group"]
+    channel.flush()
+    assert receiver.get(group.inbound["x"]).value == b"x0"
+    sender.unsubscribe("transport", "out")
+    sender.invalidate("xin")
+    sender.complete("xin")  # x loses its value and completes while no session is open
+    sender.subscribe("transport", "out", frame_sink(channel.send))
+    (first,) = channel.sent
+    assert dict((e.edge_id, e.arrays) for e in first.edges)["x"] == (
+        ((INVALIDATE,),),
+        ((COMPLETE,),),
+    )
+    channel.flush()
+    inbound_x = receiver.get(group.inbound["x"])
+    assert inbound_x.has is False and inbound_x.ended == (COMPLETE,)  # x0 does not survive
+    assert t["issues"] == []
+
+
+def test_c1b_arrays_for_an_ended_edge_are_skipped_and_the_rest_of_the_frame_released() -> None:
+    t = _groups()
+    sender, receiver, channel, group, issues = (
+        t["sender"],
+        t["receiver"],
+        t["channel"],
+        t["group"],
+        t["issues"],
+    )
+    channel.flush()
+    sender.complete("y")
+    (ended,) = channel.sent
+    channel.flush()
+    y = group.inbound["y"]
+    assert receiver.get(y).ended == (COMPLETE,)
+    diverging = replace(
+        ended,
+        cause=ended.cause + 1,
+        edges=(
+            WireEdgeArrays("x", (((DATA, b"x9"),),)),
+            WireEdgeArrays("y", (((DATA, b"y9"),),)),  # the sender's y goes on
+        ),
+    )
+    channel.hand(diverging)
+    assert receiver.get(group.inbound["x"]).value == b"x9"  # the rest of the frame released
+    assert receiver.get(y).value == b"y0" and receiver.get(y).ended == (COMPLETE,)
+    assert issues == [WireEdgeGroupIssue("ended", ended.session, ended.cause + 1, edge="y")]
+
+    repeated = replace(
+        ended,
+        cause=ended.cause + 2,
+        edges=(WireEdgeArrays("y", (((DATA, b"y0"),), ((COMPLETE,),))),),
+    )
+    channel.hand(repeated)  # skipped arrays that end with a terminal are no divergence
+    assert len(issues) == 1
+
+    refused = replace(
+        ended,
+        cause=ended.cause + 3,
+        edges=(WireEdgeArrays("y", (((COMPLETE,),), ((DATA, b"late"),))),),
+    )
+    channel.hand(refused)  # an array after its terminal in one frame is still refused whole
+    assert issues[-1].kind == "refused"
