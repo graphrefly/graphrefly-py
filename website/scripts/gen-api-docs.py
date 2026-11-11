@@ -123,8 +123,8 @@ def category_for(name: str, obj: Any) -> str:
         return "Async and Network"
     if name.startswith("Restore") or name.startswith("restore_") or name == "GraphCheckpoint":
         return "Restore"
-    if name.endswith("Error") or name.endswith("CallbackError") or name == "DataIssue":
-        return "Exceptions and Issues"
+    if name.endswith("Error") or name.endswith("CallbackError"):
+        return "Exceptions"
     if name in {
         "COMPLETE",
         "DATA",

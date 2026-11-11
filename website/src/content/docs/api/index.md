@@ -50,10 +50,9 @@ Update Python docstrings or exports, then rerun `pnpm --dir website docs:gen`.
 - [`from_sse`](/api/from_sse/)
 - [`trio_runner`](/api/trio_runner/)
 
-## Exceptions and Issues
+## Exceptions
 
 - [`CallbackError`](/api/callbackerror/)
-- [`DataIssue`](/api/dataissue/)
 - [`GraphCallbackError`](/api/graphcallbackerror/)
 - [`GraphReflyCheckpointError`](/api/graphreflycheckpointerror/)
 - [`GraphReflyError`](/api/graphreflyerror/)

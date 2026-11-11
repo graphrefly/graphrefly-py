@@ -18,7 +18,6 @@ SOURCE_BY_IMPORT = {
     "graphrefly._wire.protobuf": PACKAGE / "_wire" / "protobuf.py",
     "graphrefly._wire_facade": PACKAGE / "_wire_facade.py",
     "graphrefly.exceptions": PACKAGE / "exceptions.py",
-    "graphrefly.issues": PACKAGE / "issues.py",
 }
 
 ALIAS_OR_CONSTANT_EXPORTS = {

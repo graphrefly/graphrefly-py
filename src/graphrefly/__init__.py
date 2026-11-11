@@ -85,7 +85,6 @@ from graphrefly.exceptions import (
     GraphReflyValueError,
     SubscriberCallbackError,
 )
-from graphrefly.issues import DataIssue
 
 __all__ = [
     "COMPLETE",
@@ -99,7 +98,6 @@ __all__ = [
     "CallbackError",
     "ControlMessage",
     "Ctx",
-    "DataIssue",
     "DataMessage",
     "Dep",
     "ErrorMessage",

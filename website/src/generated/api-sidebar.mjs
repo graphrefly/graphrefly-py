@@ -146,15 +146,11 @@ export const apiSidebar = [
     ]
   },
   {
-    "label": "Exceptions and Issues",
+    "label": "Exceptions",
     "items": [
       {
         "label": "CallbackError",
         "link": "/api/callbackerror"
-      },
-      {
-        "label": "DataIssue",
-        "link": "/api/dataissue"
       },
       {
         "label": "GraphCallbackError",
