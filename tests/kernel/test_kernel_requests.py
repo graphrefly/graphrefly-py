@@ -913,3 +913,31 @@ def test_a_rewire_is_checked_again_when_it_runs_so_a_batch_cannot_close_a_cycle(
     assert [(r.source, str(r.error)) for r in harness.reports] == [
         ("queued request", "rewire: B would depend on itself through A")
     ]
+
+
+def test_two_rewires_from_one_sink_callback_cannot_close_a_cycle(harness: Harness) -> None:
+    """C-35 (graphrefly:D806): both are asked for in one wave, each acyclic alone; the
+    second is refused when it runs, changes nothing and goes to the reporter."""
+
+    g = harness.graph
+    g.state("S", 1)
+    a, b = Kept(echo), Kept(echo)
+    g.node("A", ["S"], a)
+    g.node("B", ["S"], b)
+    harness.sink("A")
+    harness.sink("B")
+    asked = [False]
+
+    def ask(array: tuple[Any, ...]) -> None:
+        if array[0] == ("PENDING",) and not asked[0]:
+            asked[0] = True
+            assert a.ctx is not None and b.ctx is not None
+            a.ctx.rewire(["B"])
+            b.ctx.rewire(["A"])
+
+    g.subscribe("asker", "S", ask)
+    g.set("S", 2)
+    assert [d.deps for d in g.describe()] == [(), ("B",), ("S",)]
+    assert [(r.source, str(r.error)) for r in harness.reports] == [
+        ("queued request", "rewire: B would depend on itself through A")
+    ]

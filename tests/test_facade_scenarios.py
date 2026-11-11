@@ -403,6 +403,22 @@ def test_c17_auto_complete_after_every_dependency_ended_in_any_order(order: str)
     assert sum(1 for array in d_seen if array[-1] == (COMPLETE,)) == 1
 
 
+def test_c17_only_the_last_terminal_alone_runs_the_function_then_completes() -> None:
+    g = Graph("c17-last")
+    b = g.state(1, name="B")
+    c = g.state(2, name="C")
+    runs: list[list[str]] = []
+    n = g.node([b, c], lambda ctx: runs.append(kinds(ctx)), name="N")
+    seen = sink(n)
+    runs.clear()
+    b.complete()  # an earlier terminal alone does not run it
+    assert runs == [] and seen[-1] == ((PENDING,), (RESOLVED,))
+    c.complete()  # the last one, alone, does; then N completes (graphrefly:D806)
+    assert runs == [["-", "COMPLETE"]] and seen[-1] == ((PENDING,), (COMPLETE,))
+    assert n.status.output == "completed"
+    g.close()
+
+
 # ---- C-23: ctx.deps is the function's only input --------------------------------------
 
 
@@ -753,6 +769,27 @@ def test_c35_rewire_keeps_the_instance_and_a_cycle_is_refused_when_it_runs() -> 
     g.batch(body)
     assert g.definition(x).deps == (y,) and g.definition(y).deps == (b,)
     assert [r.source for r in reports] == ["queued request"]
+
+    # Two rewires asked from one sink callback: the second would close the cycle.
+    kx, ky = Kept(echo), Kept(echo)
+    x2 = g.node([b], kx, name="X2")
+    y2 = g.node([b], ky, name="Y2")
+    x2.subscribe(lambda _: None)
+    y2.subscribe(lambda _: None)
+    asked: list[bool] = []
+
+    def ask(array: tuple[Any, ...]) -> None:
+        if array[0] == (PENDING,) and not asked:
+            asked.append(True)
+            assert kx.ctx is not None and ky.ctx is not None
+            kx.ctx.rewire([y2])
+            ky.ctx.rewire([x2])
+
+    b.subscribe(ask)
+    b.set(7)
+    deps = {n["id"]: n["deps"] for n in g.describe()}
+    assert (deps["X2"], deps["Y2"]) == (["Y2"], ["B"])  # Y2 keeps its dependencies
+    assert [r.source for r in reports] == ["queued request", "queued request"]
 
 
 # ---- C-36: input arrays and terminal admission ----------------------------------------------

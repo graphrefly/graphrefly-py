@@ -210,6 +210,23 @@ def test_c17_the_run_that_sees_the_last_terminal_alone_runs_once_then_completes(
     assert g.get("N").ended == (COMPLETE,)
 
 
+def test_c17_an_earlier_terminal_alone_does_not_run_only_the_last_does(
+    harness: Harness,
+) -> None:
+    g = harness.graph
+    g.state("B", 1)
+    g.state("C", 2)
+    runs: list[list[str]] = []
+    g.node("N", ["B", "C"], lambda ctx: runs.append(terminal_kinds(ctx)))
+    sink = harness.sink("N")
+    runs.clear()
+    g.complete("B")  # not the last terminal: no run, a RESOLVED
+    assert runs == [] and sink.arrays[-1] == (("PENDING",), ("RESOLVED",))
+    g.complete("C")  # the last one, alone: one run, then COMPLETE (graphrefly:D806)
+    assert runs == [["-", "COMPLETE"]]
+    assert sink.arrays[-1] == (("PENDING",), (COMPLETE,))
+
+
 # ---- C-34: terminal fanout and the ended node's lifetime closing --------------
 
 
