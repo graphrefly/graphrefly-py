@@ -9,9 +9,10 @@ terminal, deactivation, a replace at the root and a checkpoint round trip.
 from __future__ import annotations
 
 import sys
+from typing import Any
 
 from graphrefly._checkpoint import Built, RecipeContext, capture, recipe, restore
-from graphrefly._kernel import COMPLETE, DATA, Ctx, Graph
+from graphrefly._kernel import COMPLETE, DATA, INVALIDATE, Ctx, Graph
 
 DEPTH = 3 * sys.getrecursionlimit()  # 3,000 with the default limit
 
@@ -33,13 +34,13 @@ def test_a_long_chain_activates_runs_invalidates_ends_and_deactivates() -> None:
     reports: list[object] = []
     g = Graph(report=reports.append)
     last = chain(g)
-    seen: list[tuple[object, ...]] = []
+    seen: list[tuple[Any, ...]] = []
     g.subscribe("s", last, seen.append)
     assert seen == [(("START",), (DATA, 0))]
     g.set("n0", 1)
-    assert seen[-1] == (("PENDING",), (DATA, 1))
+    assert seen.pop() == (("PENDING",), (DATA, 1))
     g.invalidate("n0")
-    assert seen[-1] == (("PENDING",), ("INVALIDATE",)) and not g.get(last).has
+    assert seen.pop() == (("PENDING",), (INVALIDATE,)) and not g.get(last).has
     g.set("n0", 2)
     g.complete("n0")
     assert g.get(last).ended == (COMPLETE,) and g.get(last).value == 2
@@ -74,7 +75,13 @@ def test_a_replace_at_the_root_of_a_long_chain_reaches_the_end() -> None:
     for i in range(1, DEPTH + 1):
         g.node(f"n{i}", [f"n{i - 1}"], passes)
     g.subscribe("k", f"n{DEPTH}")
-    g.replace("n0", ["s"], lambda ctx: ctx.down([(DATA, ctx.deps[0].value * 2)]))
+
+    def doubles(ctx: Ctx) -> None:
+        value = ctx.deps[0].value
+        assert isinstance(value, int)
+        ctx.down([(DATA, value * 2)])
+
+    g.replace("n0", ["s"], doubles)
     assert g.get(f"n{DEPTH}").value == 14
 
 

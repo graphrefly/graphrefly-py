@@ -912,7 +912,7 @@ class Graph:
         stack = [node]
         while stack:
             for sub in stack.pop().subs:
-                if type(sub) is _Sink:
+                if not isinstance(sub, _Edge):
                     continue
                 dependent = sub.node
                 if dependent.ended is not None:
