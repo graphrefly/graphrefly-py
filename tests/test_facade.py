@@ -59,24 +59,24 @@ def data(arrays: Arrays) -> list[object]:
 
 
 def test_package_surface_is_the_d4_api() -> None:
+    # The whole surface, exactly: a removed name fails here without a separate list.
     expected = {
+        # graph and nodes
         "Graph",
         "Node",
         "State",
         "Ctx",
+        "Dep",
         "Subscription",
         "Retain",
         "Signal",
         "NodeStatus",
         "NodeDefinition",
-        "Recipe",
-        "RecipeContext",
-        "restore_graph",
+        "GraphEvent",
         "HostReport",
-        "DataMessage",
-        "ErrorMessage",
-        "ControlMessage",
-        "Dep",
+        "SENTINEL",
+        "Sentinel",
+        # messages
         "START",
         "PENDING",
         "DATA",
@@ -84,52 +84,71 @@ def test_package_surface_is_the_d4_api() -> None:
         "INVALIDATE",
         "COMPLETE",
         "ERROR",
-        "GraphEvent",
-        "SENTINEL",
+        "Message",
+        "DataMessage",
+        "ErrorMessage",
+        "ControlMessage",
+        # checkpoint and restore
+        "GraphCheckpoint",
+        "Recipe",
+        "RecipeContext",
+        "RecipeFactory",
+        "restore_graph",
+        # async and network
+        "AsyncRunner",
         "from_awaitable",
         "from_async_iter",
         "async_node",
-        "from_http",
-        "from_sse",
         "asyncio_runner",
         "trio_runner",
         "anyio_runner",
         "GraphReentryQueue",
-        "GraphCallbackError",
-        "SubscriberCallbackError",
-        "GraphReflyNoDataError",
-    }
-    assert expected <= set(graphrefly.__all__)
-    wire = {  # back in the D803 shape (graphrefly-py:D8)
+        "from_http",
+        "from_sse",
+        "HttpRequest",
+        "HttpResponse",
+        "HttpStreamHead",
+        "HttpStreamDriverEvent",
+        "HttpStreamHeadEvent",
+        "HttpStreamChunkEvent",
+        "HttpStreamCompleteEvent",
+        "HttpStreamErrorEvent",
+        "LocalHttpDriver",
+        "LocalHttpStreamDriver",
+        "SseEvent",
+        # wire, in the D803 shape (graphrefly-py:D8)
         "wire_edge_group_out",
         "wire_edge_group_in",
         "frame_source",
         "frame_sink",
         "wire_bridge",
         "wire_bridge_ack_driver",
+        "WireEdgeArrays",
         "WireEdgeCause",
+        "WireEdgeGroupIn",
         "WireEdgeGroupIssue",
+        "WireBridge",
+        "WireBridgeIssue",
+        "WireBridgeStatus",
+        "WireBridgeAckTimeout",
+        "WireBridgeAckDriver",
+        "WireBridgeAckDriverIssue",
+        "WireBridgeAckDriverStatus",
+        # exceptions
+        "GraphReflyError",
+        "GraphReflyRuntimeError",
+        "GraphReflyValueError",
+        "GraphReflyCheckpointError",
+        "GraphReflyRestoreError",
+        "GraphReflyNoDataError",
+        "CallbackError",
+        "GraphCallbackError",
+        "SubscriberCallbackError",
+        # version
+        "version",
+        "__version__",
     }
-    assert wire <= set(graphrefly.__all__)
-    removed = {
-        "PullContext",
-        "RewireNext",
-        "RestoreRef",
-        "RestoreDescriptor",
-        "RestoreContext",
-        "RestoreRegistry",
-        "restore_ref",
-        "restore_registry",
-        "wire_edge_group",
-        "wire_bridge_protobuf",
-        "WireEdgeGroup",
-        "WireEdgeGroupStatus",
-        "WireEdgeFrame",
-        "WireBridgeProtobuf",
-    }
-    for name in removed:
-        assert name not in graphrefly.__all__
-        assert not hasattr(graphrefly, name)
+    assert set(graphrefly.__all__) == expected
 
 
 def test_the_package_imports_no_native_module() -> None:
