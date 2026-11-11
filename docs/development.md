@@ -2,7 +2,9 @@
 
 Use [package metadata](../pyproject.toml) and [docs policy](docs.jsonl) for the
 package/tooling contract. The package is pure Python (graphrefly:D800,
-graphrefly-py:D6): no Rust toolchain or sibling checkout is needed.
+graphrefly-py:D6): no Rust toolchain or sibling checkout is needed. uv manages the
+environment only; tests and type checks import the package from `src`, and scripts
+run with `PYTHONPATH=src` (graphrefly-py:D13).
 
 ```sh
 uv sync --group dev --group docs

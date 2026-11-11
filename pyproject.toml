@@ -46,15 +46,15 @@ docs = [
 ]
 
 [tool.uv]
-# uv manages the environment only; the package is built with hatchling (uv build) and
-# tests import it from src (pytest pythonpath).
+# uv manages the environment only (graphrefly-py:D13); the package is built with
+# hatchling (uv build), and tests and type checks import it from src.
 package = false
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/graphrefly"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/graphrefly", "README.md", "LICENSE", "CHANGELOG.md", "pyproject.toml"]
+include = ["/src/graphrefly", "/README.md", "/LICENSE", "/CHANGELOG.md", "/pyproject.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

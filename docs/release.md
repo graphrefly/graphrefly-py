@@ -7,7 +7,11 @@ one universal wheel (`py3-none-any`) and an sdist for Python 3.12 and later
 
 ## Version
 
-The Python package version lives in `pyproject.toml`.
+The Python package version lives in `pyproject.toml` and stays below 1.0
+(graphrefly-py:D13): release-please bumps the minor version for a breaking change
+(`bump-minor-pre-major`) and also writes the fallback `_VERSION` in
+`src/graphrefly/_facade.py`. 0.23.0 was the last native wheel; the first pure-Python
+release is 0.24.0.
 
 ## Distributions
 

@@ -31,7 +31,7 @@ from graphrefly.exceptions import (
 T = TypeVar("T")
 U = TypeVar("U")
 R = TypeVar("R")
-_VERSION = "0.23.0"
+_VERSION = "0.23.0"  # x-release-please-version
 _SSE_PARSER_MAX_BUFFER_BYTES = 64 * 1024
 _SSE_RETRY_MAX = (1 << 64) - 1
 _NO_DEFAULT = object()
