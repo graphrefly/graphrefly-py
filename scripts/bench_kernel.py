@@ -1,9 +1,12 @@
-"""Reference measurement of graphrefly._kernel on the python-kernel-benchmark scenarios.
+"""Reference measurement of graphrefly._kernel and the public facade on the
+python-kernel-benchmark scenarios.
 
 The scenarios (chain, fan, batch, build and subscribe; node functions ``inc`` and
 ``heavy``) follow graphrefly sessions/active/python-kernel-benchmark/bench.py. Each
 step is one host input and the cost is reported per node run, best of five. This is
-a reference figure for graphrefly-py:D797-KERNEL-PY, not a gate.
+a reference figure for graphrefly-py:D797-KERNEL-PY, not a gate. The facade column
+runs the same scenarios through ``graphrefly.Graph`` (state, derived, subscribe, set,
+batch), so the gap between the two columns is the facade's own cost.
 
     PYTHONPATH=src uv run python scripts/bench_kernel.py
     PYTHONPATH=src uv run python scripts/bench_kernel.py \
@@ -24,6 +27,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+import graphrefly
 from graphrefly._kernel import DATA, Ctx, Graph
 
 
@@ -82,6 +86,37 @@ class Kernel:
         if batch is None:
             raise NotImplementedError
         batch(body)
+
+
+class Facade(Kernel):
+    name = "graphrefly.Graph"
+
+    def __init__(self) -> None:  # one graph per scenario, as in the kernel column
+        self.fg = graphrefly.Graph()
+        self.nodes: dict[str, Any] = {}
+        self.subs: list[graphrefly.Subscription] = []
+        self.i = 0
+
+    def state(self, v: object) -> str:
+        self.i += 1
+        n = f"n{self.i}"
+        self.nodes[n] = self.fg.state(v, n)
+        return n
+
+    def derived(self, deps: list[str], fn: Callable[..., Any]) -> str:
+        self.i += 1
+        n = f"n{self.i}"
+        self.nodes[n] = self.fg.derived([self.nodes[d] for d in deps], fn, n)
+        return n
+
+    def sink(self, n: str) -> None:
+        self.subs.append(self.nodes[n].subscribe(lambda array: None))
+
+    def set(self, n: str, v: object) -> None:
+        self.nodes[n].set(v)
+
+    def batch(self, body: Callable[[], object]) -> None:
+        self.fg.batch(body)
 
 
 def reference_runner(module: Any) -> type[Kernel]:
@@ -218,7 +253,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--reference", help="python-kernel-benchmark directory to compare with")
     args = parser.parse_args()
-    runners: list[type[Kernel]] = [Kernel]
+    runners: list[type[Kernel]] = [Kernel, Facade]
     if args.reference:
         sys.path.insert(0, args.reference)
         runners.append(reference_runner(importlib.import_module("kernel_fast")))
