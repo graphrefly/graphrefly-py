@@ -10,6 +10,7 @@ in the test's docstring: the facade has no host RESOLVED and no host array, by d
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import fields
 from typing import Any
 
 import pytest
@@ -26,6 +27,7 @@ from graphrefly import (
     Ctx,
     Graph,
     GraphCallbackError,
+    GraphEvent,
     GraphReflyRuntimeError,
     GraphReflyValueError,
     HostReport,
@@ -1007,3 +1009,69 @@ def test_a_derived_chain_three_times_the_recursion_limit_runs_and_closes() -> No
     assert seen[-1] == ((PENDING,), (DATA, 1 + 3 * sys.getrecursionlimit()))
     g.close()
     assert g.closed
+
+
+# ---- C-48: the graph layer, find, describe, observe and retain (R-graph-surface) ----
+
+
+def test_c48_find_describe_observe_and_retain() -> None:
+    g = Graph("c48")
+    a = g.state(1, name="a")
+    b = g.derived([a], lambda v: v * 10, name="b")
+    c = g.derived([a], lambda v: v, name="c")
+    kept: list[Ctx] = []
+
+    def keep(ctx: Ctx) -> None:
+        kept.append(ctx)
+
+    d = g.node([a], keep, name="d")
+
+    # find gives b and nothing for an unknown id; neither find nor describe activates b.
+    assert g.find("b") is b and g.find("nope") is None
+    assert g.describe() == [
+        {"id": "a", "kind": "state", "deps": [], "quiet": False},
+        {"id": "b", "kind": "node", "deps": ["a"], "quiet": False},
+        {"id": "c", "kind": "node", "deps": ["a"], "quiet": False},
+        {"id": "d", "kind": "node", "deps": ["a"], "quiet": False},
+    ]
+    assert b.status.lifecycle == "inactive"
+
+    # The first observer activates b: START with b's value, then [PENDING, DATA 20].
+    first: list[GraphEvent] = []
+    stop_first = g.observe([b], first.append)
+    assert b.status.lifecycle == "active"
+    a.set(2)
+    assert [(e.id, e.msgs) for e in first] == [
+        ("b", ((START,), (DATA, 10))),
+        ("b", ((PENDING,), (DATA, 20))),
+    ]
+    assert {f.name for f in fields(GraphEvent)} == {"id", "msgs"}  # no tier, no seq
+
+    # A second observer goes on after the first stops; after both stop, b is inactive.
+    second: list[GraphEvent] = []
+    stop_second = g.observe([b], second.append)
+    stop_first.unsubscribe()
+    a.set(3)
+    assert len(first) == 2
+    assert [(e.id, e.msgs) for e in second] == [
+        ("b", ((START,), (DATA, 20))),
+        ("b", ((PENDING,), (DATA, 30))),
+    ]
+    stop_second.unsubscribe()
+    assert b.status.lifecycle == "inactive"
+
+    # Each retain is its own subscription.
+    one, two = g.retain(c), g.retain(c)
+    assert c.status.lifecycle == "active"
+    one.unsubscribe()
+    assert c.status.lifecycle == "active"
+    two.unsubscribe()
+    assert c.status.lifecycle == "inactive"
+
+    # describe gives d's current deps after a rewire; its definition keeps the declared.
+    held = g.retain(d)
+    kept[-1].rewire([a, c])
+    assert [n["deps"] for n in g.describe() if n["id"] == "d"] == [["a", "c"]]
+    assert g.definition(d).deps == (a,)
+    held.unsubscribe()
+    g.close()
