@@ -9,7 +9,7 @@ description: "Streaming driver event marking normal stream completion."
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:183`
+**Source:** `src/graphrefly/_http.py:89`
 
 ## Signature
 

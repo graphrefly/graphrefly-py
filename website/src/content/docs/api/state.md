@@ -9,7 +9,7 @@ description: "A state node: the only place host input enters a graph."
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:1411`
+**Source:** `src/graphrefly/_facade.py:711`
 
 ## Description
 
@@ -35,7 +35,7 @@ same object, or an equal ``bool``, ``int``, ``float``, ``str`` or ``bytes``
 (NaN counts as itself, ``-0.0`` differs from ``0.0``). To store a function as
 the value, wrap it: ``set(lambda _: fn)`` (graphrefly-py:D11).
 
-Source: `src/graphrefly/_facade.py:1414`
+Source: `src/graphrefly/_facade.py:714`
 
 ### `invalidate`
 
@@ -45,7 +45,7 @@ invalidate() -> None
 
 Remove the state's value and invalidate its dependents.
 
-Source: `src/graphrefly/_facade.py:1445`
+Source: `src/graphrefly/_facade.py:745`
 
 ### `complete`
 
@@ -55,7 +55,7 @@ complete() -> None
 
 End the state with COMPLETE; later host input is refused.
 
-Source: `src/graphrefly/_facade.py:1452`
+Source: `src/graphrefly/_facade.py:752`
 
 ### `error`
 
@@ -65,4 +65,4 @@ error(error: object) -> None
 
 End the state with ERROR carrying ``error``; later host input is refused.
 
-Source: `src/graphrefly/_facade.py:1459`
+Source: `src/graphrefly/_facade.py:759`

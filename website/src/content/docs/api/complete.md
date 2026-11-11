@@ -9,7 +9,7 @@ description: "Generated API reference for graphrefly.COMPLETE."
 
 **Kind:** attribute
 
-**Source:** `src/graphrefly/_facade.py:52`
+**Source:** `src/graphrefly/_facade.py:72`
 
 ## Value
 

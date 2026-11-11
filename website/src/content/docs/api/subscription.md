@@ -9,7 +9,7 @@ description: "Idempotent subscription handle returned by observe and subscribe c
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:647`
+**Source:** `src/graphrefly/_facade.py:357`
 
 ## Signature
 
@@ -37,4 +37,4 @@ unsubscribe() -> None
 
 Detach this subscription from its graph node or observer.
 
-Source: `src/graphrefly/_facade.py:668`
+Source: `src/graphrefly/_facade.py:378`

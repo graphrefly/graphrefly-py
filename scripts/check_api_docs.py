@@ -10,7 +10,9 @@ PACKAGE = ROOT / "src" / "graphrefly"
 MIN_WORDS = 4
 
 SOURCE_BY_IMPORT = {
+    "graphrefly._async": PACKAGE / "_async.py",
     "graphrefly._facade": PACKAGE / "_facade.py",
+    "graphrefly._http": PACKAGE / "_http.py",
     "graphrefly._sentinel": PACKAGE / "_sentinel.py",
     "graphrefly._kernel.signal": PACKAGE / "_kernel" / "signal.py",
     "graphrefly._wire.bridge": PACKAGE / "_wire" / "bridge.py",

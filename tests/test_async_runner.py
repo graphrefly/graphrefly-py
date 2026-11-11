@@ -22,7 +22,8 @@ from graphrefly import (
     from_awaitable,
     trio_runner,
 )
-from graphrefly._facade import _AsyncJob, _GraphLifetime, _GraphReentryCompletion
+from graphrefly._async import _AsyncJob, _GraphReentryCompletion
+from graphrefly._facade import _GraphLifetime
 
 
 class ManualTask:

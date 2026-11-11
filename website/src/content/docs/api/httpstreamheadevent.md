@@ -9,7 +9,7 @@ description: "Streaming driver event carrying the HTTP response head."
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:159`
+**Source:** `src/graphrefly/_http.py:65`
 
 ## Signature
 

@@ -9,7 +9,7 @@ description: "HTTP response head material for streaming source drivers."
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:151`
+**Source:** `src/graphrefly/_http.py:57`
 
 ## Signature
 

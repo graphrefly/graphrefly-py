@@ -9,7 +9,7 @@ description: "Generated API reference for graphrefly.INVALIDATE."
 
 **Kind:** attribute
 
-**Source:** `src/graphrefly/_facade.py:51`
+**Source:** `src/graphrefly/_facade.py:69`
 
 ## Value
 

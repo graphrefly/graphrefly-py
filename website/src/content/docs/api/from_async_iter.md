@@ -9,7 +9,7 @@ description: "Create a source from a fresh async iterable produced on each activ
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_facade.py:2146`
+**Source:** `src/graphrefly/_async.py:771`
 
 ## Signature
 

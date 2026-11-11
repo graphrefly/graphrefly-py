@@ -9,7 +9,7 @@ description: "Host-driver HTTP response material emitted by `from_http`."
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:142`
+**Source:** `src/graphrefly/_http.py:48`
 
 ## Signature
 

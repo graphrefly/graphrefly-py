@@ -9,7 +9,7 @@ description: "Generated API reference for graphrefly.RecipeFactory."
 
 **Kind:** type alias
 
-**Source:** `src/graphrefly/_facade.py:75`
+**Source:** `src/graphrefly/_facade.py:102`
 
 ## Type
 

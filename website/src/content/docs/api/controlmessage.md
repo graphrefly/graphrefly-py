@@ -9,7 +9,7 @@ description: "Generated API reference for graphrefly.ControlMessage."
 
 **Kind:** type alias
 
-**Source:** `src/graphrefly/_facade.py:66`
+**Source:** `src/graphrefly/_facade.py:84`
 
 ## Type
 

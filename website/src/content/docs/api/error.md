@@ -9,7 +9,7 @@ description: "Generated API reference for graphrefly.ERROR."
 
 **Kind:** attribute
 
-**Source:** `src/graphrefly/_facade.py:53`
+**Source:** `src/graphrefly/_facade.py:75`
 
 ## Value
 
