@@ -63,17 +63,6 @@ def is_value(message: Message) -> bool:
     return kind in (DATA, RESOLVED)
 
 
-def marks(message: Message) -> bool:
-    """Return whether an array holding ``message`` marks its sender's cone pending.
-
-    DATA, RESOLVED, INVALIDATE, COMPLETE and ERROR mark and settle (R-wave); START
-    and PENDING do neither.
-    """
-
-    kind: str = message[0]
-    return kind not in (START, PENDING)
-
-
 def check_message(message: object) -> Message:
     """Check one message's shape and payload; return it typed, or raise KernelError."""
 
