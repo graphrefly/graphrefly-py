@@ -6,7 +6,7 @@ class GraphReflyError(Exception):
 
 
 class GraphReflyRuntimeError(GraphReflyError, RuntimeError):
-    """Runtime boundary failure from the native graph engine or host facade."""
+    """Runtime boundary failure from the graph kernel or the host facade."""
 
 
 class GraphReflyValueError(GraphReflyError, ValueError):
