@@ -9,7 +9,7 @@ description: "Build a new graph from ``checkpoint`` (R-checkpoint); no callback 
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_facade.py:1350`
+**Source:** `src/graphrefly/_facade.py:1374`
 
 ## Signature
 

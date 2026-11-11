@@ -512,19 +512,47 @@ def test_describe_is_exactly_the_topology_of_each_node() -> None:
         assert d.status.lifecycle == "inactive"  # describe activates nothing
 
 
-def test_observe_sees_every_published_array_without_activating() -> None:
+def test_observe_is_a_subscriber_with_one_event_per_array() -> None:
     with Graph("observe") as g:
         a = g.state(1, name="a")
         d = g.derived([a], lambda v: v + 1, name="d")
         events: list[GraphEvent] = []
-        g.observe(events.append)
-        assert d.status.lifecycle == "inactive"
+        sub = g.observe([a, d], events.append)
+        assert d.status.lifecycle == "active"  # observing a cold node activates it
+        assert [(e.id, e.msgs) for e in events] == [
+            ("a", (("START",), ("DATA", 1))),
+            ("d", (("START",), ("DATA", 2))),
+        ]
+        events.clear()
         a.set(2)
-        assert [(e.path, e.messages) for e in events] == [("a", (("PENDING",), ("DATA", 2)))]
-        d.subscribe(lambda _: None)  # d's activation run publishes its first array
+        assert [(e.id, e.msgs) for e in events] == [
+            ("a", (("PENDING",), ("DATA", 2))),
+            ("d", (("PENDING",), ("DATA", 3))),
+        ]
+        assert not hasattr(events[0], "seq")
+        sub.unsubscribe()
+        assert d.status.lifecycle == "inactive"
+        events.clear()
         a.set(3)
-        assert [e.path for e in events[1:]] == ["d", "a", "d"]
-        assert [e.seq for e in events] == [1, 2, 3, 4]
+        assert events == []
+        with pytest.raises(GraphReflyValueError, match="each node once"):
+            g.observe([a, a], events.append)
+
+
+def test_an_observer_stopped_in_its_callback_gets_nothing_more() -> None:
+    with Graph("observe-stop") as g:
+        a = g.state(1, name="a")
+        b = g.derived([a], lambda v: v * 10, name="b")
+        events: list[GraphEvent] = []
+
+        def once(event: GraphEvent) -> None:
+            events.append(event)
+            if event.msgs[0] == ("PENDING",):
+                sub.unsubscribe()  # during the wave: b's array must not follow
+
+        sub = g.observe([a, b], once)
+        a.set(2)
+        assert [(e.id, e.msgs) for e in events][2:] == [("a", (("PENDING",), ("DATA", 2)))]
 
 
 def test_an_observer_failure_goes_to_the_reporter() -> None:
@@ -533,13 +561,15 @@ def test_an_observer_failure_goes_to_the_reporter() -> None:
         a = g.state(1)
 
         def failing(event: GraphEvent) -> None:
-            raise RuntimeError("observer failed")
+            if event.msgs[0] != ("START",):
+                raise RuntimeError("observer failed")
 
-        g.observe(failing)
+        g.observe([a], failing)
         a.set(2)
-        assert [(r.source, type(r.error), str(r.error)) for r in reports] == [
-            ("observer", SubscriberCallbackError, "observer failed")
+        assert [(type(r.error), str(r.error)) for r in reports] == [
+            (SubscriberCallbackError, "observer failed")
         ]
+        assert reports[0].source.startswith("sink ")
 
 
 # ---- subscriber boundary -----------------------------------------------------------------

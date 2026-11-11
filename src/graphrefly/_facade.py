@@ -347,11 +347,11 @@ class _GraphLifetime:
 
 @dataclass(frozen=True, slots=True)
 class GraphEvent:
-    """One array a node published, as Graph.observe sees it."""
+    """One array a node delivered, as ``Graph.observe`` hands it on: the node's ``id``
+    and the array's messages, ``msgs`` (R-graph-surface)."""
 
-    path: str
-    messages: Array[Any]
-    seq: int
+    id: str
+    msgs: Array[Any]
 
 
 class Subscription:
@@ -1117,29 +1117,53 @@ class Graph:
             for d in self._kernel.describe()
         ]
 
-    def observe(self, callback: Callable[[GraphEvent], object]) -> Subscription:
-        """Observe every array any node publishes, without activating anything.
+    def observe(
+        self, nodes: Iterable[Node[Any]], callback: Callable[[GraphEvent], object]
+    ) -> Subscription:
+        """Subscribe ``callback`` to each node as an ordinary subscriber (R-graph-surface).
 
-        A callback that raises goes to the graph's reporter as a
-        ``SubscriberCallbackError``, as a subscriber's does.
+        It activates a cold node and keeps it active, and gets one ``GraphEvent(id,
+        msgs)`` per array a node delivers, in delivery order: the START array first,
+        PENDING prefixes and the kernel's RESOLVED included. Observing the whole graph
+        is observing every node ``describe`` gives. ``unsubscribe()`` stops it; nothing
+        more is handed on after that. A callback that raises goes to the graph's
+        reporter as a ``SubscriberCallbackError``, as a subscriber's does.
         """
 
         self._check_thread()
         _reject_async_callable(callback)
-        seq = [0]
+        ids = [self._node_id(node) for node in nodes]
+        if len(set(ids)) != len(ids):
+            msg = "observe takes each node once"
+            raise GraphReflyValueError(msg)
+        sink_id = self._new_sink_id()
+        stopped = False
 
-        def observer(node_id: str, array: tuple[_k.Message, ...]) -> None:
-            seq[0] += 1
-            event = GraphEvent(node_id, cast("Array[Any]", array), seq[0])
-            _observed(lambda: callback(event))
+        def sink_of(node_id: str) -> Callable[[tuple[_k.Message, ...]], None]:
+            def sink(array: tuple[_k.Message, ...]) -> None:
+                if not stopped:
+                    event = GraphEvent(node_id, cast("Array[Any]", array))
+                    _observed(lambda: callback(event))
 
-        remove = self._kernel.observe(observer)
+            return sink
+
+        def stop() -> None:
+            nonlocal stopped
+            stopped = True  # an unsubscribe asked for during a wave runs after it
+            for node_id in ids:
+                self._kernel.unsubscribe(sink_id, node_id)
+
+        def start() -> None:
+            for node_id in ids:
+                self._kernel.subscribe(sink_id, node_id, sink_of(node_id))
+
         subscription = Subscription(
-            remove,
+            stop,
             owner_thread=self._owner_thread,
             lifetime=self._lifetime,
         )
         self._lifetime.register(subscription)
+        self._call(start)
         return subscription
 
     # ---- host lifetime --------------------------------------------------------------

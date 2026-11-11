@@ -783,7 +783,7 @@ def test_sync_callback_surfaces_reject_coroutine_functions_at_registration():
     with pytest.raises(GraphReflyRuntimeError, match="async callbacks are deferred"):
         source.subscribe(async_subscriber)
     with pytest.raises(GraphReflyRuntimeError, match="async callbacks are deferred"):
-        graph.observe(async_observer)
+        graph.observe([source], async_observer)
 
 
 def test_sync_data_ingress_rejects_awaitables_without_leaking_warning(recwarn):

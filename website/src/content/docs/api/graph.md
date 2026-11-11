@@ -166,13 +166,17 @@ Source: `src/graphrefly/_facade.py:1105`
 ### `observe`
 
 ```python
-observe(callback: Callable[[GraphEvent], object]) -> Subscription
+observe(nodes: Iterable[Node[Any]], callback: Callable[[GraphEvent], object]) -> Subscription
 ```
 
-Observe every array any node publishes, without activating anything.
+Subscribe ``callback`` to each node as an ordinary subscriber (R-graph-surface).
 
-A callback that raises goes to the graph's reporter as a
-``SubscriberCallbackError``, as a subscriber's does.
+It activates a cold node and keeps it active, and gets one ``GraphEvent(id,
+msgs)`` per array a node delivers, in delivery order: the START array first,
+PENDING prefixes and the kernel's RESOLVED included. Observing the whole graph
+is observing every node ``describe`` gives. ``unsubscribe()`` stops it; nothing
+more is handed on after that. A callback that raises goes to the graph's
+reporter as a ``SubscriberCallbackError``, as a subscriber's does.
 
 Source: `src/graphrefly/_facade.py:1120`
 
@@ -184,7 +188,7 @@ retain(node: Node[T], *, reason: str | None = None) -> Retain
 
 Keep a node active until the returned retain token is released.
 
-Source: `src/graphrefly/_facade.py:1147`
+Source: `src/graphrefly/_facade.py:1171`
 
 ### `reentry_queue`
 
@@ -194,7 +198,7 @@ reentry_queue() -> GraphReentryQueue
 
 Return this graph's explicit owner-thread async re-entry queue.
 
-Source: `src/graphrefly/_facade.py:1167`
+Source: `src/graphrefly/_facade.py:1191`
 
 ### `checkpoint`
 
@@ -204,4 +208,4 @@ checkpoint() -> GraphCheckpoint
 
 Capture this graph at a wave boundary as strict JSON (R-checkpoint).
 
-Source: `src/graphrefly/_facade.py:1181`
+Source: `src/graphrefly/_facade.py:1205`
