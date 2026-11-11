@@ -139,6 +139,8 @@ class NodeState:
     value: object
     values: tuple[object, ...]
     ended: Message | None
+    #: The note of a seed its instance has not run with yet, else ``None``.
+    seed: object = None
 
 
 class _Input:
@@ -251,7 +253,7 @@ class _Node:
         self.seed_deps: list[str] | None = (
             None if seed is None or seed.deps is None else list(seed.deps)
         )
-        self.seed_note: object = _NO_VALUE if seed is None else seed.note
+        self.seed_note: object = _NO_VALUE if seed is None or seed.note is None else seed.note
         self.subs: list[_Sink | _Edge] = []
         self.active = False
         self.lifetime: _Lifetime | None = None
@@ -405,7 +407,7 @@ class Graph:
             node.ended = seed.ended
             node.private_state = seed.state
             node.seed_deps = None if seed.deps is None else list(seed.deps)
-            node.seed_note = seed.note
+            node.seed_note = _NO_VALUE if seed.note is None else seed.note
         self._add(node)
         return node_id
 
@@ -1199,4 +1201,15 @@ class Graph:
         """What the node retains as of now; reading never computes or activates."""
 
         node = self._node_of(node_id)
-        return NodeState(node.active, node.has, node.cache, tuple(node.values), node.ended)
+        seed = None if node.seed_note is _NO_VALUE else node.seed_note
+        return NodeState(node.active, node.has, node.cache, tuple(node.values), node.ended, seed)
+
+    def idle(self) -> bool:
+        """True at a wave boundary: no request running or queued and no batch body open."""
+
+        return not self._busy and self._staging is None
+
+    def private_state(self, node_id: str) -> object:
+        """The private state of the node's current lifetime, or ``None`` (R-checkpoint)."""
+
+        return self._node_of(node_id).private_state
