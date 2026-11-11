@@ -879,17 +879,37 @@ def test_checkpoint_and_restore_graph_round_trip() -> None:
     r.close()
 
 
-def test_checkpoint_refuses_non_json_and_restore_refuses_local_only_nodes() -> None:
+def test_a_node_that_cannot_be_restored_is_refused_as_not_restorable() -> None:
+    """``not restorable: <id>: <reason>``, as a package error with no lower-level one in
+    its place: a local-only node fails at restore, private state that is not JSON at
+    capture."""
+
     with Graph("cp-errors") as g:
         g.state((1, 2), name="tuple")
-        with pytest.raises(GraphReflyCheckpointError, match="not JSON"):
+        with pytest.raises(GraphReflyCheckpointError) as caught:
             g.checkpoint()
+        assert str(caught.value) == "not restorable: tuple: a value it holds is not JSON"
+    with Graph("state") as g:
+        a = g.state(1, name="a")
+
+        def keep(ctx: Ctx) -> None:
+            ctx.state = {"lock": threading.Lock()}
+
+        g.retain(g.node([a], keep, name="k", recipe=Recipe("keep")))
+        with pytest.raises(GraphReflyCheckpointError) as caught:
+            g.checkpoint()
+        assert str(caught.value) == "not restorable: k: its private state is not JSON"
+        assert type(caught.value) is GraphReflyCheckpointError
     with Graph("local") as g:
         a = g.state(1)
-        g.node([a], lambda ctx: None)
-        cp = g.checkpoint()
-        with pytest.raises(GraphReflyRestoreError, match="local-only"):
+        g.node([a], lambda ctx: None, name="raw")
+        cp = g.checkpoint()  # capture keeps it, marked local-only
+        with pytest.raises(GraphReflyRestoreError) as refused:
             graphrefly.restore_graph(cp, registry={})
+        assert str(refused.value) == (
+            "not restorable: raw: local-only, built or replaced without a recipe"
+        )
+        assert type(refused.value) is GraphReflyRestoreError
         with pytest.raises(GraphReflyRestoreError, match="checkpoint@1"):
             graphrefly.restore_graph({"nodes": []}, registry={})
 

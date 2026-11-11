@@ -286,21 +286,21 @@ def test_c38_values_state_configs_and_error_payloads_that_are_not_json_are_refus
     g.state("a", 1)
     build(g, reg, "k", ["a"], "keep")
     g.subscribe("s", "k")
-    with pytest.raises(CheckpointError, match="node k is not JSON"):
+    with pytest.raises(CheckpointError, match="^not restorable: k: its private state is not JSON$"):
         capture(g)
     h = Graph()
     h.state("a", 1)
     build(h, reg, "x", ["a"], "plus", {"k": (1, 2)})
-    with pytest.raises(CheckpointError, match="node x is not JSON"):
+    with pytest.raises(CheckpointError, match="^not restorable: x: its recipe is not JSON$"):
         capture(h)
     e = Graph()
     e.state("a", 1)
     e.error("a", ValueError("boom"))
-    with pytest.raises(CheckpointError, match="node a is not JSON"):
+    with pytest.raises(CheckpointError, match="^not restorable: a: its ERROR payload is not JSON$"):
         capture(e)
     v = Graph()
     v.state("a", (1, 2))  # a tuple does not come back from JSON as itself
-    with pytest.raises(CheckpointError, match="node a is not JSON"):
+    with pytest.raises(CheckpointError, match="^not restorable: a: a value it holds is not JSON$"):
         capture(v)
 
 
@@ -317,7 +317,10 @@ def test_c38_a_missing_recipe_a_local_only_node_and_an_earlier_format_fail() -> 
     g.node("raw", ["a"], lambda ctx: ctx.down([(DATA, 0)]))
     local = capture(g)
     assert [n["id"] for n in local["nodes"] if n.get("local")] == ["raw"]
-    with pytest.raises(CheckpointError, match="raw is local-only"):
+    with pytest.raises(
+        CheckpointError,
+        match="^not restorable: raw: local-only, built or replaced without a recipe$",
+    ):
         restore(local, reg)
 
     older = {
@@ -355,7 +358,9 @@ def test_c38_a_replace_without_a_recipe_makes_the_node_local_only() -> None:
     assert g.definition("p").recipe is None
     cp = round_trip(capture(g))
     assert [n["id"] for n in cp["nodes"] if n.get("local")] == ["p"]
-    with pytest.raises(CheckpointError, match="p is local-only"):
+    with pytest.raises(
+        CheckpointError, match="^not restorable: p: local-only, built or replaced without a recipe$"
+    ):
         restore(cp, reg)
 
 

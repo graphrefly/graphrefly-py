@@ -83,6 +83,9 @@ reference kernel on random graphs (needs `node`; reads the root checkout only).
   the node restorable; for the sugar, the registered factory gives the value-level
   callback and restore rebuilds the same sugar (graphrefly-py:D18). The sugar keeps
   nothing in a node's private state, so a graph that ran it can be checkpointed.
+  A node that cannot be restored is refused as `not restorable: <id>: <reason>`: a
+  local-only node (no recipe) when the checkpoint is restored, a node whose private
+  state or values are not JSON when it is captured.
 - A callback `Exception` becomes the node's ERROR as `GraphCallbackError`. A
   subscribe/observe callback `Exception` goes to `Graph(report=...)` as a
   `SubscriberCallbackError` (logged on the `graphrefly` logger without a reporter);

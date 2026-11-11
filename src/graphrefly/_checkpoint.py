@@ -81,6 +81,19 @@ def _json(value: object, where: str, op: str = "capture") -> Any:
     return copy
 
 
+def _not_restorable(node_id: str, reason: str) -> CheckpointError:
+    """The one form of a node-level refusal: ``not restorable: <id>: <reason>``."""
+
+    return CheckpointError(f"not restorable: {node_id}: {reason}")
+
+
+def _check(node_id: str, value: object, reason: str) -> None:
+    try:
+        _json(value, node_id)
+    except CheckpointError:
+        raise _not_restorable(node_id, reason) from None
+
+
 def _ended(message: Message | None) -> list[object] | None:
     return None if message is None else list(message)
 
@@ -108,6 +121,8 @@ def capture(graph: Graph) -> Checkpoint:
         held = graph.get(node_id)
         if described.kind == "state":
             saved = {"values": list(held.values), "ended": _ended(held.ended)}
+            _check(node_id, saved["values"], "a value it holds is not JSON")
+            _check(node_id, saved["ended"], "its ERROR payload is not JSON")
             nodes.append(
                 _json(
                     {"id": node_id, "kind": "state", "deps": [], "saved": saved}, f"node {node_id}"
@@ -145,8 +160,11 @@ def capture(graph: Graph) -> Checkpoint:
             }
             if current != declared:
                 node_saved["deps"] = current  # a ctx.rewire's dependencies come back with it
+        _check(node_id, definition.recipe, "its recipe is not JSON")
         if node_saved is not None:
+            _check(node_id, node_saved, "a value it holds or received is not JSON")
             if state is not None:
+                _check(node_id, state, "its private state is not JSON")
                 node_saved["state"] = state
             entry["saved"] = node_saved
         nodes.append(_json(entry, f"node {node_id}"))
@@ -292,9 +310,7 @@ def restore(
 
     for node in nodes:
         if node.get("local"):
-            raise CheckpointError(
-                f"restore: {node['id']} is local-only (built or replaced without a recipe)"
-            )
+            raise _not_restorable(str(node["id"]), "local-only, built or replaced without a recipe")
     for node in nodes:
         saved = node.get("saved")
         if node["kind"] == "state" or not saved or saved.get("ended"):

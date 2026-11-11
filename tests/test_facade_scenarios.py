@@ -28,6 +28,7 @@ from graphrefly import (
     Graph,
     GraphCallbackError,
     GraphEvent,
+    GraphReflyRestoreError,
     GraphReflyRuntimeError,
     GraphReflyValueError,
     HostReport,
@@ -900,7 +901,7 @@ def test_c38_restore_runs_no_callback_and_refreshes_once_on_a_changed_input() ->
     local = Graph("c38-local")
     la = local.state(1, name="a")
     local.node([la], echo, name="local")
-    with pytest.raises(Exception, match="local-only"):
+    with pytest.raises(GraphReflyRestoreError, match="^not restorable: local: local-only"):
         restore_graph(local.checkpoint(), registry=reg)
 
 
