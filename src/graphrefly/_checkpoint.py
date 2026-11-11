@@ -213,28 +213,38 @@ def _restorable(real: NodeFn) -> NodeFn:
 
 
 def _build_order(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Each node after its declared dependencies, in checkpoint order otherwise; a stack,
+    not recursion, so a long chain needs no deep Python stack."""
+
     by_id = {node["id"]: node for node in nodes}
     done: set[str] = set()
     order: list[dict[str, Any]] = []
-
-    def visit(node: dict[str, Any], path: set[str]) -> None:
-        if node["id"] in done:
-            return
-        if node["id"] in path:
-            raise CheckpointError(f"restore: {node['id']} depends on itself")
-        path.add(node["id"])
-        for dep_id in node["deps"]:
-            if dep_id not in by_id:
-                raise CheckpointError(
-                    f"restore: {node['id']} depends on {dep_id}, which is not in the checkpoint"
-                )
-            visit(by_id[dep_id], path)
-        path.discard(node["id"])
-        done.add(node["id"])
-        order.append(node)
-
-    for node in nodes:
-        visit(node, set())
+    for first in nodes:
+        if first["id"] in done:
+            continue
+        path: set[str] = {first["id"]}
+        stack: list[tuple[dict[str, Any], int]] = [(first, 0)]
+        while stack:
+            node, index = stack[-1]
+            deps = node["deps"]
+            if index < len(deps):
+                stack[-1] = (node, index + 1)
+                dep_id = deps[index]
+                if dep_id not in by_id:
+                    raise CheckpointError(
+                        f"restore: {node['id']} depends on {dep_id}, which is not in the checkpoint"
+                    )
+                if dep_id in done:
+                    continue
+                if dep_id in path:
+                    raise CheckpointError(f"restore: {dep_id} depends on itself")
+                path.add(dep_id)
+                stack.append((by_id[dep_id], 0))
+                continue
+            stack.pop()
+            path.discard(node["id"])
+            done.add(node["id"])
+            order.append(node)
     return order
 
 

@@ -34,7 +34,9 @@ reference kernel on random graphs (needs `node`; reads the root checkout only).
 - `graphrefly._kernel` is the private pure-Python kernel for the rules active by
   graphrefly:D798, D799, D801 and D802 (graphrefly-py:D2). It is single-threaded,
   catches `Exception` only (but not `RecursionError` or `MemoryError`, which are
-  fatal, graphrefly-py:D10), and has no awaitables.
+  fatal, graphrefly-py:D10), and has no awaitables. Delivery, activation and
+  deactivation run on explicit stacks, not recursion, so a chain's length is not
+  bounded by the Python recursion limit (`tests/kernel/test_kernel_depth.py`).
 - `graphrefly._checkpoint` is capture and restore over the kernel (R-checkpoint).
 - `graphrefly._wire` is the bridge module over the kernel (R-bridge): `bridge` (wire
   edge groups, gate, frame source and sink), `envelope` (numbered envelopes, acks,

@@ -271,6 +271,45 @@ class _Node:
         self.inputs = [_Input() for _ in deps]
 
 
+class _Delivery:
+    """One node's arrays on their way to its subscribers: the delivery stack's frame.
+
+    Delivery is depth first, as a recursive one would be: a dependent that settles on
+    an array delivers its own output before the next subscriber of the sender gets it.
+    The stack keeps that order without a Python frame per level of the graph.
+    """
+
+    __slots__ = ("after", "index", "node", "out", "sent", "subs")
+
+    def __init__(
+        self,
+        node: _Node,
+        out: list[Array],
+        sent: list[tuple[Message, ...]] | None,
+        subs: list[_Sink | _Edge],
+        after: Callable[[], None] | None,
+    ) -> None:
+        self.node = node
+        self.out = out
+        self.sent = sent
+        self.subs = subs
+        self.index = 0
+        self.after = after
+
+
+class _Closing:
+    """A lifetime closing: the deactivation stack's frame, releasing one dependency at a
+    time; a dependency left without subscribers closes before this one goes on."""
+
+    __slots__ = ("deactivate", "index", "lifetime", "node")
+
+    def __init__(self, node: _Node, lifetime: _Lifetime, deactivate: bool) -> None:
+        self.node = node
+        self.lifetime = lifetime
+        self.deactivate = deactivate
+        self.index = 0
+
+
 class _Deferred:
     """A function given to set, computed when the write runs in request order."""
 
@@ -361,6 +400,9 @@ class Graph:
         # While a batch body runs: what it staged per node, and the requests it made.
         self._staging: dict[_Node, _Staged] | None = None
         self._batch_requests: list[Callable[[], None]] | None = None
+        # The delivery stack, and whether a loop is running it (R-wave, iteratively).
+        self._deliveries: list[_Delivery] = []
+        self._delivering = False
 
     # ---- Construction -----------------------------------------------------
 
@@ -470,6 +512,8 @@ class Graph:
         self._queue.clear()
         self._staging = None
         self._batch_requests = None
+        self._deliveries.clear()
+        self._delivering = False
         for node in self._nodes.values():
             node.pending = False
             node.pending_deps.clear()
@@ -487,10 +531,34 @@ class Graph:
 
     # ---- Lifetimes and activation (R-lifetime) ----------------------------
 
-    def _activate(self, node: _Node) -> None:
+    def _activate(self, root: _Node) -> None:
+        """Activate ``root`` and the inactive nodes it depends on, each after its
+        dependencies: it acquires them in order, then runs its first run. The work is a
+        stack, not recursion, so a long chain needs no deep Python stack."""
+
+        if not self._open_lifetime(root):
+            return
+        stack: list[tuple[_Node, list[int]]] = [(root, [0])]
+        while stack:
+            node, at = stack[-1]
+            index = at[0]
+            if index < len(node.deps):
+                dep = self._node_of(node.deps[index])
+                if not dep.active and self._open_lifetime(dep):
+                    stack.append((dep, [0]))  # its first run comes before this edge
+                    continue
+                self._attach(node, index, dep)
+                at[0] = index + 1
+                continue
+            stack.pop()
+            self._down(node, self._first_run(node))
+
+    def _open_lifetime(self, node: _Node) -> bool:
+        """Mark ``node`` active; return whether it opens a lifetime that must run."""
+
         node.active = True
         if node.is_state or node.ended is not None:
-            return  # an ended node gives its snapshot but never runs again
+            return False  # an ended node gives its snapshot but never runs again
         node.lifetime = _Lifetime()
         if node.seed_deps is not None:
             # A seeded first lifetime starts on the dependencies a rewire had given it.
@@ -499,9 +567,7 @@ class Graph:
             node.deps = node.seed_deps
             node.inputs = [_Input() for _ in node.deps]
             node.seed_deps = None
-        for index in range(len(node.deps)):
-            self._acquire(node, index)
-        self._down(node, self._first_run(node))
+        return True
 
     def _first_run(self, node: _Node) -> list[Array]:
         """A lifetime's first run sees each dependency's snapshot as its input (R-terminals)."""
@@ -524,6 +590,9 @@ class Graph:
         dep = self._node_of(node.deps[index])
         if not dep.active:
             self._activate(dep)
+        self._attach(node, index, dep)
+
+    def _attach(self, node: _Node, index: int, dep: _Node) -> None:
         dep.subs.append(_Edge(node, index))
         snapshot = _snapshot_of(dep)
         node.inputs[index] = _Input(dep.has, dep.cache, dep.ended, [snapshot] if snapshot else [])
@@ -536,25 +605,59 @@ class Graph:
         if not dep.subs and dep.active:
             self._deactivate(dep)
 
-    def _release_deps(self, node: _Node) -> None:
-        for index, dep_id in enumerate(node.deps):
-            dep = self._node_of(dep_id)
-            for sub in dep.subs:
-                if isinstance(sub, _Edge) and sub.node is node and sub.index == index:
-                    self._release(dep, sub)
-                    break
+    def _deactivate(self, node: _Node) -> None:
+        self._close(node, deactivate=True)
 
     def _close_lifetime(self, node: _Node) -> None:
-        """Close in the rule's order: abort the signal, release the dependencies, run the
-        cleanup (which may still read the private state), then drop the private state."""
+        self._close(node, deactivate=False)
 
+    def _close(self, root: _Node, *, deactivate: bool) -> None:
+        """Close ``root``'s lifetime (and deactivate it) in the rule's order: abort the
+        signal, release the dependencies, run the cleanup (which may still read the
+        private state), then drop the private state. A dependency left without
+        subscribers closes the same way before the next one is released; the work is a
+        stack, not recursion."""
+
+        first = self._begin_close(root, deactivate)
+        if first is None:
+            return
+        stack = [first]
+        while stack:
+            frame = stack[-1]
+            node = frame.node
+            index = frame.index
+            if index < len(node.deps):
+                frame.index = index + 1
+                dep = self._node_of(node.deps[index])
+                for sub in dep.subs:
+                    if type(sub) is _Edge and sub.node is node and sub.index == index:
+                        dep.subs.remove(sub)
+                        if not dep.subs and dep.active:
+                            closing = self._begin_close(dep, True)
+                            if closing is not None:
+                                stack.append(closing)
+                        break
+                continue
+            stack.pop()
+            self._end_close(frame)
+
+    def _begin_close(self, node: _Node, deactivate: bool) -> _Closing | None:
+        if deactivate:
+            node.active = False
+            if node.is_state:
+                return None  # a state keeps its values across deactivation
         lifetime = node.lifetime
         if lifetime is None or not lifetime.open:
-            return
+            if deactivate:
+                self._drop_values(node)
+            return None
         lifetime.open = False
         if lifetime.signal is not None:
             lifetime.signal._abort(lambda error: self._report(f"signal {node.id}", error))
-        self._release_deps(node)
+        return _Closing(node, lifetime, deactivate)
+
+    def _end_close(self, frame: _Closing) -> None:
+        node, lifetime = frame.node, frame.lifetime
         node.deps = node.declared_deps
         node.inputs = [_Input() for _ in node.deps]
         cleanup, lifetime.cleanup = lifetime.cleanup, None
@@ -567,6 +670,15 @@ class Graph:
                 self._report(f"cleanup {node.id}", error)  # not the node's ERROR
         node.private_state = None
         node.lifetime = None
+        if frame.deactivate:
+            self._drop_values(node)
+
+    @staticmethod
+    def _drop_values(node: _Node) -> None:
+        if node.ended is None:
+            node.has = False
+            node.cache = None
+            node.values = []
 
     # ---- Topology: replace and rewire (R-request-order, R-node) -------------
 
@@ -752,16 +864,6 @@ class Graph:
                 self._release(self._node_of(dep_id), edge)
         return added
 
-    def _deactivate(self, node: _Node) -> None:
-        node.active = False
-        if node.is_state:
-            return  # a state keeps its values across deactivation
-        self._close_lifetime(node)
-        if node.ended is None:
-            node.has = False
-            node.cache = None
-            node.values = []
-
     # ---- Invocation (R-invocation, R-failure) -----------------------------
 
     def _invoke(self, node: _Node) -> list[Array]:
@@ -807,17 +909,19 @@ class Graph:
     # ---- Waves (R-wave, R-invalidation, R-terminals) -----------------------
 
     def _mark_pending(self, node: _Node) -> None:
-        for sub in node.subs:
-            if isinstance(sub, _Sink):
-                continue
-            dependent = sub.node
-            if dependent.ended is not None:
-                continue
-            dependent.pending_deps.add(sub.index)
-            if not dependent.pending:
-                dependent.pending = True
-                if not dependent.quiet:
-                    self._mark_pending(dependent)
+        stack = [node]
+        while stack:
+            for sub in stack.pop().subs:
+                if type(sub) is _Sink:
+                    continue
+                dependent = sub.node
+                if dependent.ended is not None:
+                    continue
+                dependent.pending_deps.add(sub.index)
+                if not dependent.pending:
+                    dependent.pending = True
+                    if not dependent.quiet:
+                        stack.append(dependent)
 
     def _deliver_to_sink(self, sink: _Sink, sender: str, array: tuple[Message, ...]) -> None:
         if self.trace is not None:
@@ -864,7 +968,16 @@ class Graph:
                 out.append(kept)
         return out
 
-    def _deliver(self, node: _Node, out: list[Array]) -> None:
+    def _deliver(
+        self, node: _Node, out: list[Array], after: Callable[[], None] | None = None
+    ) -> None:
+        """Send ``node``'s arrays to its subscribers, then run ``after``.
+
+        Called during a delivery (a dependent settling), it only stacks the arrays: the
+        running loop delivers them before the sender's next subscriber, and runs
+        ``after`` once they have reached everyone below.
+        """
+
         marked = False
         for frame in out:
             if _settles(frame):
@@ -874,6 +987,8 @@ class Graph:
             out = [*out, [RESOLVED_MESSAGE]]  # a pending node that sent nothing
             marked = True
         if not out:
+            if after is not None:
+                after()
             return
         if marked and not node.pending:
             # A source, later output, or a node answering a wave it was not marked in
@@ -892,20 +1007,45 @@ class Graph:
                         raise
                     except Exception as error:
                         self._report("observer", error)
-        for sub in list(node.subs):
-            if type(sub) is _Edge:
-                self._receive(sub.node, sub.index, out)  # dependents never see PENDING
-            else:
-                assert isinstance(sub, _Sink)
-                if sent is None:
-                    sent = [
-                        (PENDING_MESSAGE, *frame) if _settles(frame) else tuple(frame)
-                        for frame in out
-                    ]
-                for array in sent:
-                    self._deliver_to_sink(sub, node.id, array)
-        if node.ended is not None:
-            self._close_lifetime(node)  # an ended node holds nothing upstream
+        self._deliveries.append(_Delivery(node, out, sent, list(node.subs), after))
+        if not self._delivering:
+            self._drive()
+
+    def _drive(self) -> None:
+        """Run the delivery stack: one subscriber of the top frame at a time."""
+
+        stack = self._deliveries
+        self._delivering = True
+        try:
+            while stack:
+                frame = stack[-1]
+                index = frame.index
+                if index < len(frame.subs):
+                    frame.index = index + 1
+                    sub = frame.subs[index]
+                    if type(sub) is _Edge:
+                        # Dependents never see PENDING; one that settles stacks its output.
+                        self._receive(sub.node, sub.index, frame.out)
+                        continue
+                    assert isinstance(sub, _Sink)
+                    sent = frame.sent
+                    if sent is None:
+                        sent = frame.sent = [
+                            (PENDING_MESSAGE, *f) if _settles(f) else tuple(f) for f in frame.out
+                        ]
+                    for array in sent:
+                        self._deliver_to_sink(sub, frame.node.id, array)
+                    continue
+                stack.pop()
+                if frame.node.ended is not None:
+                    self._close_lifetime(frame.node)  # an ended node holds nothing upstream
+                if frame.after is not None:
+                    frame.after()
+        except BaseException:
+            stack.clear()
+            raise
+        finally:
+            self._delivering = False
 
     def _receive(self, node: _Node, index: int, frames: list[Array]) -> None:
         if node.ended is not None:
@@ -1016,11 +1156,13 @@ class Graph:
         if node.quiet:
             # What a quiet node sends is a later wave; only an auto INVALIDATE goes on now.
             node.pending = False  # so its INVALIDATE marks its own cone first (R-invalidation)
-            if lead:
-                self._deliver(node, lead)
-            self._later_from(node, out)
-            if postlude:
-                self._later_from(node, [[COMPLETE_MESSAGE]])
+
+            def publish() -> None:  # after the INVALIDATE has reached the whole cone
+                self._later_from(node, out)
+                if postlude:
+                    self._later_from(node, [[COMPLETE_MESSAGE]])
+
+            self._deliver(node, lead, publish)
             return
         if postlude:
             out = [*out, [COMPLETE_MESSAGE]]
