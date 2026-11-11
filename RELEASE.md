@@ -1,49 +1,35 @@
 # Release Checklist
 
-This repo publishes the `graphrefly` Python distribution.
-
-The 0.22 line is wheel-only. The Python project builds against a sibling Rust
-checkout, so source distributions are intentionally not uploaded until the
-release artifact can include a self-contained Rust source tree.
+This repo publishes the `graphrefly` Python distribution: one pure-Python wheel
+(`py3-none-any`) and an sdist, built with hatchling (graphrefly-py:D6).
 
 ## Before Release
 
-1. Confirm `/Users/davidchenallio/src/graphrefly-rs` `main` contains the exact
-   native binding commit intended for release. The publish workflow checks out
-   `graphrefly-rs@main` by policy.
-2. Confirm `pyproject.toml` has the target version.
-3. Confirm PyPI Trusted Publishing is configured for:
+1. Confirm `pyproject.toml` has the target version.
+2. Confirm PyPI Trusted Publishing is configured for:
    - repository: `graphrefly/graphrefly-py`
    - workflow: `release.yml`
    - environment: `pypi`
-4. Run local gates:
+3. Run local gates:
 
 ```bash
 uv sync --group dev --group docs
-cd ../graphrefly-rs
-mise exec -- bash -lc 'cd ../graphrefly-py && uv run maturin develop --release'
-cd ../graphrefly-py
 uv run pytest
 uv run ruff check .
 uv run mypy src
-uv run mkdocs build --strict
-```
-
-5. Confirm the Rust binding gates:
-
-```bash
-cd ../graphrefly-rs
-mise exec -- cargo test -p graphrefly-bindings-py
+uv run python scripts/check_api_docs.py
+uv build
 ```
 
 ## Publish
 
 ```bash
-git tag v0.22.0
-git push origin v0.22.0
+git tag v0.24.0
+git push origin v0.24.0
 ```
 
-The tag workflow builds wheels, then publishes via PyPI Trusted Publishing.
+The tag workflow builds the wheel and sdist, then publishes via PyPI Trusted
+Publishing.
 
 ## After Release
 
@@ -59,11 +45,11 @@ from graphrefly import Graph
 with Graph("smoke") as graph:
     source = graph.state(1)
     doubled = graph.derived([source], lambda value: value * 2)
-    with doubled.subscribe(lambda msg: None):
+    with doubled.subscribe(lambda array: None):
         source.set(2)
     assert doubled.cache() == 4
 print("ok")
 PY
 ```
 
-3. Confirm https://graphrefly.dev/py/ reflects the release docs.
+3. Confirm https://py.graphrefly.dev/ reflects the release docs.

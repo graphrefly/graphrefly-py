@@ -9,7 +9,7 @@ description: "Host-owned streaming HTTP driver used by `from_sse`."
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:184`
+**Source:** `src/graphrefly/_facade.py:221`
 
 ## Description
 
@@ -25,4 +25,4 @@ stream(request: HttpRequest) -> AsyncIterable[HttpStreamDriverEvent]
 
 Start one HTTP stream and yield normalized stream events.
 
-Source: `src/graphrefly/_facade.py:187`
+Source: `src/graphrefly/_facade.py:224`

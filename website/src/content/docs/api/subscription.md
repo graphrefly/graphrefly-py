@@ -9,12 +9,12 @@ description: "Idempotent subscription handle returned by observe and subscribe c
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:982`
+**Source:** `src/graphrefly/_facade.py:676`
 
 ## Signature
 
 ```python
-Subscription(native: _native.Subscription, *, owner_thread: int, lifetime: _GraphLifetime | None = None, callback_errors: list[SubscriberCallbackError] | None = None)
+Subscription(detach: Callable[[], None], *, owner_thread: int, lifetime: _GraphLifetime | None = None, callback_errors: list[SubscriberCallbackError] | None = None)
 ```
 
 ## Description
@@ -38,4 +38,4 @@ unsubscribe() -> None
 
 Detach this subscription from its graph node or observer.
 
-Source: `src/graphrefly/_facade.py:1011`
+Source: `src/graphrefly/_facade.py:705`

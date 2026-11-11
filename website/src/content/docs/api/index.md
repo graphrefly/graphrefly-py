@@ -10,18 +10,14 @@ description: "Generated graphrefly Python API reference."
 These pages are generated from `graphrefly.__all__` and source docstrings through `griffe`.
 Update Python docstrings or exports, then rerun `pnpm --dir website docs:gen`.
 
-## Exceptions and Issues
+## Messages and Data
 
-- [`CallbackError`](/api/callbackerror/)
-- [`DataIssue`](/api/dataissue/)
-- [`GraphCallbackError`](/api/graphcallbackerror/)
-- [`GraphReflyCheckpointError`](/api/graphreflycheckpointerror/)
-- [`GraphReflyError`](/api/graphreflyerror/)
-- [`GraphReflyNoDataError`](/api/graphreflynodataerror/)
-- [`GraphReflyRestoreError`](/api/graphreflyrestoreerror/)
-- [`GraphReflyRuntimeError`](/api/graphreflyruntimeerror/)
-- [`GraphReflyValueError`](/api/graphreflyvalueerror/)
-- [`SubscriberCallbackError`](/api/subscribercallbackerror/)
+- [`SENTINEL`](/api/sentinel-attribute/)
+- [`ControlMessage`](/api/controlmessage/)
+- [`DataMessage`](/api/datamessage/)
+- [`ErrorMessage`](/api/errormessage/)
+- [`Message`](/api/message/)
+- [`Sentinel`](/api/sentinel-class/)
 
 ## Async and Network
 
@@ -37,8 +33,8 @@ Update Python docstrings or exports, then rerun `pnpm --dir website docs:gen`.
 - [`LocalHttpDriver`](/api/localhttpdriver/)
 - [`LocalHttpStreamDriver`](/api/localhttpstreamdriver/)
 - [`SseEvent`](/api/sseevent/)
-- [`async_node`](/api/async_node/)
 - [`anyio_runner`](/api/anyio_runner/)
+- [`async_node`](/api/async_node/)
 - [`asyncio_runner`](/api/asyncio_runner/)
 - [`from_async_iter`](/api/from_async_iter/)
 - [`from_awaitable`](/api/from_awaitable/)
@@ -46,14 +42,18 @@ Update Python docstrings or exports, then rerun `pnpm --dir website docs:gen`.
 - [`from_sse`](/api/from_sse/)
 - [`trio_runner`](/api/trio_runner/)
 
-## Messages and Data
+## Exceptions and Issues
 
-- [`ControlMessage`](/api/controlmessage/)
-- [`DataMessage`](/api/datamessage/)
-- [`ErrorMessage`](/api/errormessage/)
-- [`Message`](/api/message/)
-- [`SENTINEL`](/api/sentinel-attribute/)
-- [`Sentinel`](/api/sentinel-class/)
+- [`CallbackError`](/api/callbackerror/)
+- [`DataIssue`](/api/dataissue/)
+- [`GraphCallbackError`](/api/graphcallbackerror/)
+- [`GraphReflyCheckpointError`](/api/graphreflycheckpointerror/)
+- [`GraphReflyError`](/api/graphreflyerror/)
+- [`GraphReflyNoDataError`](/api/graphreflynodataerror/)
+- [`GraphReflyRestoreError`](/api/graphreflyrestoreerror/)
+- [`GraphReflyRuntimeError`](/api/graphreflyruntimeerror/)
+- [`GraphReflyValueError`](/api/graphreflyvalueerror/)
+- [`SubscriberCallbackError`](/api/subscribercallbackerror/)
 
 ## Core Facade
 
@@ -61,42 +61,22 @@ Update Python docstrings or exports, then rerun `pnpm --dir website docs:gen`.
 - [`Graph`](/api/graph/)
 - [`GraphEvent`](/api/graphevent/)
 - [`GraphReentryQueue`](/api/graphreentryqueue/)
+- [`HostReport`](/api/hostreport/)
 - [`Node`](/api/node/)
-- [`PullContext`](/api/pullcontext/)
+- [`NodeDefinition`](/api/nodedefinition/)
+- [`NodeStatus`](/api/nodestatus/)
+- [`Recipe`](/api/recipe/)
+- [`RecipeContext`](/api/recipecontext/)
+- [`RecipeFactory`](/api/recipefactory/)
 - [`Retain`](/api/retain/)
-- [`RewireNext`](/api/rewirenext/)
+- [`Signal`](/api/signal/)
+- [`State`](/api/state/)
 - [`Subscription`](/api/subscription/)
 
 ## Restore
 
 - [`GraphCheckpoint`](/api/graphcheckpoint/)
-- [`RestoreContext`](/api/restorecontext/)
-- [`RestoreDescriptor`](/api/restoredescriptor/)
-- [`RestoreRef`](/api/restoreref/)
-- [`RestoreRegistry`](/api/restoreregistry/)
 - [`restore_graph`](/api/restore_graph/)
-- [`restore_ref`](/api/restore_ref/)
-- [`restore_registry`](/api/restore_registry/)
-
-## Wire Bridge
-
-- [`WireBridge`](/api/wirebridge/)
-- [`WireBridgeAckDriver`](/api/wirebridgeackdriver/)
-- [`WireBridgeAckDriverIssue`](/api/wirebridgeackdriverissue/)
-- [`WireBridgeAckDriverStatus`](/api/wirebridgeackdriverstatus/)
-- [`WireBridgeAckTimeout`](/api/wirebridgeacktimeout/)
-- [`WireBridgeIssue`](/api/wirebridgeissue/)
-- [`WireBridgeProtobuf`](/api/wirebridgeprotobuf/)
-- [`WireBridgeProtobufIssue`](/api/wirebridgeprotobufissue/)
-- [`WireBridgeProtobufStatus`](/api/wirebridgeprotobufstatus/)
-- [`WireBridgeStatus`](/api/wirebridgestatus/)
-- [`WireEdgeGroup`](/api/wireedgegroup/)
-- [`WireEdgeGroupIssue`](/api/wireedgegroupissue/)
-- [`WireEdgeGroupStatus`](/api/wireedgegroupstatus/)
-- [`wire_bridge`](/api/wire_bridge/)
-- [`wire_bridge_ack_driver`](/api/wire_bridge_ack_driver/)
-- [`wire_bridge_protobuf`](/api/wire_bridge_protobuf/)
-- [`wire_edge_group`](/api/wire_edge_group/)
 
 ## Utilities
 

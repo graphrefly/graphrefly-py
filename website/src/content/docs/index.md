@@ -15,7 +15,7 @@ building graph-driven reactive systems with `graphrefly`.
 - **[Examples](/examples/)** — package-local Python usage patterns.
 - **[Recipes](/recipes/)** — runtime-boundary and composition notes.
 - **[Integrations](/integrations/)** — host-owned async and network adapter surfaces.
-- **[Release](/release/)** — wheel, version, and publishing policy.
+- **[Release](/release/)** — pure-Python wheel, version, and publishing policy.
 
 ## Install
 
@@ -30,7 +30,7 @@ with Graph("hello") as graph:
     count = graph.state(1, name="count")
     doubled = graph.derived([count], lambda value: value * 2, name="doubled")
 
-    with doubled.subscribe(lambda msg: print(msg.kind, msg.value)):
+    with doubled.subscribe(lambda array: print([m.kind for m in array])):
         count.set(2)
 ```
 

@@ -5,7 +5,7 @@ sessions/active/python-kernel-benchmark/gen.py; the JS reference runs them throu
 run.mjs (needs ``node``); this script runs the same scenarios on graphrefly._kernel
 and compares the sink traces entry by entry. The root checkout is only read.
 
-    uv run python scripts/diff_reference.py --count 3000 --seed 0
+    PYTHONPATH=src uv run python scripts/diff_reference.py --count 3000 --seed 0
 
 ``--skip`` drops scenarios using an operation the kernel does not support yet.
 """

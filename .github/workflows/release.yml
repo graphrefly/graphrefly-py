@@ -15,9 +15,6 @@ on:
 permissions:
   contents: read
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
   release-please:
     name: Release PR
@@ -53,26 +50,10 @@ jobs:
     if: ${{ always() && (github.event_name == 'workflow_dispatch' || needs.release-please.outputs.release_created == 'true') }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Python host package
+      - name: Checkout Python package
         uses: actions/checkout@v7
         with:
           path: graphrefly-py
-
-      - name: Checkout Rust native engine
-        uses: actions/checkout@v7
-        with:
-          repository: graphrefly/graphrefly-rs
-          # Pinned by graphrefly:D800 to the last graphrefly-rs commit that builds
-          # graphrefly-bindings-py, until the Python kernel replaces graphrefly._native.
-          ref: cf02fc97070e32560c0b4b22481418c8163d6e80
-          path: graphrefly-rs
-
-      - name: Checkout authority fixtures
-        uses: actions/checkout@v7
-        with:
-          repository: graphrefly/graphrefly
-          ref: main
-          path: graphrefly
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.3.2
@@ -80,10 +61,6 @@ jobs:
       - name: Sync dependencies
         working-directory: graphrefly-py
         run: uv sync --group dev
-
-      - name: Build native extension
-        working-directory: graphrefly-py
-        run: uv run maturin develop --release
 
       - name: Test
         working-directory: graphrefly-py
@@ -101,101 +78,34 @@ jobs:
         working-directory: graphrefly-py
         run: uv run mypy src
 
-  wheels:
-    name: Wheels (${{ matrix.platform.name }})
-    runs-on: ${{ matrix.platform.runner }}
+  build:
+    name: Build wheel and sdist
+    runs-on: ubuntu-latest
     needs: test
-    continue-on-error: ${{ matrix.platform.experimental == true }}
-    strategy:
-      fail-fast: false
-      matrix:
-        platform:
-          - name: linux-x86_64
-            runner: ubuntu-22.04
-            target: x86_64
-            python_arch: x64
-            interpreter: python3.12
-            manylinux: "2014"
-          - name: linux-aarch64
-            runner: ubuntu-22.04
-            target: aarch64
-            python_arch: x64
-            interpreter: python3.12
-            manylinux: "2014"
-          - name: musllinux-x86_64
-            runner: ubuntu-22.04
-            target: x86_64
-            python_arch: x64
-            interpreter: python3.12
-            manylinux: musllinux_1_2
-          - name: musllinux-aarch64
-            runner: ubuntu-22.04
-            target: aarch64
-            python_arch: x64
-            interpreter: python3.12
-            manylinux: musllinux_1_2
-          - name: macos-x86_64
-            runner: macos-15-intel
-            target: x86_64
-            python_arch: x64
-            interpreter: python3.12
-          - name: macos-arm64
-            runner: macos-latest
-            target: aarch64
-            python_arch: arm64
-            interpreter: python3.12
-          - name: windows-x64
-            runner: windows-latest
-            target: x64
-            python_arch: x64
-            interpreter: python
-          - name: windows-arm64
-            runner: windows-11-arm
-            target: aarch64
-            python_arch: arm64
-            interpreter: python
-            experimental: true
     steps:
-      - name: Checkout Python host package
+      - name: Checkout Python package
         uses: actions/checkout@v7
         with:
           path: graphrefly-py
 
-      - name: Checkout Rust native engine
-        uses: actions/checkout@v7
-        with:
-          repository: graphrefly/graphrefly-rs
-          # Pinned by graphrefly:D800 to the last graphrefly-rs commit that builds
-          # graphrefly-bindings-py, until the Python kernel replaces graphrefly._native.
-          ref: cf02fc97070e32560c0b4b22481418c8163d6e80
-          path: graphrefly-rs
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.3.2
 
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          architecture: ${{ matrix.platform.python_arch }}
+      - name: Build
+        working-directory: graphrefly-py
+        run: uv build --out-dir dist
 
-      - name: Build wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          working-directory: graphrefly-py
-          target: ${{ matrix.platform.target }}
-          args: --release --out dist --interpreter ${{ matrix.platform.interpreter }}
-          manylinux: ${{ matrix.platform.manylinux || 'auto' }}
-          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
-
-      - name: Upload wheels
+      - name: Upload distributions
         uses: actions/upload-artifact@v7
         with:
-          name: wheels-${{ matrix.platform.name }}
-          path: graphrefly-py/dist/*.whl
+          name: dist
+          path: graphrefly-py/dist/*
 
   publish:
     name: Publish to PyPI
     runs-on: ubuntu-latest
-    needs: [release-please, wheels]
-    if: ${{ always() && needs.wheels.result == 'success' && ((github.event_name == 'workflow_dispatch' && inputs.publish == true) || needs.release-please.outputs.release_created == 'true') }}
+    needs: [release-please, build]
+    if: ${{ always() && needs.build.result == 'success' && ((github.event_name == 'workflow_dispatch' && inputs.publish == true) || needs.release-please.outputs.release_created == 'true') }}
     permissions:
       contents: read
       id-token: write

@@ -12,6 +12,7 @@ MIN_WORDS = 4
 SOURCE_BY_IMPORT = {
     "graphrefly._facade": PACKAGE / "_facade.py",
     "graphrefly._sentinel": PACKAGE / "_sentinel.py",
+    "graphrefly._kernel.signal": PACKAGE / "_kernel" / "signal.py",
     "graphrefly.exceptions": PACKAGE / "exceptions.py",
     "graphrefly.issues": PACKAGE / "issues.py",
 }
@@ -20,7 +21,7 @@ ALIAS_OR_CONSTANT_EXPORTS = {
     "GraphCheckpoint",
     "HttpStreamDriverEvent",
     "Message",
-    "RestoreRegistry",
+    "RecipeFactory",
     "SENTINEL",
     "__version__",
 }

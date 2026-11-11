@@ -9,14 +9,18 @@ description: "Create a value-level async compute node over declared dependencies
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_facade.py:3460`
+**Source:** `src/graphrefly/_facade.py:2360`
 
 ## Signature
 
 ```python
-async_node(graph: Graph, deps: Iterable[Node[Any]], runner: AsyncRunner, callback: Callable[..., Awaitable[T]], *, name: str | None = None, pausable: PausableMode = True)
+async_node(graph: Graph, deps: Iterable[Node[Any]], runner: AsyncRunner, callback: Callable[..., Awaitable[T]], *, name: str | None = None)
 ```
 
 ## Description
 
 Create a value-level async compute node over declared dependencies.
+
+Each run on new values (derived's gate) starts the callback; its result is a
+later wave. A completion of a superseded run is ignored (a generation fence), and
+the lifetime's close cancels every run still going.

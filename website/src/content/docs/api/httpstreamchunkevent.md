@@ -9,7 +9,7 @@ description: "Streaming driver event carrying a bytes chunk."
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:134`
+**Source:** `src/graphrefly/_facade.py:174`
 
 ## Signature
 

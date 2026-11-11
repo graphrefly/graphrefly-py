@@ -9,7 +9,7 @@ description: "Return a convenience runner for a caller-owned Trio nursery."
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_facade.py:3546`
+**Source:** `src/graphrefly/_facade.py:2433`
 
 ## Signature
 

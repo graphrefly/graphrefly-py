@@ -9,7 +9,7 @@ description: "Generated API reference for graphrefly.__version__."
 
 **Kind:** attribute
 
-**Source:** `src/graphrefly/__init__.py:155`
+**Source:** `src/graphrefly/__init__.py:120`
 
 ## Value
 

@@ -9,14 +9,16 @@ description: "Create a source from a fresh async iterable produced on each activ
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_facade.py:3186`
+**Source:** `src/graphrefly/_facade.py:2179`
 
 ## Signature
 
 ```python
-from_async_iter(graph: Graph, runner: AsyncRunner, factory: Callable[[], AsyncIterable[T]], *, name: str | None = None, pausable: PausableMode = True)
+from_async_iter(graph: Graph, runner: AsyncRunner, factory: Callable[[], AsyncIterable[T]], *, name: str | None = None)
 ```
 
 ## Description
 
 Create a source from a fresh async iterable produced on each activation.
+
+Each yielded value is one DATA array; the end is COMPLETE, a failure ERROR.

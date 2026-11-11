@@ -9,7 +9,7 @@ description: "Generated API reference for graphrefly.SENTINEL."
 
 **Kind:** attribute
 
-**Source:** `src/graphrefly/_facade.py:57`
+**Source:** `src/graphrefly/_sentinel.py:28`
 
 ## Value
 

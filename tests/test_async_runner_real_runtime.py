@@ -31,7 +31,7 @@ def test_trio_runner_real_nursery_is_caller_owned_smoke() -> None:
                 work,
                 name="real_trio_source",
             )
-            with node.subscribe(seen.append):
+            with node.subscribe(seen.extend):
                 for _ in range(10):
                     if node.has_value:
                         break
@@ -63,7 +63,7 @@ def test_anyio_runner_real_task_group_is_caller_owned_smoke() -> None:
                 values,
                 name="real_anyio_source",
             )
-            with node.subscribe(seen.append):
+            with node.subscribe(seen.extend):
                 for _ in range(10):
                     if len([msg for msg in seen if isinstance(msg, DataMessage)]) >= 2:
                         break

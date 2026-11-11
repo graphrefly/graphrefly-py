@@ -9,7 +9,7 @@ description: "Generated API reference for graphrefly.GraphCheckpoint."
 
 **Kind:** type alias
 
-**Source:** `src/graphrefly/_facade.py:95`
+**Source:** `src/graphrefly/_facade.py:83`
 
 ## Type
 

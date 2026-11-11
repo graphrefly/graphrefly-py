@@ -23,12 +23,5 @@ source behavior.
 
 ## Cross-graph transport
 
-Wire bridge helpers expose high-level Python facades over the native bridge
-semantics:
-
-- `wire_bridge(...)`
-- `wire_bridge_ack_driver(...)`
-- `wire_bridge_protobuf(...)`
-- `wire_edge_group(...)`
-
-See the generated API Reference for constructor signatures and status types.
+The wire bridge facades are withdrawn while the bridge model is settled in the
+root repository (graphrefly-py:D5); they return on the Python bridge.

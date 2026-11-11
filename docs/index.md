@@ -1,8 +1,7 @@
 # GraphReFly Python
 
-`graphrefly` is the Python host package for GraphReFly. It provides a Python
-facade over the native Rust graph engine and keeps the clean-slate wave protocol
-inside the native runtime.
+`graphrefly` is GraphReFly for Python: a reactive graph on its own pure-Python
+kernel, which implements the GraphReFly kernel rules, with a typed facade over it.
 
 ```bash
 pip install graphrefly
@@ -15,13 +14,14 @@ with Graph("hello") as graph:
     count = graph.state(1, name="count")
     doubled = graph.derived([count], lambda value: value * 2, name="doubled")
 
-    with doubled.subscribe(lambda msg: print(msg.kind, msg.value)):
+    with doubled.subscribe(lambda array: print([m.kind for m in array])):
         count.set(2)
 ```
 
 Use `Graph.derived(...)` for value-level transforms, `Graph.node(...)` for
-advanced callback-scoped `Ctx` work, and `Graph.close()` or `with Graph(...)` for
-host lifetime cleanup.
+advanced callback-scoped `Ctx` work, `State.set(...)` and the other `State`
+methods for host input, and `Graph.close()` or `with Graph(...)` for host lifetime
+cleanup.
 
 ## Documentation Boundary
 
@@ -37,15 +37,15 @@ generated `website/src/content/docs/api/` files by hand.
 
 ## What This Package Owns
 
-- Pythonic graph, node, subscription, message, and exception facades.
-- Host lifetime and exception mapping over the native Rust engine.
+- The Python kernel (`graphrefly._kernel`) and checkpoint (`graphrefly._checkpoint`).
+- Pythonic graph, node, state, subscription, message, and exception facades.
+- Host lifetime and exception mapping, and Python sugar such as derived's gate.
 - Optional async runner adapters that use caller-owned runtimes.
-- High-level wire bridge facades for cross-graph transport.
 
 ## What It Does Not Expose
 
-- Native handles.
-- Raw protocol ingress or arbitrary message construction.
-- A Python reimplementation of the native wave core.
+- Raw kernel handles or arbitrary message sending outside `Ctx.down`.
+- Cross-graph wire bridge facades: withdrawn until the bridge model is settled
+  (graphrefly-py:D5).
 
 Documentation categories and maintenance: [documentation map](README.md).

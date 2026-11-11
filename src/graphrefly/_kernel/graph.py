@@ -43,6 +43,7 @@ type NodeFn = Callable[[Ctx], object]
 type Setup = Callable[[Ctx], object]
 type SinkCallback = Callable[[tuple[Message, ...]], object]
 type Reporter = Callable[[Report], object]
+type Observer = Callable[[str, tuple[Message, ...]], object]
 
 _NO_VALUE: Final = object()
 
@@ -354,6 +355,7 @@ class Graph:
         self.trace: list[TraceEntry] | None = [] if trace else None
         self._busy = False
         self._queue: deque[Callable[[], None]] = deque()
+        self._observers: list[Observer] = []
         # While a batch body runs: what it staged per node, and the requests it made.
         self._staging: dict[_Node, _Staged] | None = None
         self._batch_requests: list[Callable[[], None]] | None = None
@@ -858,6 +860,14 @@ class Graph:
             self._mark_pending(node)
         node.pending = False
         sent: list[tuple[Message, ...]] | None = None
+        if self._observers:
+            sent = [(PENDING_MESSAGE, *f) if _settles(f) else tuple(f) for f in out]
+            for observer in list(self._observers):
+                for array in sent:
+                    try:
+                        observer(node.id, array)
+                    except Exception as error:
+                        self._report("observer", error)
         for sub in list(node.subs):
             if type(sub) is _Edge:
                 self._receive(sub.node, sub.index, out)  # dependents never see PENDING
@@ -1157,6 +1167,19 @@ class Graph:
         return result
 
     # ---- Reads ---------------------------------------------------------------
+
+    def observe(self, observer: Observer) -> Callable[[], None]:
+        """Call ``observer(node_id, array)`` for every array a node publishes, in delivery
+        order, without subscribing or activating anything (graph-layer inspection,
+        R-node-thin). Returns a function that removes it."""
+
+        self._observers.append(observer)
+
+        def remove() -> None:
+            if observer in self._observers:
+                self._observers.remove(observer)
+
+        return remove
 
     def status(self, node_id: str) -> NodeStatus:
         """The node's status, derived from what it holds (R-node); reading changes nothing."""

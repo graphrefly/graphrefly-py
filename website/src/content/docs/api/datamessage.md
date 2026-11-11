@@ -9,7 +9,7 @@ description: "DATA observation with a domain payload."
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:60`
+**Source:** `src/graphrefly/_facade.py:44`
 
 ## Signature
 
@@ -21,8 +21,8 @@ DataMessage(value: T, kind: Literal['DATA'] = 'DATA')
 
 DATA observation with a domain payload.
 
-`None` is a valid domain payload in Python v1; no-DATA is represented by
-message shape, not by the payload value.
+``None`` is a valid domain payload; no-DATA is represented by message shape,
+not by the payload value.
 
 ## Attributes
 

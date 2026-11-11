@@ -5,8 +5,8 @@ The scenarios (chain, fan, batch, build and subscribe; node functions ``inc`` an
 step is one host input and the cost is reported per node run, best of five. This is
 a reference figure for graphrefly-py:D797-KERNEL-PY, not a gate.
 
-    uv run python scripts/bench_kernel.py
-    uv run python scripts/bench_kernel.py \
+    PYTHONPATH=src uv run python scripts/bench_kernel.py
+    PYTHONPATH=src uv run python scripts/bench_kernel.py \
         --reference ../graphrefly/sessions/active/python-kernel-benchmark
 
 ``--reference`` also runs that directory's ``kernel_fast`` port for comparison; it is

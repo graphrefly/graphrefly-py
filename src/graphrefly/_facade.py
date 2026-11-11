@@ -1,20 +1,21 @@
-"""Typed Python facade over the private native GraphReFly engine."""
+"""Typed Python facade over the Python GraphReFly kernel (graphrefly-py:D2, D4)."""
 
 from __future__ import annotations
 
 import codecs
+import logging
 from collections import deque
-from collections.abc import AsyncIterable, Awaitable, Callable, Iterable
+from collections.abc import AsyncIterable, Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from importlib import import_module, metadata
 from importlib.metadata import PackageNotFoundError
 from inspect import isawaitable, iscoroutine, iscoroutinefunction
-from sys import modules
 from threading import Lock, get_ident
 from typing import Any, Literal, NoReturn, Protocol, TypeVar, cast, overload
 from weakref import ReferenceType, ref
 
-import graphrefly._native as _native
+from graphrefly import _checkpoint
+from graphrefly import _kernel as _k
 from graphrefly._sentinel import SENTINEL
 from graphrefly.exceptions import (
     CallbackError,
@@ -29,23 +30,23 @@ from graphrefly.exceptions import (
 
 T = TypeVar("T")
 U = TypeVar("U")
-_VERSION = "0.22.0"
+R = TypeVar("R")
+_VERSION = "0.23.0"
 _MAX_CALLBACK_ERRORS = 32
 _SSE_PARSER_MAX_BUFFER_BYTES = 64 * 1024
 _SSE_RETRY_MAX = (1 << 64) - 1
 _NO_DEFAULT = object()
+_ABSENT: Any = object()
 _GRAPH_REENTRY_QUEUE_TOKEN = object()
-
-if hasattr(modules["graphrefly"], "_native"):
-    delattr(modules["graphrefly"], "_native")
+_LOGGER = logging.getLogger("graphrefly")
 
 
 @dataclass(frozen=True, slots=True)
 class DataMessage[T]:
     """DATA observation with a domain payload.
 
-    `None` is a valid domain payload in Python v1; no-DATA is represented by
-    message shape, not by the payload value.
+    ``None`` is a valid domain payload; no-DATA is represented by message shape,
+    not by the payload value.
     """
 
     value: T
@@ -54,29 +55,85 @@ class DataMessage[T]:
 
 @dataclass(frozen=True, slots=True)
 class ErrorMessage:
-    """ERROR observation with a Python-owned error envelope."""
+    """ERROR with its diagnostic.
 
-    error: GraphCallbackError
+    ``error`` is a ``GraphCallbackError`` when a callback raised, and otherwise the
+    payload the node or host sent.
+    """
+
+    error: object
     kind: Literal["ERROR"] = "ERROR"
 
 
 @dataclass(frozen=True, slots=True)
 class ControlMessage:
-    """Non-DATA / non-ERROR observation."""
+    """A message that carries no payload: START, PENDING, RESOLVED, INVALIDATE or COMPLETE."""
 
-    kind: str
-    value: object | None = None
+    kind: Literal["START", "PENDING", "RESOLVED", "INVALIDATE", "COMPLETE"]
 
 
 type Message[T] = DataMessage[T] | ErrorMessage | ControlMessage
+type Array[T] = tuple[Message[T], ...]
 type ObserverErrorHandler = Callable[[SubscriberCallbackError], object]
-type PausableMode = bool | Literal["resumeAll"]
 type NodeCallback = Callable[["Ctx"], object]
+type SetupCallback = Callable[["Ctx"], object]
 type AsyncJobFactory = Callable[[], Awaitable[None]]
 type _CompletionPredicate = Callable[[], bool]
 type _CancelScopeFactory = Callable[[], object]
 type GraphCheckpoint = dict[str, Any]
-type RestoreRegistry = Any
+type RecipeFactory = Callable[
+    [Any, "RecipeContext"], NodeCallback | tuple[NodeCallback, SetupCallback | None]
+]
+type Policy = Literal["auto", "manual"]
+
+
+@dataclass(frozen=True, slots=True)
+class HostReport:
+    """A failure with no caller to return to: a cleanup, a queued request, an observer."""
+
+    source: str
+    error: Exception
+
+
+@dataclass(frozen=True, slots=True)
+class NodeStatus:
+    """A node's status, derived from what it holds and never stored."""
+
+    cache: Literal["empty", "stale", "ready"]
+    output: Literal["open", "completed", "errored"]
+    lifecycle: Literal["inactive", "active", "closing"]
+
+
+@dataclass(frozen=True, slots=True)
+class Recipe:
+    """How a restorable node is built: a registered factory reference and a JSON config."""
+
+    ref: str
+    config: object = None
+
+
+@dataclass(frozen=True, slots=True)
+class RecipeContext:
+    """What a recipe factory gets besides its config: the graph being restored and the
+    node's name."""
+
+    graph: Graph
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
+class NodeDefinition:
+    """A node's current definition: declared dependencies, callback, setup, recipe and
+    policies. Reading it changes nothing."""
+
+    deps: tuple[Node[Any], ...]
+    callback: Callable[..., object] | None
+    setup: SetupCallback | None
+    recipe: Recipe | None
+    complete: Policy
+    error: Policy
+    invalidate: Policy
+    quiet: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,10 +206,7 @@ class SseEvent:
 
 type HttpRequestLike = str | HttpRequest
 type HttpStreamDriverEvent = (
-    HttpStreamHeadEvent
-    | HttpStreamChunkEvent
-    | HttpStreamErrorEvent
-    | HttpStreamCompleteEvent
+    HttpStreamHeadEvent | HttpStreamChunkEvent | HttpStreamErrorEvent | HttpStreamCompleteEvent
 )
 
 
@@ -172,313 +226,12 @@ class LocalHttpStreamDriver(Protocol):
         ...
 
 
-@dataclass(frozen=True, slots=True)
-class WireBridgeStatus:
-    """Graph-visible status DATA for a high-level wire bridge facade."""
-
-    state: Literal["idle", "started", "open", "waiting", "closed", "errored", "exhausted"]
-    session_id: str
-    cursor: int = 0
-    next_seq: int = 0
-    pending: int = 0
-    attempts: int = 0
-    acked: int = 0
-    nacked: int = 0
-    errors: int = 0
-    last_seq: int | None = None
-    last_delay_ms: int | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class WireBridgeIssue:
-    """Graph-visible issue DATA emitted by a wire bridge facade."""
-
-    code: Literal["bridge_error", "invalid"]
-    message: str
-
-
-@dataclass(frozen=True, slots=True)
-class WireEdgeGroupIssue:
-    """Graph-visible issue DATA emitted by a wire edge group."""
-
-    code: Literal[
-        "missing_snapshot",
-        "unknown_edge",
-        "duplicate_dirty",
-        "duplicate_data",
-        "data_before_dirty",
-        "competing_cause",
-        "malformed_frame",
-        "incomplete_cause",
-    ]
-    message: str
-    edge_id: str | None = None
-    cause_id: str | None = None
-    active_cause_id: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class WireEdgeGroupStatus:
-    """Graph-visible status DATA for a wire edge group."""
-
-    state: Literal["idle", "collecting", "released", "issues"]
-    expected_edges: tuple[str, ...]
-    active_cause_id: str | None = None
-    dirty: int = 0
-    data: int = 0
-    released: int = 0
-    issues: int = 0
-    last_issue: WireEdgeGroupIssue | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class WireBridgeProtobufStatus:
-    """Graph-visible validation status for protobuf byte transport."""
-
-    direction: Literal["inbound", "outbound"]
-    state: Literal["valid", "invalid"]
-
-
-@dataclass(frozen=True, slots=True)
-class WireBridgeProtobufIssue:
-    """Graph-visible protobuf validation issue DATA."""
-
-    direction: Literal["inbound", "outbound"]
-    category: str
-    message: str
-
-
-@dataclass(frozen=True, slots=True)
-class WireBridgeAckTimeout:
-    """Graph-visible ack timeout fact emitted by the ack driver."""
-
-    seq: int
-    attempt: int
-    observed_at_ms: int | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class WireBridgeAckDriverStatus:
-    """Graph-visible status DATA for the bridge ack driver."""
-
-    state: Literal["idle", "ready", "issues"]
-    timeout_ms: int
-    last_timeout: WireBridgeAckTimeout | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class WireBridgeAckDriverIssue:
-    """Graph-visible issue DATA emitted by the bridge ack driver."""
-
-    code: Literal["invalid_clock", "invalid_timeout"]
-    message: str
-
-
 class AsyncRunner(Protocol):
     """Framework-neutral async job runner supplied explicitly by the host."""
 
     def spawn(self, job: AsyncJobFactory) -> object:
         """Schedule one async job in the caller-owned runtime."""
         ...
-
-
-@dataclass(frozen=True, slots=True)
-class RestoreRef:
-    """Factory reference metadata recorded into a strict-JSON checkpoint."""
-
-    ref: str
-    config: object | None = None
-    config_version: object | None = None
-
-
-class RestoreContext(Protocol):
-    """Descriptor construction context with no raw Node/Ctx/native handles."""
-
-    @property
-    def id(self) -> str:
-        """Return the checkpoint node id being restored."""
-        ...
-
-    @property
-    def name(self) -> str | None:
-        """Return the checkpoint node name, if one was recorded."""
-        ...
-
-    @property
-    def deps(self) -> list[str]:
-        """Return dependency ids recorded for the checkpoint node."""
-        ...
-
-    @property
-    def config(self) -> object | None:
-        """Return restore configuration material for this node."""
-        ...
-
-    @property
-    def config_version(self) -> object | None:
-        """Return the optional restore configuration version."""
-        ...
-
-    @property
-    def checkpoint(self) -> GraphCheckpoint:
-        """Return the full loaded graph checkpoint material."""
-        ...
-
-    def register_state(self) -> None:
-        """Register the checkpoint node as a restored state node."""
-        ...
-
-    def register_node(
-        self,
-        callback: Callable[[Ctx], object],
-        factory: str | None = None,
-    ) -> None:
-        """Register the checkpoint node as a restored callback node."""
-        ...
-
-
-class RestoreDescriptor(Protocol):
-    """A factory-name restore descriptor used by `restore_graph`."""
-
-    ref: str
-
-    def create(self, ctx: RestoreContext) -> object:
-        """Create restored graph material for one checkpoint node."""
-        ...
-
-
-class _BoundRestoreContext:
-    def __init__(
-        self,
-        native: _native.RestoreContext,
-        *,
-        owner_thread: int,
-        lifetime: _GraphLifetime,
-    ) -> None:
-        self._native = native
-        self._owner_thread = owner_thread
-        self._lifetime = lifetime
-
-    @property
-    def id(self) -> str:
-        return self._native.id
-
-    @property
-    def name(self) -> str | None:
-        return self._native.name
-
-    @property
-    def deps(self) -> list[str]:
-        return self._native.deps
-
-    @property
-    def config(self) -> object | None:
-        return self._native.config
-
-    @property
-    def config_version(self) -> object | None:
-        return self._native.config_version
-
-    @property
-    def checkpoint(self) -> GraphCheckpoint:
-        return self._native.checkpoint
-
-    def register_state(self) -> None:
-        try:
-            self._native.register_state()
-        except RuntimeError as error:
-            raise GraphReflyRestoreError(str(error)) from error
-
-    def register_node(
-        self,
-        callback: Callable[[Ctx], object],
-        factory: str | None = None,
-    ) -> None:
-        _reject_async_callable(callback)
-        owner_thread = self._owner_thread
-        lifetime = self._lifetime
-
-        def native_callback(native_ctx: _native.Ctx) -> None:
-            value = callback(
-                Ctx(
-                    native_ctx,
-                    owner_thread=owner_thread,
-                    lifetime=lifetime,
-                )
-            )
-            _reject_awaitable(value)
-
-        try:
-            self._native.register_node(native_callback, factory)
-        except RuntimeError as error:
-            raise GraphReflyRestoreError(str(error)) from error
-
-
-class _BoundRestoreDescriptor:
-    def __init__(
-        self,
-        descriptor: RestoreDescriptor,
-        *,
-        owner_thread: int,
-        lifetime: _GraphLifetime,
-    ) -> None:
-        self._descriptor = descriptor
-        self._owner_thread = owner_thread
-        self._lifetime = lifetime
-        self.ref = descriptor.ref
-
-    def create(self, native_ctx: _native.RestoreContext) -> object:
-        return self._descriptor.create(
-            _BoundRestoreContext(
-                native_ctx,
-                owner_thread=self._owner_thread,
-                lifetime=self._lifetime,
-            )
-        )
-
-
-class _RestoreRegistryFacade:
-    def __init__(
-        self,
-        entries: list[RestoreDescriptor],
-        *,
-        include_builtins: bool,
-    ) -> None:
-        self._entries = entries
-        self._include_builtins = include_builtins
-
-    def _native_registry(
-        self,
-        *,
-        owner_thread: int,
-        lifetime: _GraphLifetime,
-    ) -> _native.RestoreRegistry:
-        entries = [
-            _BoundRestoreDescriptor(
-                entry,
-                owner_thread=owner_thread,
-                lifetime=lifetime,
-            )
-            for entry in self._entries
-        ]
-        return _native.restore_registry(cast("list[object]", entries), self._include_builtins)
-
-
-def _validate_restore_registry_entries(
-    entries: list[RestoreDescriptor],
-    *,
-    include_builtins: bool,
-) -> None:
-    seen = {"state", "map"} if include_builtins else set()
-    for entry in entries:
-        ref = getattr(entry, "ref", None)
-        if not isinstance(ref, str) or ref == "":
-            msg = "restore registry entries must expose a non-empty string 'ref'"
-            raise GraphReflyValueError(msg)
-        if ref in seen:
-            msg = f"duplicate restore registry ref '{ref}'"
-            raise GraphReflyValueError(msg)
-        seen.add(ref)
 
 
 class _ResourceScope:
@@ -543,31 +296,6 @@ def _close_lifecycle_resource(resource: object) -> None:
         close()
 
 
-class _PublicSubscriptionOwner(Protocol):
-    def _register_public_subscription(self, subscription: Subscription) -> None: ...
-
-
-class _FacadePublicSubscriptions:
-    def __init__(self) -> None:
-        self._public_subscriptions: list[ReferenceType[Subscription]] = []
-
-    def _register_public_subscription(self, subscription: Subscription) -> None:
-        self._public_subscriptions.append(ref(subscription))
-
-    def _close_public_subscriptions(self) -> None:
-        subscriptions = tuple(item() for item in self._public_subscriptions)
-        self._public_subscriptions.clear()
-        first_error: BaseException | None = None
-        for subscription in subscriptions:
-            if subscription is not None:
-                first_error = _record_lifecycle_error(
-                    first_error,
-                    subscription._close_from_graph,
-                )
-        if first_error is not None:
-            raise first_error
-
-
 def _record_lifecycle_error(
     first_error: BaseException | None,
     cleanup: Callable[[], object],
@@ -586,7 +314,7 @@ class _GraphLifetime:
         self._lock = Lock()
         self.closed = False
         self.poisoned = False
-        self.subscriptions: list[ReferenceType[Subscription]] = []
+        self.subscriptions: list[Subscription] = []
         self.async_jobs: list[ReferenceType[_AsyncJob]] = []
         self.reentry_queues: list[ReferenceType[GraphReentryQueue]] = []
         self.resources = _ResourceScope(lambda: self.closed_message)
@@ -603,18 +331,14 @@ class _GraphLifetime:
             if self.closed:
                 should_close = True
             else:
-                self.subscriptions.append(ref(subscription))
+                self.subscriptions.append(subscription)
         if should_close:
             subscription._close_from_graph()
             raise GraphReflyRuntimeError(self.closed_message)
 
     def unregister(self, subscription: Subscription) -> None:
         with self._lock:
-            self.subscriptions = [
-                item
-                for item in self.subscriptions
-                if (live := item()) is not None and live is not subscription
-            ]
+            self.subscriptions = [item for item in self.subscriptions if item is not subscription]
 
     def register_retain(self, retain: Retain) -> None:
         self.register_resource(retain)
@@ -635,9 +359,7 @@ class _GraphLifetime:
     def unregister_async_job(self, job: _AsyncJob) -> None:
         with self._lock:
             self.async_jobs = [
-                item
-                for item in self.async_jobs
-                if (live := item()) is not None and live is not job
+                item for item in self.async_jobs if (live := item()) is not None and live is not job
             ]
 
     def register_reentry_queue(self, queue: GraphReentryQueue) -> None:
@@ -676,12 +398,10 @@ class _GraphLifetime:
             queues = tuple(item() for item in self.reentry_queues)
             jobs = tuple(item() for item in self.async_jobs)
             retained_subscriptions = self.resources.retained_subscriptions()
-            weak_subscriptions = tuple(item() for item in self.subscriptions)
             subscriptions = tuple(
                 subscription
-                for subscription in weak_subscriptions
-                if subscription is not None
-                and all(subscription is not retained for retained in retained_subscriptions)
+                for subscription in self.subscriptions
+                if all(subscription is not retained for retained in retained_subscriptions)
             )
             self.reentry_queues.clear()
             self.async_jobs.clear()
@@ -725,20 +445,11 @@ class _GraphLifetime:
 
 @dataclass(frozen=True, slots=True)
 class GraphEvent:
-    """Graph-level observation from the native engine."""
+    """One array a node published, as Graph.observe sees it."""
 
     path: str
-    message: Message[Any]
-    tier: int
+    messages: Array[Any]
     seq: int
-
-
-@dataclass(frozen=True, slots=True)
-class PullContext:
-    """Read-only PULL demand context visible during a pull-holder invocation."""
-
-    pull_id: str
-    params: object | None = None
 
 
 class GraphReentryQueue:
@@ -967,13 +678,13 @@ class Subscription:
 
     def __init__(
         self,
-        native: _native.Subscription,
+        detach: Callable[[], None],
         *,
         owner_thread: int,
         lifetime: _GraphLifetime | None = None,
         callback_errors: list[SubscriberCallbackError] | None = None,
     ) -> None:
-        self._native = native
+        self._detach = detach
         self._owner_thread = owner_thread
         self._lifetime = lifetime
         self._callback_errors = callback_errors if callback_errors is not None else []
@@ -996,7 +707,7 @@ class Subscription:
 
         self._check_thread()
         if not self._closed:
-            self._unsubscribe_native()
+            self._detach_now()
             if self._lifetime is not None:
                 self._lifetime.unregister(self)
 
@@ -1008,18 +719,21 @@ class Subscription:
 
     def _check_thread(self) -> None:
         if get_ident() != self._owner_thread:
-            msg = "GraphReFly Python subscriptions are bound to their creating thread in v0"
+            msg = "GraphReFly Python subscriptions are bound to their creating thread"
             raise GraphReflyRuntimeError(msg)
 
     def _close_from_graph(self) -> None:
         if not self._closed:
-            self._unsubscribe_native()
+            self._detach_now()
 
-    def _unsubscribe_native(self) -> None:
+    def _detach_now(self) -> None:
         try:
-            self._native.unsubscribe()
-        except RuntimeError as error:
+            self._detach()
+        except _k.KernelError as error:
             raise GraphReflyRuntimeError(str(error)) from error
+        except Exception:
+            self._closed = True
+            raise
         except BaseException as error:
             self._closed = True
             if self._lifetime is not None:
@@ -1077,17 +791,21 @@ class Retain:
 
 
 class _AsyncCompletionGate:
-    """Owner-thread gate around the hidden native async completion handle."""
+    """Owner-thread gate from a runner's completion to the node's lifetime ctx.
+
+    A completion becomes ``ctx.down`` after the invocation returned, so it is a later
+    wave of the node; once the lifetime has closed it is dropped (R-lifetime).
+    """
 
     def __init__(
         self,
-        native: Any,
+        ctx: _k.Ctx,
         *,
         owner_thread: int,
         lifetime: _GraphLifetime,
         reentry_queue: GraphReentryQueue | None = None,
     ) -> None:
-        self._native = native
+        self._ctx = ctx
         self._owner_thread = owner_thread
         self._lifetime = lifetime
         self._reentry_queue = reentry_queue
@@ -1100,17 +818,7 @@ class _AsyncCompletionGate:
         if self._reentry_queue is None or self._reentry_gate_id < 0:
             msg = "async completion gate is not registered with a reentry queue"
             raise GraphReflyRuntimeError(msg)
-        return _QueuedCompletionGate(
-            queue=self._reentry_queue,
-            gate_id=self._reentry_gate_id,
-        )
-
-    def register_deactivation(self, callback: Callable[[], object]) -> None:
-        def native_callback() -> None:
-            self.close()
-            callback()
-
-        self._native.on_deactivation(native_callback)
+        return _QueuedCompletionGate(queue=self._reentry_queue, gate_id=self._reentry_gate_id)
 
     def emit(
         self,
@@ -1137,20 +845,12 @@ class _AsyncCompletionGate:
             return self._queue("resolve", value, should_apply, final=True)
         return self._resolve_now(value, should_apply, final=True)
 
-    def error(
-        self,
-        error: BaseException,
-        should_apply: _CompletionPredicate | None = None,
-    ) -> bool:
+    def error(self, error: BaseException, should_apply: _CompletionPredicate | None = None) -> bool:
         if self._should_queue():
             return self._queue("error", error, should_apply, final=True)
         return self._error_now(error, should_apply, final=True)
 
-    def fatal(
-        self,
-        error: BaseException,
-        should_apply: _CompletionPredicate | None = None,
-    ) -> bool:
+    def fatal(self, error: BaseException, should_apply: _CompletionPredicate | None = None) -> bool:
         if self._should_queue():
             return self._queue("fatal", error, should_apply, final=True)
         return self._fatal_now(error, should_apply, final=True)
@@ -1162,6 +862,25 @@ class _AsyncCompletionGate:
         if self._reentry_queue is not None:
             self._reentry_queue._unregister_gate(self._reentry_gate_id)
 
+    def _down(
+        self, array: list[_k.Message], should_apply: _CompletionPredicate | None, *, final: bool
+    ) -> bool:
+        try:
+            if not self._can_reenter(should_apply):
+                return False
+            try:
+                self._ctx.down(array)
+            except _k.KernelError as error:
+                raise GraphReflyRuntimeError(str(error)) from error
+            except Exception:
+                raise
+            except BaseException as error:
+                _poison_on_fatal(self._lifetime, error)
+            return True
+        finally:
+            if final:
+                self.close()
+
     def _emit_now(
         self,
         value: object,
@@ -1169,64 +888,21 @@ class _AsyncCompletionGate:
         *,
         final: bool = False,
     ) -> bool:
-        try:
-            if not self._can_reenter(should_apply):
-                return False
-            _reject_awaitable(value)
-            _reject_sentinel_data(value)
-            try:
-                self._native.emit(value)
-            except RuntimeError as error:
-                raise GraphReflyRuntimeError(str(error)) from error
-            except BaseException as error:
-                _poison_on_fatal(self._lifetime, error)
-            return True
-        finally:
-            if final:
-                self.close()
+        _reject_awaitable(value)
+        _reject_sentinel_data(value)
+        return self._down([(_k.DATA, value)], should_apply, final=final)
 
     def _complete_now(
-        self,
-        should_apply: _CompletionPredicate | None = None,
-        *,
-        final: bool = True,
+        self, should_apply: _CompletionPredicate | None = None, *, final: bool = True
     ) -> bool:
-        try:
-            if not self._can_reenter(should_apply):
-                return False
-            try:
-                self._native.complete()
-            except RuntimeError as error:
-                raise GraphReflyRuntimeError(str(error)) from error
-            except BaseException as error:
-                _poison_on_fatal(self._lifetime, error)
-            return True
-        finally:
-            if final:
-                self.close()
+        return self._down([(_k.COMPLETE,)], should_apply, final=final)
 
     def _resolve_now(
-        self,
-        value: object,
-        should_apply: _CompletionPredicate | None = None,
-        *,
-        final: bool = True,
+        self, value: object, should_apply: _CompletionPredicate | None = None, *, final: bool = True
     ) -> bool:
-        try:
-            if not self._can_reenter(should_apply):
-                return False
-            _reject_awaitable(value)
-            _reject_sentinel_data(value)
-            try:
-                self._native.resolve(value)
-            except RuntimeError as error:
-                raise GraphReflyRuntimeError(str(error)) from error
-            except BaseException as error:
-                _poison_on_fatal(self._lifetime, error)
-            return True
-        finally:
-            if final:
-                self.close()
+        _reject_awaitable(value)
+        _reject_sentinel_data(value)
+        return self._down([(_k.DATA, value), (_k.COMPLETE,)], should_apply, final=final)
 
     def _error_now(
         self,
@@ -1235,19 +911,7 @@ class _AsyncCompletionGate:
         *,
         final: bool = True,
     ) -> bool:
-        try:
-            if not self._can_reenter(should_apply):
-                return False
-            try:
-                self._native.error(_format_async_error(error))
-            except RuntimeError as native_error:
-                raise GraphReflyRuntimeError(str(native_error)) from native_error
-            except BaseException as native_error:
-                _poison_on_fatal(self._lifetime, native_error)
-            return True
-        finally:
-            if final:
-                self.close()
+        return self._down([(_k.ERROR, _callback_error(error))], should_apply, final=final)
 
     def _fatal_now(
         self,
@@ -1268,18 +932,11 @@ class _AsyncCompletionGate:
         if get_ident() != self._owner_thread:
             msg = "async runner completion must re-enter GraphReFly on the graph owner thread"
             raise GraphReflyRuntimeError(msg)
-        if self._closed:
-            return False
-        if self._lifetime.is_closed():
+        if self._closed or self._lifetime.is_closed():
             return False
         if should_apply is not None and not should_apply():
             return False
-        try:
-            return bool(self._native.is_live())
-        except RuntimeError:
-            return False
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
+        return not self._ctx.signal.aborted
 
     def _should_queue(self) -> bool:
         return self._reentry_queue is not None and get_ident() != self._owner_thread
@@ -1400,11 +1057,7 @@ class _AsyncJob:
     @property
     def active(self) -> bool:
         with self._lock:
-            return (
-                not self._done
-                and not self._cancel_requested
-                and not self._lifetime.is_closed()
-            )
+            return not self._done and not self._cancel_requested and not self._lifetime.is_closed()
 
     def is_active(self) -> bool:
         return self.active
@@ -1421,9 +1074,7 @@ class _AsyncJob:
             raise
         with self._lock:
             self._task = task
-            should_cancel = (
-                self._cancel_requested or self._done or self._lifetime.is_closed()
-            )
+            should_cancel = self._cancel_requested or self._done or self._lifetime.is_closed()
         if should_cancel:
             _cancel_runner_task(self._runner, task)
             self.finish()
@@ -1550,44 +1201,28 @@ def _should_suppress_async_error(job: _AsyncJob, error: BaseException) -> bool:
 
 
 class Ctx:
-    """Python-owned facade for an advanced node callback invocation."""
+    """What an advanced node callback receives for one invocation.
 
-    def __init__(
-        self,
-        native: _native.Ctx,
-        *,
-        owner_thread: int,
-        lifetime: _GraphLifetime,
-    ) -> None:
-        self._native = native
-        self._owner_thread = owner_thread
-        self._lifetime = lifetime
+    It reads the invocation's inputs (each dependency's value arrays, terminal and
+    latest value), keeps the lifetime's private state, and sends output with
+    :meth:`emit` and :meth:`down`. It never sends anything upstream.
+    """
+
+    def __init__(self, ctx: _k.Ctx, graph: Graph) -> None:
+        self._ctx = ctx
+        self._graph = graph
 
     @property
     def dep_len(self) -> int:
-        """Return the number of declared dependencies for this invocation."""
+        """Return the number of dependencies of this invocation."""
 
-        self._check_thread()
-        try:
-            return self._native.dep_len()
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
+        self._check()
+        return len(self._ctx.deps)
 
     def has_data(self, index: int) -> bool:
-        """Return whether dependency `index` has DATA for this invocation."""
+        """Return whether dependency ``index`` holds a value."""
 
-        self._check_thread()
-        try:
-            has_value, _value = self._native.data_entry(index)
-        except IndexError:
-            raise
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-        return has_value
+        return self._dep(index).has
 
     @overload
     def data(self, index: int) -> object: ...
@@ -1596,353 +1231,145 @@ class Ctx:
     def data(self, index: int, default: U) -> object | U: ...
 
     def data(self, index: int, default: object = _NO_DEFAULT) -> object:
-        """Return dependency DATA or the provided default when absent."""
+        """Return dependency ``index``'s latest value, or ``default`` when it holds none."""
 
-        self._check_thread()
-        try:
-            has_value, value = self._native.data_entry(index)
-        except IndexError:
-            raise
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-        if not has_value:
+        dep = self._dep(index)
+        if not dep.has:
             if default is _NO_DEFAULT:
-                msg = f"dependency {index} has no DATA value in this ctx invocation"
+                msg = f"dependency {index} has no DATA value in this invocation"
                 raise GraphReflyNoDataError(msg)
             return default
-        return value
+        return dep.value
 
     @property
     def wave_data(self) -> list[list[list[object]]]:
-        """Return raw dep-to-wave DATA projections for advanced callbacks."""
+        """Return each dependency's value arrays of this invocation (``[]`` for RESOLVED)."""
 
-        self._check_thread()
-        try:
-            return self._native.wave_data(SENTINEL)
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
+        self._check()
+        return [dep.waves for dep in self._ctx.deps]
 
-    def terminal(self, index: int) -> bool | object:
-        """Return terminal metadata for dependency `index` in this invocation."""
+    def terminal(self, index: int) -> ControlMessage | ErrorMessage | None:
+        """Return dependency ``index``'s COMPLETE or ERROR in this invocation, if any."""
 
-        self._check_thread()
-        try:
-            return self._native.terminal(index)
-        except IndexError:
-            raise
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-
-    @property
-    def pull(self) -> PullContext | None:
-        """Return the active PULL demand context, if this is a pull invocation."""
-
-        self._check_thread()
-        try:
-            native_pull = self._native._pull_context()
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-        if native_pull is None:
+        terminal = self._dep(index).terminal
+        if terminal is None:
             return None
-        pull_id, params = native_pull
-        return PullContext(pull_id=pull_id, params=params)
+        message = _message(terminal)
+        assert not isinstance(message, DataMessage)
+        return message
 
-    @overload
-    def pull_params(self) -> object | None: ...
+    def invalidated(self, index: int) -> bool:
+        """Return whether an INVALIDATE arrived on ``index`` (manual INVALIDATE policy)."""
 
-    @overload
-    def pull_params(self, default: U) -> object | U: ...
+        return self._dep(index).invalidated
 
-    def pull_params(self, default: object = None) -> object:
-        """Return active PULL params, or `default` outside a param-bearing pull."""
+    def emit(self, *values: object) -> None:
+        """Send one array of DATA, one message per value."""
 
-        pull = self.pull
-        if pull is None or pull.params is None:
-            return default
-        return pull.params
+        self._check()
+        if not values:
+            msg = "emit needs at least one value"
+            raise GraphReflyValueError(msg)
+        for value in values:
+            _reject_awaitable(value)
+            _reject_sentinel_data(value)
+        self._send([(_k.DATA, value) for value in values])
 
-    @property
-    def rewire_next(self) -> RewireNext:
-        """Return the callback-scoped deferred rewire facade."""
+    def down(self, *messages: Message[Any]) -> None:
+        """Send one array of messages: DATA, ERROR, INVALIDATE or COMPLETE.
 
-        self._check_thread()
-        return RewireNext(self)
+        START, PENDING and RESOLVED are the kernel's alone and are rejected, as is a
+        terminal that is not last.
+        """
 
-    def emit(self, value: object) -> None:
-        """Emit one DATA value from this advanced node callback."""
-
-        self._check_thread()
-        _reject_awaitable(value)
-        _reject_sentinel_data(value)
-        try:
-            self._native.emit(value)
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
+        self._check()
+        array: list[_k.Message] = []
+        for message in messages:
+            if isinstance(message, DataMessage):
+                _reject_awaitable(message.value)
+                array.append((_k.DATA, message.value))
+            elif isinstance(message, ErrorMessage):
+                array.append((_k.ERROR, message.error))
+            elif isinstance(message, ControlMessage):
+                array.append((message.kind,))
+            else:
+                msg = f"ctx.down takes graphrefly messages, not {message!r}"
+                raise GraphReflyValueError(msg)
+        self._send(array)
 
     @property
     def has_state(self) -> bool:
-        """Return whether this node has private cross-wave state."""
+        """Return whether this lifetime's private state is set (to anything but None)."""
 
-        self._check_thread()
-        try:
-            has_value, _value = self._native.state_entry()
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-        return has_value
+        self._check()
+        return self._ctx.state is not None
 
     @property
     def state(self) -> object | None:
-        """Return this node's private cross-wave state value."""
+        """Return this lifetime's private state."""
 
-        self._check_thread()
-        try:
-            _has_value, value = self._native.state_entry()
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-        return value
+        self._check()
+        return self._ctx.state
 
     @state.setter
     def state(self, value: object) -> None:
-        self._check_thread()
+        self._check()
         _reject_awaitable(value)
         _reject_sentinel_data(value)
+        self._ctx.state = value
+
+    @property
+    def signal(self) -> _k.Signal:
+        """Return the lifetime's abort signal, aborted when this lifetime closes."""
+
+        self._check()
+        return self._ctx.signal
+
+    def rewire(self, deps: Iterable[Node[Any]]) -> None:
+        """Change this node's own dependencies for its current lifetime.
+
+        It runs after the current wave and is undone when the lifetime closes.
+        """
+
+        self._check()
+        ids = [self._graph._node_id(dep) for dep in deps]
         try:
-            self._native.set_state(value)
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
+            self._ctx.rewire(ids)
+        except _k.KernelError as error:
+            raise GraphReflyValueError(str(error)) from error
 
-    def persist_state(self, on: bool = True) -> None:
-        """Opt this node's private state into checkpoint persistence."""
-
-        self._check_thread()
+    def _send(self, array: list[_k.Message]) -> None:
         try:
-            self._native.state_persist(on)
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
+            self._ctx.down(array)
+        except _k.KernelError as error:
+            raise GraphReflyValueError(str(error)) from error
 
-    def on_invalidate(self, callback: Callable[[], object]) -> None:
-        """Register a cleanup hook for the current callback's INVALIDATE."""
-
-        self._check_thread()
-        _reject_async_callable(callback)
-
-        def native_callback() -> None:
-            result = callback()
-            _reject_awaitable(result)
-
-        try:
-            self._native.on_invalidate(native_callback)
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-
-    def on_deactivation(self, callback: Callable[[], object]) -> None:
-        """Register a cleanup hook for this callback's deactivation."""
-
-        self._check_thread()
-        _reject_async_callable(callback)
-
-        def native_callback() -> None:
-            result = callback()
-            _reject_awaitable(result)
-
-        try:
-            self._native.on_deactivation(native_callback)
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-
-    def request_pull(
-        self,
-        pull_id: str,
-        params: object | None = None,
-        *,
-        toward_dep: int | None = None,
-    ) -> None:
-        """Request a PULL wave toward dependencies during this invocation."""
-
-        self._check_thread()
-        _reject_non_string_pull_id(pull_id)
-        _reject_awaitable(params)
-        _reject_sentinel_data(params)
-        toward_dep = _normalize_toward_dep(toward_dep)
-        self._reject_unknown_toward_dep(toward_dep)
-        try:
-            self._native._up_pull(pull_id, params, toward_dep)
-        except IndexError:
-            raise
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-
-    def request_pull_next(
-        self,
-        pull_id: str,
-        params: object | None = None,
-        *,
-        toward_dep: int | None = None,
-    ) -> None:
-        """Schedule one deferred PULL request after this invocation."""
-
-        self._check_thread()
-        _reject_non_string_pull_id(pull_id)
-        _reject_awaitable(params)
-        _reject_sentinel_data(params)
-        toward_dep = _normalize_toward_dep(toward_dep)
-        self._reject_unknown_toward_dep(toward_dep)
-        try:
-            self._native._up_next_pull(pull_id, params, toward_dep)
-        except IndexError:
-            raise
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-
-    def _check_thread(self) -> None:
-        if get_ident() != self._owner_thread:
-            msg = "GraphReFly Python ctx objects are bound to their creating thread in v0"
-            raise GraphReflyRuntimeError(msg)
-        if self._lifetime.closed:
-            raise GraphReflyRuntimeError(self._lifetime.closed_message)
-
-    def _reject_unknown_toward_dep(self, toward_dep: int | None) -> None:
-        if toward_dep is not None and toward_dep >= self.dep_len:
-            msg = "toward_dep must reference an existing dependency in the Python facade"
+    def _dep(self, index: int) -> _k.Dep:
+        self._check()
+        if isinstance(index, bool) or not isinstance(index, int):
+            msg = "dependency index must be an int"
             raise GraphReflyValueError(msg)
+        deps = self._ctx.deps
+        if index < 0 or index >= len(deps):
+            raise IndexError(f"dependency index {index} out of range")
+        return deps[index]
 
-
-class RewireNext:
-    """Callback-scoped deferred topology mutation facade."""
-
-    def __init__(self, ctx: Ctx) -> None:
-        self._ctx = ctx
-
-    def subscribe_dep(self, dep: Node[Any], callback: NodeCallback) -> None:
-        """Subscribe this node to an additional dependency on the next wave."""
-
-        self._ctx._check_thread()
-        callback = _validate_rewire_callback(callback)
-        native_dep = self._native_node(dep)
-        native_callback = self._native_callback(callback)
-        try:
-            self._ctx._native._rewire_next_subscribe_dep(native_dep, native_callback)
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._ctx._lifetime, error)
-
-    def unsubscribe_dep(self, dep: Node[Any], callback: NodeCallback) -> None:
-        """Unsubscribe this node from a dependency on the next wave."""
-
-        self._ctx._check_thread()
-        callback = _validate_rewire_callback(callback)
-        native_dep = self._native_node(dep)
-        native_callback = self._native_callback(callback)
-        try:
-            self._ctx._native._rewire_next_unsubscribe_dep(native_dep, native_callback)
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._ctx._lifetime, error)
-
-    def replace_deps(self, deps: Iterable[Node[Any]], callback: NodeCallback) -> None:
-        """Replace this node's dependency set on the next wave."""
-
-        self._ctx._check_thread()
-        callback = _validate_rewire_callback(callback)
-        native_deps = [self._native_node(dep) for dep in deps]
-        native_callback = self._native_callback(callback)
-        try:
-            self._ctx._native._rewire_next_replace_deps(native_deps, native_callback)
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._ctx._lifetime, error)
-
-    def _native_node(self, dep: Node[Any]) -> _native.Node:
-        if not isinstance(dep, Node):
-            msg = "rewire_next deps must be graphrefly.Node objects"
-            raise GraphReflyValueError(msg)
-        dep._check_thread()
-        if dep._lifetime is not self._ctx._lifetime:
-            msg = "rewire_next deps must belong to the same GraphReFly graph"
-            raise GraphReflyRuntimeError(msg)
-        return dep._native
-
-    def _native_callback(self, callback: NodeCallback) -> Callable[[_native.Ctx], None]:
-        owner_thread = self._ctx._owner_thread
-        lifetime = self._ctx._lifetime
-
-        def native_callback(native_ctx: _native.Ctx) -> None:
-            value = callback(
-                Ctx(
-                    native_ctx,
-                    owner_thread=owner_thread,
-                    lifetime=lifetime,
-                )
-            )
-            _reject_awaitable(value)
-
-        return native_callback
+    def _check(self) -> None:
+        self._graph._check_thread()
 
 
 class Node[T]:
-    """A typed Python handle around an opaque native node."""
+    """A typed handle to one node of a graph."""
 
-    def __init__(
-        self,
-        native: _native.Node,
-        *,
-        owner_thread: int,
-        lifetime: _GraphLifetime,
-        writable: bool = False,
-        subscription_owner: _PublicSubscriptionOwner | None = None,
-    ) -> None:
-        self._native = native
-        self._owner_thread = owner_thread
-        self._lifetime = lifetime
-        self._writable = writable
-        self._subscription_owner = subscription_owner
+    def __init__(self, graph: Graph, node_id: str) -> None:
+        self._graph = graph
+        self._id = node_id
 
-    def set(self, value: T) -> None:
-        """Set DATA on a writable state node."""
+    @property
+    def name(self) -> str:
+        """Return the node's name, its id in the graph."""
 
-        self._check_thread()
-        if not self._writable:
-            msg = "set() is only available on state nodes in the v0 Python facade"
-            raise GraphReflyRuntimeError(msg)
-        _reject_awaitable(value)
-        _reject_sentinel_data(value)
-        try:
-            self._native.set(value)
-        except ValueError as error:
-            raise GraphReflyValueError(str(error)) from error
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
+        return self._id
 
     @overload
     def cache(self) -> T: ...
@@ -1951,649 +1378,147 @@ class Node[T]:
     def cache(self, default: U) -> T | U: ...
 
     def cache(self, default: object = _NO_DEFAULT) -> object:
-        """Return the latest cached DATA value or `default` when absent."""
+        """Return the latest retained DATA value, or ``default`` when it holds none."""
 
-        self._check_thread()
-        try:
-            has_value, value = self._native.cache_entry()
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-        if not has_value:
+        self._graph._check_thread()
+        held = self._graph._kernel.get(self._id)
+        if not held.has:
             if default is _NO_DEFAULT:
                 msg = "node has no cached DATA value"
                 raise GraphReflyNoDataError(msg)
             return default
-        return cast("T", value)
+        return cast("T", held.value)
 
     @property
     def has_value(self) -> bool:
-        """Return whether this node currently has cached DATA."""
+        """Return whether this node retains a DATA value."""
 
-        self._check_thread()
-        try:
-            has_value, _value = self._native.cache_entry()
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-        return has_value
+        self._graph._check_thread()
+        return self._graph._kernel.get(self._id).has
 
     @property
-    def status(self) -> str:
-        """Return the node status string from the native graph."""
+    def status(self) -> NodeStatus:
+        """Return the node's derived status: cache, output and lifecycle."""
 
-        self._check_thread()
-        try:
-            return self._native.status()
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
+        self._graph._check_thread()
+        status = self._graph._kernel.status(self._id)
+        return NodeStatus(status.cache, status.output, status.lifecycle)
 
     def subscribe(
         self,
-        callback: Callable[[Message[T]], object],
+        callback: Callable[[Array[T]], object],
         *,
         on_error: ObserverErrorHandler | None = None,
     ) -> Subscription:
-        """Subscribe to this node's public observation messages."""
+        """Subscribe to this node: ``callback`` gets each array as a tuple of messages.
 
-        self._check_thread()
+        The first array is START followed by the node's snapshot. A callback that
+        raises is recorded as a ``SubscriberCallbackError``; it is not the node's ERROR.
+        """
+
+        graph = self._graph
+        graph._check_thread()
         _reject_async_callable(callback)
         if on_error is not None:
             _reject_async_callable(on_error)
         callback_errors: list[SubscriberCallbackError] = []
 
-        def native_callback(kind: str, value: object) -> None:
+        def sink(array: tuple[_k.Message, ...]) -> None:
             try:
-                result = callback(_message_from_native(kind, value))
+                result = callback(cast("Array[T]", tuple(_message(m) for m in array)))
                 _reject_awaitable(result)
             except Exception as error:
                 _record_observer_error(error, callback_errors, on_error)
 
-        try:
-            subscription = Subscription(
-                self._native.subscribe(native_callback),
-                owner_thread=self._owner_thread,
-                lifetime=self._lifetime,
-                callback_errors=callback_errors,
-            )
-            self._lifetime.register(subscription)
-            if self._subscription_owner is not None:
-                self._subscription_owner._register_public_subscription(subscription)
-            return subscription
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-
-    def _check_thread(self) -> None:
-        if get_ident() != self._owner_thread:
-            msg = "GraphReFly Python nodes are bound to their creating thread in v0"
-            raise GraphReflyRuntimeError(msg)
-        if self._lifetime.closed:
-            raise GraphReflyRuntimeError(self._lifetime.closed_message)
-
-
-class _MappedNode(Node[T]):
-    def __init__(
-        self,
-        native: _native.Node,
-        *,
-        owner_thread: int,
-        lifetime: _GraphLifetime,
-        mapper: Callable[[object], T],
-        subscription_owner: _PublicSubscriptionOwner | None = None,
-    ) -> None:
-        super().__init__(
-            native,
-            owner_thread=owner_thread,
-            lifetime=lifetime,
-            subscription_owner=subscription_owner,
+        sink_id = graph._new_sink_id()
+        node_id = self._id
+        subscription = Subscription(
+            lambda: graph._kernel.unsubscribe(sink_id, node_id),
+            owner_thread=graph._owner_thread,
+            lifetime=graph._lifetime,
+            callback_errors=callback_errors,
         )
-        self._mapper = mapper
+        graph._lifetime.register(subscription)
+        graph._call(lambda: graph._kernel.subscribe(sink_id, node_id, sink))
+        return subscription
 
-    @overload
-    def cache(self) -> T: ...
-
-    @overload
-    def cache(self, default: U) -> T | U: ...
-
-    def cache(self, default: object = _NO_DEFAULT) -> object:
-        value = super().cache(default)
-        if value is default:
-            return value
-        return self._mapper(value)
-
-    def subscribe(
-        self,
-        callback: Callable[[Message[T]], object],
-        *,
-        on_error: ObserverErrorHandler | None = None,
-    ) -> Subscription:
-        def mapped(message: Message[object]) -> object:
-            if isinstance(message, DataMessage):
-                return callback(DataMessage(self._mapper(message.value)))
-            return callback(cast("Message[T]", message))
-
-        return super().subscribe(mapped, on_error=on_error)
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self._id!r})"
 
 
-def _wire_bridge_status(value: object) -> WireBridgeStatus:
-    data = cast("dict[str, Any]", value)
-    return WireBridgeStatus(
-        state=cast("Any", data["state"]),
-        session_id=str(data["session_id"]),
-        cursor=int(data.get("cursor", 0)),
-        next_seq=int(data.get("next_seq", 0)),
-        pending=int(data.get("pending", 0)),
-        attempts=int(data.get("attempts", 0)),
-        acked=int(data.get("acked", 0)),
-        nacked=int(data.get("nacked", 0)),
-        errors=int(data.get("errors", 0)),
-        last_seq=cast("int | None", data.get("last_seq")),
-        last_delay_ms=cast("int | None", data.get("last_delay_ms")),
-    )
+class State(Node[T]):
+    """A state node: the only place host input enters a graph."""
 
+    def set(self, value: T | Callable[[T], T]) -> None:
+        """Write a value; given a callable, compute it from the state's value when the
+        write runs in request order.
 
-def _wire_bridge_issue(value: object) -> WireBridgeIssue:
-    data = cast("dict[str, Any]", value)
-    return WireBridgeIssue(
-        code=cast("Any", data.get("code", "invalid")),
-        message=str(data.get("message", "")),
-    )
+        The callable gets ``graphrefly.SENTINEL`` when the state holds no value, and
+        a callable that returns its argument writes nothing. To store a callable as
+        the value, wrap it: ``set(lambda _: fn)``.
+        """
 
+        graph = self._graph
+        graph._check_thread()
+        if callable(value):
+            fn = cast("Callable[[object], object]", value)
+            _reject_async_callable(fn)
 
-def _wire_edge_group_issue(value: object) -> WireEdgeGroupIssue:
-    data = cast("dict[str, Any]", value)
-    return WireEdgeGroupIssue(
-        code=cast("Any", data["code"]),
-        message=str(data["message"]),
-        edge_id=cast("str | None", data.get("edge_id")),
-        cause_id=cast("str | None", data.get("cause_id")),
-        active_cause_id=cast("str | None", data.get("active_cause_id")),
-    )
+            def compute(previous: object) -> object:
+                result = fn(previous)
+                _reject_awaitable(result)
+                return result
 
-
-def _wire_edge_group_status(value: object) -> WireEdgeGroupStatus:
-    data = cast("dict[str, Any]", value)
-    last_issue = data.get("last_issue")
-    return WireEdgeGroupStatus(
-        state=cast("Any", data["state"]),
-        expected_edges=tuple(cast("Iterable[str]", data.get("expected_edges", ()))),
-        active_cause_id=cast("str | None", data.get("active_cause_id")),
-        dirty=int(data.get("dirty", 0)),
-        data=int(data.get("data", 0)),
-        released=int(data.get("released", 0)),
-        issues=int(data.get("issues", 0)),
-        last_issue=_wire_edge_group_issue(last_issue) if isinstance(last_issue, dict) else None,
-    )
-
-
-def _wire_bridge_protobuf_status(value: object) -> WireBridgeProtobufStatus:
-    data = cast("dict[str, Any]", value)
-    return WireBridgeProtobufStatus(
-        direction=cast("Any", data["direction"]),
-        state=cast("Any", data["state"]),
-    )
-
-
-def _wire_bridge_protobuf_issue(value: object) -> WireBridgeProtobufIssue:
-    data = cast("dict[str, Any]", value)
-    return WireBridgeProtobufIssue(
-        direction=cast("Any", data["direction"]),
-        category=str(data["category"]),
-        message=str(data["message"]),
-    )
-
-
-def _wire_bridge_ack_timeout(value: object) -> WireBridgeAckTimeout:
-    data = cast("dict[str, Any]", value)
-    return WireBridgeAckTimeout(
-        seq=int(data.get("seq", 0)),
-        attempt=int(data.get("attempt", 0)),
-        observed_at_ms=cast("int | None", data.get("observed_at_ms")),
-    )
-
-
-def _wire_bridge_ack_driver_status(value: object) -> WireBridgeAckDriverStatus:
-    data = cast("dict[str, Any]", value)
-    last_timeout = data.get("last_timeout")
-    return WireBridgeAckDriverStatus(
-        state=cast("Any", data.get("state", "idle")),
-        timeout_ms=int(data.get("timeout_ms", 0)),
-        last_timeout=_wire_bridge_ack_timeout(last_timeout)
-        if isinstance(last_timeout, dict)
-        else None,
-    )
-
-
-def _wire_bridge_ack_driver_issue(value: object) -> WireBridgeAckDriverIssue:
-    data = cast("dict[str, Any]", value)
-    return WireBridgeAckDriverIssue(
-        code=cast("Any", data.get("code", "invalid_clock")),
-        message=str(data.get("message", "")),
-    )
-
-
-class WireBridge:
-    """Graph-owned wire bridge bundle with status and issue nodes."""
-
-    def __init__(self, native: _native._WireBridge, graph: Graph) -> None:
-        self._native = native
-        self._owner_thread = graph._owner_thread
-        self._lifetime = graph._lifetime
-        self._scope = self._lifetime.new_resource_scope()
-        self._children: list[
-            WireBridgeProtobuf | WireEdgeGroup | WireBridgeAckDriver
-        ] = []
-        self.status: Node[WireBridgeStatus] = _MappedNode(
-            native.status,
-            owner_thread=self._owner_thread,
-            lifetime=self._lifetime,
-            mapper=_wire_bridge_status,
-        )
-        self.issues: Node[WireBridgeIssue] = _MappedNode(
-            native.issues,
-            owner_thread=self._owner_thread,
-            lifetime=self._lifetime,
-            mapper=_wire_bridge_issue,
-        )
-        self._released = False
-        self._lifetime.register_resource(self)
-
-    def __enter__(self) -> WireBridge:
-        self._check_thread()
-        return self
-
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-        self.release()
-
-    def release(self) -> None:
-        """Release the bridge and its attached child facade bundles."""
-
-        self._check_thread()
-        if self._released:
+            graph._call(lambda: graph._kernel.set(self._id, compute))
             return
-        first_error = _record_lifecycle_error(None, self._release_children)
-        if self._children:
-            if first_error is not None:
-                raise first_error
-            return
-        first_error = _record_lifecycle_error(first_error, self._scope.close)
-        self._native.release()
-        self._released = True
-        self._lifetime.unregister_resource(self)
-        if first_error is not None:
-            raise first_error
+        _reject_awaitable(value)
+        _reject_sentinel_data(value)
+        graph._call(lambda: graph._kernel.set(self._id, value))
 
-    def _close_from_graph(self) -> None:
-        if self._released:
-            return
-        first_error = _record_lifecycle_error(None, self._release_children)
-        if self._children and first_error is not None:
-            raise first_error
-        first_error = _record_lifecycle_error(first_error, self._scope.close)
-        self._native.release()
-        self._released = True
-        if first_error is not None:
-            raise first_error
+    def invalidate(self) -> None:
+        """Remove the state's value and invalidate its dependents."""
 
-    def _check_thread(self) -> None:
-        if get_ident() != self._owner_thread:
-            msg = "GraphReFly Python wire bridge facades are bound to their creating thread"
-            raise GraphReflyRuntimeError(msg)
-        if self._lifetime.closed and not self._released:
-            raise GraphReflyRuntimeError(self._lifetime.closed_message)
+        graph = self._graph
+        graph._check_thread()
+        graph._call(lambda: graph._kernel.invalidate(self._id))
 
-    def _check_attachable(self) -> None:
-        self._check_thread()
-        if self._released:
-            raise GraphReflyRuntimeError("wire bridge facade is released")
+    def complete(self) -> None:
+        """End the state with COMPLETE; later host input is refused."""
 
-    def _register_child(
-        self,
-        child: WireBridgeProtobuf | WireEdgeGroup | WireBridgeAckDriver,
-    ) -> None:
-        self._children.append(child)
+        graph = self._graph
+        graph._check_thread()
+        graph._call(lambda: graph._kernel.complete(self._id))
 
-    def _unregister_child(
-        self,
-        child: WireBridgeProtobuf | WireEdgeGroup | WireBridgeAckDriver,
-    ) -> None:
-        self._children = [item for item in self._children if item is not child]
+    def error(self, error: object) -> None:
+        """End the state with ERROR carrying ``error``; later host input is refused."""
 
-    def _release_children(self) -> None:
-        first_error: BaseException | None = None
-        for child in tuple(reversed(self._children)):
-            first_error = _record_lifecycle_error(first_error, child._release_from_bridge)
-        self._children = [child for child in self._children if not child._released]
-        if first_error is not None:
-            raise first_error
-
-
-class WireBridgeProtobuf(_FacadePublicSubscriptions):
-    """High-level protobuf byte transport facade for a wire bridge."""
-
-    def __init__(
-        self,
-        native: _native._WireBridgeProtobuf,
-        graph: Graph,
-        bridge: WireBridge,
-    ) -> None:
-        _FacadePublicSubscriptions.__init__(self)
-        self._native = native
-        self._owner_thread = graph._owner_thread
-        self._lifetime = graph._lifetime
-        self._scope = self._lifetime.new_resource_scope()
-        self._bridge = bridge
-        self.inbound_bytes: Node[bytes] = Node(
-            native.inbound_bytes,
-            owner_thread=self._owner_thread,
-            lifetime=self._lifetime,
-            writable=True,
-            subscription_owner=self,
-        )
-        self.outbound_bytes: Node[bytes] = Node(
-            native.outbound_bytes,
-            owner_thread=self._owner_thread,
-            lifetime=self._lifetime,
-            subscription_owner=self,
-        )
-        self.status: Node[WireBridgeProtobufStatus] = _MappedNode(
-            native.status,
-            owner_thread=self._owner_thread,
-            lifetime=self._lifetime,
-            mapper=_wire_bridge_protobuf_status,
-            subscription_owner=self,
-        )
-        self.issues: Node[WireBridgeProtobufIssue] = _MappedNode(
-            native.issues,
-            owner_thread=self._owner_thread,
-            lifetime=self._lifetime,
-            mapper=_wire_bridge_protobuf_issue,
-            subscription_owner=self,
-        )
-        self._released = False
-        self._bridge._register_child(self)
-        self._lifetime.register_resource(self)
-
-    def __enter__(self) -> WireBridgeProtobuf:
-        self._check_thread()
-        return self
-
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-        self.release()
-
-    def release(self) -> None:
-        """Release the protobuf transport facade and owned subscriptions."""
-
-        self._check_thread()
-        if self._released:
-            return
-        first_error = _record_lifecycle_error(None, self._close_public_subscriptions)
-        first_error = _record_lifecycle_error(first_error, self._scope.close)
-        self._native.release()
-        self._released = True
-        self._bridge._unregister_child(self)
-        self._lifetime.unregister_resource(self)
-        if first_error is not None:
-            raise first_error
-
-    def _close_from_graph(self) -> None:
-        if self._released:
-            return
-        first_error = _record_lifecycle_error(None, self._close_public_subscriptions)
-        first_error = _record_lifecycle_error(first_error, self._scope.close)
-        self._native.release()
-        self._released = True
-        if first_error is not None:
-            raise first_error
-
-    def _release_from_bridge(self) -> None:
-        if self._released:
-            return
-        first_error = _record_lifecycle_error(None, self._close_public_subscriptions)
-        first_error = _record_lifecycle_error(first_error, self._scope.close)
-        self._native.release()
-        self._released = True
-        self._lifetime.unregister_resource(self)
-        if first_error is not None:
-            raise first_error
-
-    def _check_thread(self) -> None:
-        if get_ident() != self._owner_thread:
-            msg = "GraphReFly Python protobuf facades are owner-thread bound"
-            raise GraphReflyRuntimeError(msg)
-        if self._lifetime.closed and not self._released:
-            raise GraphReflyRuntimeError(self._lifetime.closed_message)
-
-
-class WireEdgeGroup(_FacadePublicSubscriptions):
-    """High-level wire edge group facade for inbound or outbound edge facts."""
-
-    def __init__(
-        self,
-        native: _native._WireEdgeGroup,
-        graph: Graph,
-        bridge: WireBridge,
-    ) -> None:
-        _FacadePublicSubscriptions.__init__(self)
-        self._native = native
-        self._owner_thread = graph._owner_thread
-        self._lifetime = graph._lifetime
-        self._scope = self._lifetime.new_resource_scope()
-        self._bridge = bridge
-        self.inbound_edges: dict[str, Node[bytes]] = {
-            str(edge_id): Node(
-                native_node,
-                owner_thread=self._owner_thread,
-                lifetime=self._lifetime,
-                subscription_owner=self,
-            )
-            for edge_id, native_node in dict(native.inbound_edges).items()
-        }
-        self.status: Node[WireEdgeGroupStatus] = _MappedNode(
-            native.status,
-            owner_thread=self._owner_thread,
-            lifetime=self._lifetime,
-            mapper=_wire_edge_group_status,
-            subscription_owner=self,
-        )
-        self.issues: Node[WireEdgeGroupIssue] = _MappedNode(
-            native.issues,
-            owner_thread=self._owner_thread,
-            lifetime=self._lifetime,
-            mapper=_wire_edge_group_issue,
-            subscription_owner=self,
-        )
-        self._released = False
-        self._bridge._register_child(self)
-        self._lifetime.register_resource(self)
-
-    def __enter__(self) -> WireEdgeGroup:
-        self._check_thread()
-        return self
-
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-        self.release()
-
-    def release(self) -> None:
-        """Release the edge group facade and owned subscriptions."""
-
-        self._check_thread()
-        if self._released:
-            return
-        first_error = _record_lifecycle_error(None, self._close_public_subscriptions)
-        first_error = _record_lifecycle_error(first_error, self._scope.close)
-        self._native.release()
-        self._released = True
-        self._bridge._unregister_child(self)
-        self._lifetime.unregister_resource(self)
-        if first_error is not None:
-            raise first_error
-
-    def _close_from_graph(self) -> None:
-        if self._released:
-            return
-        first_error = _record_lifecycle_error(None, self._close_public_subscriptions)
-        first_error = _record_lifecycle_error(first_error, self._scope.close)
-        self._native.release()
-        self._released = True
-        if first_error is not None:
-            raise first_error
-
-    def _release_from_bridge(self) -> None:
-        if self._released:
-            return
-        first_error = _record_lifecycle_error(None, self._close_public_subscriptions)
-        first_error = _record_lifecycle_error(first_error, self._scope.close)
-        self._native.release()
-        self._released = True
-        self._lifetime.unregister_resource(self)
-        if first_error is not None:
-            raise first_error
-
-    def _check_thread(self) -> None:
-        if get_ident() != self._owner_thread:
-            msg = "GraphReFly Python wire edge groups are owner-thread bound"
-            raise GraphReflyRuntimeError(msg)
-        if self._lifetime.closed and not self._released:
-            raise GraphReflyRuntimeError(self._lifetime.closed_message)
-
-
-class WireBridgeAckDriver(_FacadePublicSubscriptions):
-    """Clock-driven ack timeout driver facade for a wire bridge."""
-
-    def __init__(
-        self,
-        native: _native._WireBridgeAckDriver,
-        graph: Graph,
-        bridge: WireBridge,
-    ) -> None:
-        _FacadePublicSubscriptions.__init__(self)
-        self._native = native
-        self._owner_thread = graph._owner_thread
-        self._lifetime = graph._lifetime
-        self._scope = self._lifetime.new_resource_scope()
-        self._bridge = bridge
-        self.timeouts: Node[WireBridgeAckTimeout] = _MappedNode(
-            native.timeouts,
-            owner_thread=self._owner_thread,
-            lifetime=self._lifetime,
-            mapper=_wire_bridge_ack_timeout,
-            subscription_owner=self,
-        )
-        self.status: Node[WireBridgeAckDriverStatus] = _MappedNode(
-            native.status,
-            owner_thread=self._owner_thread,
-            lifetime=self._lifetime,
-            mapper=_wire_bridge_ack_driver_status,
-            subscription_owner=self,
-        )
-        self.issues: Node[WireBridgeAckDriverIssue] = _MappedNode(
-            native.issues,
-            owner_thread=self._owner_thread,
-            lifetime=self._lifetime,
-            mapper=_wire_bridge_ack_driver_issue,
-            subscription_owner=self,
-        )
-        self._released = False
-        self._scope.adopt(
-            graph.retain(self.timeouts, reason="wire_bridge_ack_driver.timeouts"),
-            lifetime=self._lifetime,
-        )
-        registered_child = False
-        try:
-            self._bridge._register_child(self)
-            registered_child = True
-            self._lifetime.register_resource(self)
-        except BaseException:
-            if registered_child:
-                self._bridge._unregister_child(self)
-            self._scope.close()
-            if not self._released:
-                self._native.release()
-                self._released = True
-            raise
-
-    def __enter__(self) -> WireBridgeAckDriver:
-        self._check_thread()
-        return self
-
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-        self.release()
-
-    def release(self) -> None:
-        """Release the ack driver and its owned timeout retain."""
-
-        self._check_thread()
-        if self._released:
-            return
-        first_error = _record_lifecycle_error(None, self._close_public_subscriptions)
-        first_error = _record_lifecycle_error(first_error, self._scope.close)
-        self._native.release()
-        self._released = True
-        self._bridge._unregister_child(self)
-        self._lifetime.unregister_resource(self)
-        if first_error is not None:
-            raise first_error
-
-    def _close_from_graph(self) -> None:
-        if self._released:
-            return
-        first_error = _record_lifecycle_error(None, self._close_public_subscriptions)
-        first_error = _record_lifecycle_error(first_error, self._scope.close)
-        self._native.release()
-        self._released = True
-        if first_error is not None:
-            raise first_error
-
-    def _release_from_bridge(self) -> None:
-        if self._released:
-            return
-        first_error = _record_lifecycle_error(None, self._close_public_subscriptions)
-        first_error = _record_lifecycle_error(first_error, self._scope.close)
-        self._native.release()
-        self._released = True
-        self._lifetime.unregister_resource(self)
-        if first_error is not None:
-            raise first_error
-
-    def _check_thread(self) -> None:
-        if get_ident() != self._owner_thread:
-            raise GraphReflyRuntimeError("GraphReFly Python ack drivers are owner-thread bound")
-        if self._lifetime.closed and not self._released:
-            raise GraphReflyRuntimeError(self._lifetime.closed_message)
+        graph = self._graph
+        graph._check_thread()
+        if isinstance(error, bool) or error is SENTINEL:
+            msg = "an ERROR diagnostic cannot be a bool or SENTINEL"
+            raise GraphReflyValueError(msg)
+        graph._call(lambda: graph._kernel.error(self._id, error))
 
 
 class Graph:
-    """Graph-first authoring facade over the native Rust engine."""
+    """A graph of nodes: one single-threaded domain on the Python kernel."""
 
-    def __init__(self, name: str | None = None) -> None:
+    def __init__(
+        self,
+        name: str | None = None,
+        *,
+        report: Callable[[HostReport], object] | None = None,
+    ) -> None:
         self._owner_thread = get_ident()
         self._lifetime = _GraphLifetime(self._owner_thread)
-        self._native = _native.Graph(name)
+        self._name = name
+        self._report_to = report
+        self._kernel = _k.Graph(report=self._on_report)
+        self._nodes: dict[str, Node[Any]] = {}
+        self._callbacks: dict[str, tuple[Callable[..., object] | None, SetupCallback | None]] = {}
+        self._next_id = 0
+        self._next_sink = 0
         self._reentry_queue: GraphReentryQueue | None = None
-
-    @classmethod
-    def _from_native(
-        cls,
-        native: _native.Graph,
-        *,
-        owner_thread: int | None = None,
-        lifetime: _GraphLifetime | None = None,
-    ) -> Graph:
-        graph = cls.__new__(cls)
-        graph._owner_thread = get_ident() if owner_thread is None else owner_thread
-        graph._lifetime = (
-            _GraphLifetime(graph._owner_thread) if lifetime is None else lifetime
-        )
-        graph._native = native
-        graph._reentry_queue = None
-        return graph
 
     def __enter__(self) -> Graph:
         self._check_thread()
@@ -2603,6 +1528,12 @@ class Graph:
         self.close()
 
     @property
+    def name(self) -> str | None:
+        """Return the graph's name."""
+
+        return self._name
+
+    @property
     def closed(self) -> bool:
         """Return whether this graph facade has been closed."""
 
@@ -2610,28 +1541,361 @@ class Graph:
         return self._lifetime.is_closed()
 
     def close(self) -> None:
-        """Close this graph facade and release Python-owned resources."""
+        """Close this graph: release facade subscriptions, retains and async work."""
 
         self._check_thread(allow_closed=True)
-        try:
-            self._native.raise_pending_fatal()
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-        finally:
-            self._lifetime.close()
+        self._lifetime.close()
 
-    def checkpoint(self) -> GraphCheckpoint:
-        """Return a strict-JSON checkpoint for this graph."""
+    # ---- construction ----------------------------------------------------------
+
+    @overload
+    def state(self, value: T, name: str | None = None) -> State[T]: ...
+
+    @overload
+    def state(self, *, name: str | None = None) -> State[Any]: ...
+
+    def state(self, value: object = _ABSENT, name: str | None = None) -> State[Any]:
+        """Create a state node, with an initial value or empty."""
 
         self._check_thread()
-        try:
-            return self._native.checkpoint()
-        except ValueError as error:
-            raise GraphReflyCheckpointError(str(error)) from error
-        except RuntimeError as error:
-            raise GraphReflyCheckpointError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
+        node_id = self._new_id(name)
+        if value is _ABSENT:
+            self._call(lambda: self._kernel.state(node_id))
+        else:
+            _reject_awaitable(value)
+            _reject_sentinel_data(value)
+            self._call(lambda: self._kernel.state(node_id, value))
+        return cast("State[Any]", self._register(State(self, node_id), None, None))
+
+    @overload
+    def producer(self, callback: Callable[[], T], name: str | None = None) -> Node[T]: ...
+
+    @overload
+    def producer(
+        self, callback: None = None, name: str | None = None
+    ) -> Callable[[Callable[[], T]], Node[T]]: ...
+
+    def producer(
+        self, callback: Callable[[], T] | None = None, name: str | None = None
+    ) -> Node[T] | Callable[[Callable[[], T]], Node[T]]:
+        """Create or decorate a dependency-free node whose callback's value it sends
+        once per activation (Python sugar)."""
+
+        self._check_thread()
+        if callback is None:
+            return lambda fn: self.producer(fn, name or fn.__name__)
+        _reject_async_callable(callback)
+        produce = callback
+
+        def run(ctx: _k.Ctx) -> None:
+            value = _guarded(produce)
+            _reject_awaitable(value)
+            _reject_sentinel_data(value)
+            ctx.down([(_k.DATA, value)])
+
+        return self._add_node(name, [], run, callback, None)
+
+    @overload
+    def derived(
+        self, deps: Iterable[Node[Any]], callback: Callable[..., U], name: str | None = None
+    ) -> Node[U]: ...
+
+    @overload
+    def derived(
+        self, deps: Iterable[Node[Any]], callback: None = None, name: str | None = None
+    ) -> Callable[[Callable[..., U]], Node[U]]: ...
+
+    def derived(
+        self,
+        deps: Iterable[Node[Any]],
+        callback: Callable[..., U] | None = None,
+        name: str | None = None,
+    ) -> Node[U] | Callable[[Callable[..., U]], Node[U]]:
+        """Create or decorate a value-level node over dependencies.
+
+        Python sugar, not protocol: it runs once every dependency has a value and
+        recomputes when a dependency sent DATA in the wave.
+        """
+
+        self._check_thread()
+        dep_list = list(deps)
+        if callback is None:
+            return lambda fn: self.derived(dep_list, fn, name or fn.__name__)
+        _reject_async_callable(callback)
+        compute = callback
+
+        def run(ctx: _k.Ctx) -> None:
+            values = _gate(ctx)
+            if values is None:
+                return
+            value = _guarded(lambda: compute(*values))
+            _reject_awaitable(value)
+            _reject_sentinel_data(value)
+            ctx.down([(_k.DATA, value)])
+
+        return self._add_node(name, dep_list, run, callback, None)
+
+    @overload
+    def effect(
+        self, deps: Iterable[Node[Any]], callback: Callable[..., object], name: str | None = None
+    ) -> Node[object]: ...
+
+    @overload
+    def effect(
+        self, deps: Iterable[Node[Any]], callback: None = None, name: str | None = None
+    ) -> Callable[[Callable[..., object]], Node[object]]: ...
+
+    def effect(
+        self,
+        deps: Iterable[Node[Any]],
+        callback: Callable[..., object] | None = None,
+        name: str | None = None,
+    ) -> Node[object] | Callable[[Callable[..., object]], Node[object]]:
+        """Create or decorate a value-level side effect over dependencies (Python
+        sugar, with derived's gate); it sends nothing."""
+
+        self._check_thread()
+        dep_list = list(deps)
+        if callback is None:
+            return lambda fn: self.effect(dep_list, fn, name or fn.__name__)
+        _reject_async_callable(callback)
+        act = callback
+
+        def run(ctx: _k.Ctx) -> None:
+            values = _gate(ctx)
+            if values is None:
+                return
+            _reject_awaitable(_guarded(lambda: act(*values)))
+
+        return self._add_node(name, dep_list, run, callback, None)
+
+    @overload
+    def node(
+        self,
+        deps: Iterable[Node[Any]],
+        callback: NodeCallback,
+        name: str | None = None,
+        *,
+        complete: Policy = "auto",
+        error: Policy = "auto",
+        invalidate: Policy = "auto",
+        quiet: bool = False,
+        setup: SetupCallback | None = None,
+        recipe: Recipe | None = None,
+    ) -> Node[object]: ...
+
+    @overload
+    def node(
+        self,
+        deps: Iterable[Node[Any]],
+        callback: None = None,
+        name: str | None = None,
+        *,
+        complete: Policy = "auto",
+        error: Policy = "auto",
+        invalidate: Policy = "auto",
+        quiet: bool = False,
+        setup: SetupCallback | None = None,
+        recipe: Recipe | None = None,
+    ) -> Callable[[NodeCallback], Node[object]]: ...
+
+    def node(
+        self,
+        deps: Iterable[Node[Any]],
+        callback: NodeCallback | None = None,
+        name: str | None = None,
+        *,
+        complete: Policy = "auto",
+        error: Policy = "auto",
+        invalidate: Policy = "auto",
+        quiet: bool = False,
+        setup: SetupCallback | None = None,
+        recipe: Recipe | None = None,
+    ) -> Node[object] | Callable[[NodeCallback], Node[object]]:
+        """Create or decorate an advanced ``Ctx``-level node.
+
+        Its callback runs on every wave it is given, with no first-run gate.
+        ``complete``, ``error`` and ``invalidate`` choose each kind's auto or manual
+        policy; a quiet node passes no pending mark on. ``setup(ctx)`` runs once per
+        lifetime before the first run and may return the lifetime's cleanup. A
+        ``recipe`` makes the node restorable.
+        """
+
+        self._check_thread()
+        dep_list = list(deps)
+        for label, policy in (("complete", complete), ("error", error), ("invalidate", invalidate)):
+            if policy not in ("auto", "manual"):
+                msg = f"{label} must be 'auto' or 'manual'"
+                raise GraphReflyValueError(msg)
+        _reject_non_bool("quiet", quiet)
+        if recipe is not None and not isinstance(recipe, Recipe):
+            msg = "recipe must be a graphrefly.Recipe"
+            raise GraphReflyValueError(msg)
+        if callback is None:
+            return lambda fn: self.node(
+                dep_list,
+                fn,
+                name or getattr(fn, "__name__", None),
+                complete=complete,
+                error=error,
+                invalidate=invalidate,
+                quiet=quiet,
+                setup=setup,
+                recipe=recipe,
+            )
+        _reject_async_callable(callback)
+        if setup is not None:
+            _reject_async_callable(setup)
+        return self._add_node(
+            name,
+            dep_list,
+            self._ctx_callback(callback),
+            callback,
+            setup,
+            kernel_setup=self._ctx_setup(setup),
+            complete=complete,
+            error=error,
+            invalidate=invalidate,
+            quiet=quiet,
+            recipe=recipe,
+        )
+
+    # ---- requests ----------------------------------------------------------------
+
+    def batch(self, callback: Callable[[], R]) -> R:
+        """Run ``callback`` at once and commit its host inputs as one wave.
+
+        Nothing is delivered while it runs; it returns what ``callback`` returned. A
+        callback that raises commits nothing. During a wave the commit waits until
+        the wave ends.
+        """
+
+        self._check_thread()
+        _reject_async_callable(callback)
+        return self._call(lambda: self._kernel.batch(callback))
+
+    def replace(
+        self,
+        node: Node[Any],
+        deps: Iterable[Node[Any]],
+        callback: NodeCallback,
+        *,
+        setup: SetupCallback | None = None,
+        recipe: Recipe | None = None,
+    ) -> None:
+        """Give a computed node a new instance under the same name and subscribers."""
+
+        self._check_thread()
+        node_id = self._node_id(node)
+        ids = [self._node_id(dep) for dep in deps]
+        _reject_async_callable(callback)
+        if recipe is not None and not isinstance(recipe, Recipe):
+            msg = "recipe must be a graphrefly.Recipe"
+            raise GraphReflyValueError(msg)
+        fn = _guard_fn(self._ctx_callback(callback))
+        kernel_setup = _guard_setup(self._ctx_setup(setup))
+        kernel_recipe = None if recipe is None else {"ref": recipe.ref, "config": recipe.config}
+
+        def run() -> None:
+            self._kernel.replace(node_id, ids, fn, setup=kernel_setup, recipe=kernel_recipe)
+
+        self._call(run)
+        self._callbacks[node_id] = (callback, setup)
+
+    # ---- reads -----------------------------------------------------------------------
+
+    def definition(self, node: Node[Any]) -> NodeDefinition:
+        """Return the node's current definition; reading changes nothing."""
+
+        self._check_thread()
+        node_id = self._node_id(node)
+        definition = self._kernel.definition(node_id)
+        callback, setup = self._callbacks.get(node_id, (None, None))
+        recipe = definition.recipe
+        return NodeDefinition(
+            tuple(self._nodes[dep] for dep in definition.deps),
+            callback,
+            setup,
+            None if not isinstance(recipe, dict) else Recipe(recipe["ref"], recipe.get("config")),
+            definition.complete,
+            definition.error,
+            definition.invalidate,
+            definition.quiet,
+        )
+
+    def describe(self) -> dict[str, Any]:
+        """Return the topology as JSON-ready data: each node with its current deps."""
+
+        self._check_thread()
+        nodes: list[dict[str, Any]] = []
+        for described in self._kernel.describe():
+            held = self._kernel.get(described.id)
+            entry: dict[str, Any] = {
+                "name": described.id,
+                "kind": described.kind,
+                "deps": list(described.deps),
+                "quiet": described.quiet,
+                "has_value": held.has,
+            }
+            if held.has:
+                entry["value"] = held.value
+            nodes.append(entry)
+        return {"name": self._name, "nodes": nodes}
+
+    def observe(
+        self,
+        callback: Callable[[GraphEvent], object],
+        *,
+        on_error: ObserverErrorHandler | None = None,
+    ) -> Subscription:
+        """Observe every array any node publishes, without activating anything."""
+
+        self._check_thread()
+        _reject_async_callable(callback)
+        if on_error is not None:
+            _reject_async_callable(on_error)
+        callback_errors: list[SubscriberCallbackError] = []
+        seq = [0]
+
+        def observer(node_id: str, array: tuple[_k.Message, ...]) -> None:
+            seq[0] += 1
+            event = GraphEvent(node_id, tuple(_message(m) for m in array), seq[0])
+            try:
+                _reject_awaitable(callback(event))
+            except Exception as error:
+                _record_observer_error(error, callback_errors, on_error)
+
+        remove = self._kernel.observe(observer)
+        subscription = Subscription(
+            remove,
+            owner_thread=self._owner_thread,
+            lifetime=self._lifetime,
+            callback_errors=callback_errors,
+        )
+        self._lifetime.register(subscription)
+        return subscription
+
+    # ---- host lifetime --------------------------------------------------------------
+
+    def retain(self, node: Node[T], *, reason: str | None = None) -> Retain:
+        """Keep a node active until the returned retain token is released."""
+
+        self._check_thread()
+        if reason is not None and not isinstance(reason, str):
+            msg = "retain reason must be a string when provided"
+            raise GraphReflyValueError(msg)
+        node_id = self._node_id(node)
+        sink_id = self._new_sink_id()
+        subscription = Subscription(
+            lambda: self._kernel.unsubscribe(sink_id, node_id),
+            owner_thread=self._owner_thread,
+            lifetime=self._lifetime,
+        )
+        self._lifetime.register(subscription)
+        self._call(lambda: self._kernel.subscribe(sink_id, node_id))
+        retain = Retain(subscription, owner_thread=self._owner_thread, lifetime=self._lifetime)
+        self._lifetime.register_retain(retain)
+        return retain
 
     def reentry_queue(self) -> GraphReentryQueue:
         """Return this graph's explicit owner-thread async re-entry queue."""
@@ -2645,460 +1909,231 @@ class Graph:
             )
         return self._reentry_queue
 
-    def retain(self, node: Node[T], *, reason: str | None = None) -> Retain:
-        """Keep a graph-local node active until the returned retain token is released."""
+    def checkpoint(self) -> GraphCheckpoint:
+        """Capture this graph at a wave boundary as strict JSON (R-checkpoint)."""
 
         self._check_thread()
-        if reason is not None and not isinstance(reason, str):
-            msg = "retain reason must be a string when provided"
+        try:
+            return _checkpoint.capture(self._kernel)
+        except _checkpoint.CheckpointError as error:
+            raise GraphReflyCheckpointError(str(error)) from error
+
+    # ---- internals ---------------------------------------------------------------------
+
+    def _ctx_callback(self, callback: NodeCallback) -> Callable[[_k.Ctx], None]:
+        def run(ctx: _k.Ctx) -> None:
+            _reject_awaitable(_guarded(lambda: callback(Ctx(ctx, self))))
+
+        return run
+
+    def _ctx_setup(self, setup: SetupCallback | None) -> Callable[[_k.Ctx], object] | None:
+        if setup is None:
+            return None
+        start = setup
+
+        def run(ctx: _k.Ctx) -> object:
+            cleanup = _guarded(lambda: start(Ctx(ctx, self)))
+            _reject_awaitable(cleanup)
+            if cleanup is None:
+                return None
+            if not callable(cleanup):
+                msg = "a setup returns its lifetime's cleanup, a callable, or None"
+                raise GraphCallbackError("GraphReflyValueError", msg)
+            stop = cast("Callable[[], object]", cleanup)
+
+            def close() -> None:
+                _reject_awaitable(stop())
+
+            return close
+
+        return run
+
+    def _add_node(
+        self,
+        name: str | None,
+        deps: list[Node[Any]],
+        fn: Callable[[_k.Ctx], None],
+        callback: Callable[..., object] | None,
+        setup: SetupCallback | None,
+        *,
+        kernel_setup: Callable[[_k.Ctx], object] | None = None,
+        complete: Policy = "auto",
+        error: Policy = "auto",
+        invalidate: Policy = "auto",
+        quiet: bool = False,
+        recipe: Recipe | None = None,
+    ) -> Node[Any]:
+        ids = [self._node_id(dep) for dep in deps]
+        node_id = self._new_id(name)
+        kernel_recipe = None if recipe is None else {"ref": recipe.ref, "config": recipe.config}
+        guarded = _guard_fn(fn)
+        guarded_setup = _guard_setup(kernel_setup)
+
+        def add() -> None:
+            self._kernel.node(
+                node_id,
+                ids,
+                guarded,
+                complete=complete,
+                error=error,
+                invalidate=invalidate,
+                quiet=quiet,
+                setup=guarded_setup,
+                recipe=kernel_recipe,
+            )
+
+        self._call(add)
+        return self._register(Node(self, node_id), callback, setup)
+
+    def _source(
+        self,
+        name: str | None,
+        start: Callable[[_k.Ctx], Callable[[], None] | None],
+    ) -> Node[Any]:
+        """A dependency-free node whose setup starts host work at each activation and
+        whose cleanup stops it; the work sends its results as later waves."""
+
+        def run(ctx: _k.Ctx) -> None:
+            return None
+
+        return self._add_node(name, [], run, None, None, kernel_setup=start)
+
+    def _register(
+        self,
+        node: Node[Any],
+        callback: Callable[..., object] | None,
+        setup: SetupCallback | None,
+    ) -> Node[Any]:
+        self._nodes[node.name] = node
+        self._callbacks[node.name] = (callback, setup)
+        return node
+
+    def _new_id(self, name: str | None) -> str:
+        if name is None:
+            while True:
+                self._next_id += 1
+                node_id = f"#{self._next_id}"
+                if node_id not in self._nodes:
+                    return node_id
+        if not isinstance(name, str) or not name or name.startswith("#"):
+            msg = "a node name is a non-empty str that does not start with '#'"
             raise GraphReflyValueError(msg)
-        native = self._native_node(node)
-
-        try:
-            subscription = Subscription(
-                native.subscribe(lambda _kind, _value: None),
-                owner_thread=self._owner_thread,
-                lifetime=self._lifetime,
-            )
-            self._lifetime.register(subscription)
-            retain = Retain(
-                subscription,
-                owner_thread=self._owner_thread,
-                lifetime=self._lifetime,
-            )
-            self._lifetime.register_retain(retain)
-            return retain
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-
-    def state(self, value: T, name: str | None = None) -> Node[T]:
-        """Create a writable graph state node with initial DATA."""
-
-        self._check_thread()
-        _reject_awaitable(value)
-        _reject_sentinel_data(value)
-        try:
-            return Node(
-                self._native.state(value, name),
-                owner_thread=self._owner_thread,
-                lifetime=self._lifetime,
-                writable=True,
-            )
-        except ValueError as error:
-            raise GraphReflyValueError(str(error)) from error
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-
-    @overload
-    def producer(self, callback: Callable[[], T], name: str | None = None) -> Node[T]: ...
-
-    @overload
-    def producer(
-        self,
-        callback: None = None,
-        name: str | None = None,
-    ) -> Callable[[Callable[[], T]], Node[T]]: ...
-
-    def producer(
-        self,
-        callback: Callable[[], T] | None = None,
-        name: str | None = None,
-    ) -> Node[T] | Callable[[Callable[[], T]], Node[T]]:
-        """Create or decorate a zero-dependency producer node."""
-
-        self._check_thread()
-        if callback is None:
-            return lambda fn: self.producer(fn, name or fn.__name__)
-        _reject_async_callable(callback)
-
-        def native_callback() -> T:
-            value = callback()
-            _reject_awaitable(value)
-            _reject_sentinel_data(value)
-            return value
-
-        try:
-            return Node(
-                self._native.producer(native_callback, name),
-                owner_thread=self._owner_thread,
-                lifetime=self._lifetime,
-            )
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-
-    @overload
-    def derived(
-        self,
-        deps: Iterable[Node[Any]],
-        callback: Callable[..., U],
-        name: str | None = None,
-    ) -> Node[U]: ...
-
-    @overload
-    def derived(
-        self,
-        deps: Iterable[Node[Any]],
-        callback: None = None,
-        name: str | None = None,
-    ) -> Callable[[Callable[..., U]], Node[U]]: ...
-
-    def derived(
-        self,
-        deps: Iterable[Node[Any]],
-        callback: Callable[..., U] | None = None,
-        name: str | None = None,
-    ) -> Node[U] | Callable[[Callable[..., U]], Node[U]]:
-        """Create or decorate a value-level derived node over dependencies."""
-
-        self._check_thread()
-        deps = list(deps)
-        if callback is None:
-            return lambda fn: self.derived(deps, fn, name or fn.__name__)
-        _reject_async_callable(callback)
-        native_deps = self._native_deps(deps)
-
-        def native_callback(*values: object) -> U:
-            value = callback(*values)
-            _reject_awaitable(value)
-            _reject_sentinel_data(value)
-            return value
-
-        try:
-            return Node(
-                self._native.derived(native_deps, native_callback, name),
-                owner_thread=self._owner_thread,
-                lifetime=self._lifetime,
-            )
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-
-    @overload
-    def node(
-        self,
-        deps: Iterable[Node[Any]],
-        callback: Callable[[Ctx], object],
-        name: str | None = None,
-        *,
-        partial: bool = False,
-        complete_when_deps_complete: bool = True,
-        error_when_deps_error: bool = True,
-        terminal_as_real_input: bool = False,
-        pausable: PausableMode = True,
-        pull_id: str | None = None,
-        restore: RestoreRef | None = None,
-    ) -> Node[object]: ...
-
-    @overload
-    def node(
-        self,
-        deps: Iterable[Node[Any]],
-        callback: None = None,
-        name: str | None = None,
-        *,
-        partial: bool = False,
-        complete_when_deps_complete: bool = True,
-        error_when_deps_error: bool = True,
-        terminal_as_real_input: bool = False,
-        pausable: PausableMode = True,
-        pull_id: str | None = None,
-        restore: RestoreRef | None = None,
-    ) -> Callable[[Callable[[Ctx], object]], Node[object]]: ...
-
-    def node(
-        self,
-        deps: Iterable[Node[Any]],
-        callback: Callable[[Ctx], object] | None = None,
-        name: str | None = None,
-        *,
-        partial: bool = False,
-        complete_when_deps_complete: bool = True,
-        error_when_deps_error: bool = True,
-        terminal_as_real_input: bool = False,
-        pausable: PausableMode = True,
-        pull_id: str | None = None,
-        restore: RestoreRef | None = None,
-    ) -> Node[object] | Callable[[Callable[[Ctx], object]], Node[object]]:
-        """Create or decorate an advanced `Ctx`-level graph node."""
-
-        self._check_thread()
-        deps = list(deps)
-        _reject_non_bool("partial", partial)
-        _reject_non_bool("complete_when_deps_complete", complete_when_deps_complete)
-        _reject_non_bool("error_when_deps_error", error_when_deps_error)
-        _reject_non_bool("terminal_as_real_input", terminal_as_real_input)
-        native_pausable = _native_pausable(pausable)
-        if pull_id is not None:
-            _reject_non_string_pull_id(pull_id)
-        if pull_id is not None and pausable is False:
-            msg = "pull_id nodes cannot use pausable=False in the Python facade"
+        if name in self._nodes:
+            msg = f"node name {name!r} is already used in this graph"
             raise GraphReflyValueError(msg)
-        if restore is not None and not isinstance(restore, RestoreRef):
-            msg = "restore must be created by graphrefly.restore_ref(...)"
+        return name
+
+    def _new_sink_id(self) -> str:
+        self._next_sink += 1
+        return f"sink#{self._next_sink}"
+
+    def _node_id(self, node: Node[Any]) -> str:
+        if not isinstance(node, Node):
+            msg = "dependencies must be graphrefly.Node objects"
             raise GraphReflyValueError(msg)
-        if callback is None:
-            return lambda fn: self.node(
-                deps,
-                fn,
-                name or fn.__name__,
-                partial=partial,
-                complete_when_deps_complete=complete_when_deps_complete,
-                error_when_deps_error=error_when_deps_error,
-                terminal_as_real_input=terminal_as_real_input,
-                pausable=pausable,
-                pull_id=pull_id,
-                restore=restore,
-            )
-        _reject_async_callable(callback)
-        native_deps = self._native_deps(deps)
-
-        def native_callback(native_ctx: _native.Ctx) -> None:
-            value = callback(
-                Ctx(
-                    native_ctx,
-                    owner_thread=self._owner_thread,
-                    lifetime=self._lifetime,
-                )
-            )
-            _reject_awaitable(value)
-
-        try:
-            return Node(
-                self._native.node(
-                    native_deps,
-                    native_callback,
-                    name,
-                    partial,
-                    complete_when_deps_complete,
-                    error_when_deps_error,
-                    terminal_as_real_input,
-                    native_pausable,
-                    pull_id,
-                    restore.ref if restore is not None else None,
-                    restore.config if restore is not None else None,
-                    restore.config_version if restore is not None else None,
-                ),
-                owner_thread=self._owner_thread,
-                lifetime=self._lifetime,
-            )
-        except ValueError as error:
-            raise GraphReflyValueError(str(error)) from error
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-
-    @overload
-    def effect(
-        self,
-        deps: Iterable[Node[Any]],
-        callback: Callable[..., object],
-        name: str | None = None,
-    ) -> Node[object]: ...
-
-    @overload
-    def effect(
-        self,
-        deps: Iterable[Node[Any]],
-        callback: None = None,
-        name: str | None = None,
-    ) -> Callable[[Callable[..., object]], Node[object]]: ...
-
-    def effect(
-        self,
-        deps: Iterable[Node[Any]],
-        callback: Callable[..., object] | None = None,
-        name: str | None = None,
-    ) -> Node[object] | Callable[[Callable[..., object]], Node[object]]:
-        """Create or decorate a value-level effect node over dependencies."""
-
-        self._check_thread()
-        deps = list(deps)
-        if callback is None:
-            return lambda fn: self.effect(deps, fn, name or fn.__name__)
-        _reject_async_callable(callback)
-        native_deps = self._native_deps(deps)
-
-        def native_callback(*values: object) -> None:
-            value = callback(*values)
-            _reject_awaitable(value)
-
-        try:
-            return Node(
-                self._native.effect(native_deps, native_callback, name),
-                owner_thread=self._owner_thread,
-                lifetime=self._lifetime,
-            )
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-
-    def batch(self, callback: Callable[[], object]) -> None:
-        """Run synchronous graph mutations inside one native batch boundary."""
-
-        self._check_thread()
-        _reject_async_callable(callback)
-
-        def native_callback() -> None:
-            result = callback()
-            _reject_awaitable(result)
-
-        try:
-            self._native.batch(native_callback)
-        except ValueError:
-            raise
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-
-    def describe(self) -> dict[str, Any]:
-        """Return the current JSON-serializable topology snapshot."""
-
-        self._check_thread()
-        try:
-            return _normalize_describe(self._native.describe())
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-
-    def pause(self, node: Node[Any], lock_id: str) -> None:
-        """Pause a graph-local node using a caller-provided lock id."""
-
-        self._check_thread()
-        _reject_non_string_lock_id(lock_id)
-        native = self._native_node(node)
-        try:
-            native.pause(lock_id)
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-
-    def resume(self, node: Node[Any], lock_id: str) -> None:
-        """Resume a graph-local node for the given lock id."""
-
-        self._check_thread()
-        _reject_non_string_lock_id(lock_id)
-        native = self._native_node(node)
-        try:
-            native.resume(lock_id)
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-
-    def invalidate(self, node: Node[Any]) -> None:
-        """Invalidate a graph-local node through the public graph facade."""
-
-        self._check_thread()
-        native = self._native_node(node)
-        try:
-            native.invalidate()
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-
-    def observe(
-        self,
-        callback: Callable[[GraphEvent], object],
-        *,
-        on_error: ObserverErrorHandler | None = None,
-    ) -> Subscription:
-        """Subscribe to graph-level observation events."""
-
-        self._check_thread()
-        _reject_async_callable(callback)
-        if on_error is not None:
-            _reject_async_callable(on_error)
-        callback_errors: list[SubscriberCallbackError] = []
-
-        def native_callback(path: str, kind: str, value: object, tier: int, seq: int) -> None:
-            event = GraphEvent(
-                path=path,
-                message=_message_from_native(kind, value),
-                tier=tier,
-                seq=seq,
-            )
-            try:
-                result = callback(event)
-                _reject_awaitable(result)
-            except Exception as error:
-                _record_observer_error(error, callback_errors, on_error)
-
-        try:
-            subscription = Subscription(
-                self._native.observe(native_callback),
-                owner_thread=self._owner_thread,
-                lifetime=self._lifetime,
-                callback_errors=callback_errors,
-            )
-            self._lifetime.register(subscription)
-            return subscription
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
-
-    def _native_node(self, node: Node[Any]) -> _native.Node:
-        node._check_thread()
-        if node._lifetime is not self._lifetime:
+        if node._graph is not self:
             msg = "node must belong to this GraphReFly graph"
             raise GraphReflyRuntimeError(msg)
-        return node._native
+        return node._id
 
-    def _native_deps(self, deps: Iterable[Node[Any]]) -> list[_native.Node]:
-        native_deps = []
-        for dep in deps:
-            native_deps.append(self._native_node(dep))
-        return native_deps
+    def _call(self, op: Callable[[], R]) -> R:
+        """Run a kernel host call, mapping its failures to the facade's taxonomy."""
 
-    def _conformance_find(self, id: str) -> Node[Any]:
-        self._check_thread()
-        if not isinstance(id, str):
-            msg = "conformance id must be a str"
-            raise GraphReflyValueError(msg)
         try:
-            native = self._native._find(id)
-        except RuntimeError as error:
+            return op()
+        except _k.KernelError as error:
             raise GraphReflyRuntimeError(str(error)) from error
+        except Exception:
+            raise
         except BaseException as error:
             _poison_on_fatal(self._lifetime, error)
-        if native is None:
-            msg = f"conformance node '{id}' was not found"
-            raise GraphReflyRuntimeError(msg)
-        return Node(native, owner_thread=self._owner_thread, lifetime=self._lifetime)
 
-    def _conformance_set_state(self, id: str, value: object) -> None:
-        self._check_thread()
-        if not isinstance(id, str):
-            msg = "conformance id must be a str"
-            raise GraphReflyValueError(msg)
-        _reject_awaitable(value)
-        _reject_sentinel_data(value)
-        try:
-            self._native._set_state_by_id(id, value)
-        except RuntimeError as error:
-            raise GraphReflyRuntimeError(str(error)) from error
-        except BaseException as error:
-            _poison_on_fatal(self._lifetime, error)
+    def _on_report(self, report: _k.Report) -> None:
+        if self._report_to is None:
+            _LOGGER.error("graphrefly %s failed: %r", report.source, report.error)
+            return
+        _reject_awaitable(self._report_to(HostReport(report.source, report.error)))
 
     def _check_thread(self, *, allow_closed: bool = False) -> None:
         if get_ident() != self._owner_thread:
-            msg = "GraphReFly Python graphs are bound to their creating thread in v0"
+            msg = "GraphReFly Python graphs are bound to their creating thread"
             raise GraphReflyRuntimeError(msg)
         if self._lifetime.is_closed() and not allow_closed:
             raise GraphReflyRuntimeError(self._lifetime.closed_message)
+
+
+def _gate(ctx: _k.Ctx) -> list[object] | None:
+    """derived's sugar: every dependency has a value and one sent DATA in this wave."""
+
+    deps = ctx.deps
+    fresh = False
+    for dep in deps:
+        if not dep.has:
+            return None
+        if not fresh and any(dep.waves):
+            fresh = True
+    if not fresh:
+        return None
+    return [dep.value for dep in deps]
+
+
+def _guarded[V](call: Callable[[], V]) -> V:
+    """Run a user callback; an Exception becomes a GraphCallbackError, which the kernel
+    turns into the node's ERROR. A BaseException passes through untouched."""
+
+    try:
+        return call()
+    except GraphCallbackError:
+        raise
+    except Exception as error:
+        raise _callback_error(error) from error
+
+
+type _AsyncBody = Callable[
+    [_AsyncCompletionGate | _QueuedCompletionGate, _AsyncJob], AsyncJobFactory
+]
+
+
+def _start_async(
+    graph: Graph,
+    ctx: _k.Ctx,
+    runner: AsyncRunner,
+    reentry_queue: GraphReentryQueue | None,
+    body: _AsyncBody,
+) -> Callable[[], None] | None:
+    """Start one GraphReFly-owned async job for a node lifetime; return its stop."""
+
+    if reentry_queue is not None and not reentry_queue._can_accept_activation():
+        return None
+    gate = _AsyncCompletionGate(
+        ctx,
+        owner_thread=graph._owner_thread,
+        lifetime=graph._lifetime,
+        reentry_queue=reentry_queue,
+    )
+    job = _AsyncJob(runner, graph._lifetime, reentry_queue)
+    if not job.active:
+        gate.close()
+        return None
+    completion = gate.queued_proxy() if reentry_queue is not None else gate
+    job.start(body(completion, job))
+
+    def stop() -> None:
+        gate.close()
+        job.cancel()
+
+    return stop
+
+
+def _settle_async_error(
+    gate: _AsyncCompletionGate | _QueuedCompletionGate, job: _AsyncJob, error: BaseException
+) -> None:
+    if _should_suppress_async_error(job, error):
+        return
+    if isinstance(error, Exception):
+        gate.error(error, job.can_apply_completion)
+    else:
+        gate.fatal(error, job.can_apply_completion)
 
 
 def from_awaitable[T](
@@ -3107,32 +2142,17 @@ def from_awaitable[T](
     factory: Callable[[], Awaitable[T]],
     *,
     name: str | None = None,
-    pausable: PausableMode = True,
 ) -> Node[T]:
-    """Create a source from a fresh awaitable produced on each activation."""
+    """Create a source from a fresh awaitable produced on each activation.
+
+    It sends the awaited value and COMPLETE in one array, or ERROR. Its lifetime's
+    close cancels the job.
+    """
 
     _validate_async_source_args(graph, runner, factory)
-    native_pausable = _native_pausable(pausable)
     reentry_queue = _runner_reentry_queue(graph, runner)
 
-    def activate(native_ctx: Any) -> None:
-        if reentry_queue is not None and not reentry_queue._can_accept_activation():
-            return
-        native_gate = _AsyncCompletionGate(
-            native_ctx,
-            owner_thread=graph._owner_thread,
-            lifetime=graph._lifetime,
-            reentry_queue=reentry_queue,
-        )
-        job = _AsyncJob(runner, graph._lifetime, reentry_queue)
-        if not job.active:
-            native_gate.close()
-            return
-        native_gate.register_deactivation(job.cancel)
-        completion_gate = (
-            native_gate.queued_proxy() if reentry_queue is not None else native_gate
-        )
-
+    def body(gate: _AsyncCompletionGate | _QueuedCompletionGate, job: _AsyncJob) -> AsyncJobFactory:
         async def run() -> None:
             try:
                 if not job.active:
@@ -3142,28 +2162,18 @@ def from_awaitable[T](
                     msg = "from_awaitable factory must return an awaitable"
                     raise GraphReflyRuntimeError(msg)
                 value = await awaitable
-                completion_gate.resolve(value, job.can_apply_completion)
-            except Exception as error:
-                if not _should_suppress_async_error(job, error):
-                    completion_gate.error(error, job.can_apply_completion)
+                gate.resolve(value, job.can_apply_completion)
             except BaseException as error:
-                if not _should_suppress_async_error(job, error):
-                    completion_gate.fatal(error, job.can_apply_completion)
+                _settle_async_error(gate, job, error)
             finally:
                 job.finish()
 
-        job.start(run)
+        return run
 
-    try:
-        return Node(
-            graph._native._async_source(activate, name, native_pausable),
-            owner_thread=graph._owner_thread,
-            lifetime=graph._lifetime,
-        )
-    except RuntimeError as error:
-        raise GraphReflyRuntimeError(str(error)) from error
-    except BaseException as error:
-        _poison_on_fatal(graph._lifetime, error)
+    return cast(
+        "Node[T]",
+        graph._source(name, lambda ctx: _start_async(graph, ctx, runner, reentry_queue, body)),
+    )
 
 
 def from_async_iter[T](
@@ -3172,32 +2182,16 @@ def from_async_iter[T](
     factory: Callable[[], AsyncIterable[T]],
     *,
     name: str | None = None,
-    pausable: PausableMode = True,
 ) -> Node[T]:
-    """Create a source from a fresh async iterable produced on each activation."""
+    """Create a source from a fresh async iterable produced on each activation.
+
+    Each yielded value is one DATA array; the end is COMPLETE, a failure ERROR.
+    """
 
     _validate_async_source_args(graph, runner, factory)
-    native_pausable = _native_pausable(pausable)
     reentry_queue = _runner_reentry_queue(graph, runner)
 
-    def activate(native_ctx: Any) -> None:
-        if reentry_queue is not None and not reentry_queue._can_accept_activation():
-            return
-        native_gate = _AsyncCompletionGate(
-            native_ctx,
-            owner_thread=graph._owner_thread,
-            lifetime=graph._lifetime,
-            reentry_queue=reentry_queue,
-        )
-        job = _AsyncJob(runner, graph._lifetime, reentry_queue)
-        if not job.active:
-            native_gate.close()
-            return
-        native_gate.register_deactivation(job.cancel)
-        completion_gate = (
-            native_gate.queued_proxy() if reentry_queue is not None else native_gate
-        )
-
+    def body(gate: _AsyncCompletionGate | _QueuedCompletionGate, job: _AsyncJob) -> AsyncJobFactory:
         async def run() -> None:
             try:
                 if not job.active:
@@ -3209,29 +2203,19 @@ def from_async_iter[T](
                 async for value in iterable:
                     if not job.active:
                         return
-                    completion_gate.emit(value, job.can_apply_completion)
-                completion_gate.complete(job.can_apply_completion)
-            except Exception as error:
-                if not _should_suppress_async_error(job, error):
-                    completion_gate.error(error, job.can_apply_completion)
+                    gate.emit(value, job.can_apply_completion)
+                gate.complete(job.can_apply_completion)
             except BaseException as error:
-                if not _should_suppress_async_error(job, error):
-                    completion_gate.fatal(error, job.can_apply_completion)
+                _settle_async_error(gate, job, error)
             finally:
                 job.finish()
 
-        job.start(run)
+        return run
 
-    try:
-        return Node(
-            graph._native._async_source(activate, name, native_pausable),
-            owner_thread=graph._owner_thread,
-            lifetime=graph._lifetime,
-        )
-    except RuntimeError as error:
-        raise GraphReflyRuntimeError(str(error)) from error
-    except BaseException as error:
-        _poison_on_fatal(graph._lifetime, error)
+    return cast(
+        "Node[T]",
+        graph._source(name, lambda ctx: _start_async(graph, ctx, runner, reentry_queue, body)),
+    )
 
 
 def from_http(
@@ -3241,74 +2225,39 @@ def from_http(
     driver: LocalHttpDriver | None = None,
     runner: AsyncRunner | None = None,
     name: str | None = None,
-    pausable: PausableMode = True,
 ) -> Node[HttpResponse]:
-    """Create a source from one host-supplied HTTP request driver call."""
+    """Create a source from one host-supplied HTTP request driver call per activation."""
 
     request = _normalize_http_request(request_or_url)
     _validate_network_source_args(
-        graph,
-        runner,
-        driver,
-        driver_method="request",
-        driver_name="LocalHttpDriver",
+        graph, runner, driver, driver_method="request", driver_name="LocalHttpDriver"
     )
     assert runner is not None
     assert driver is not None
-    native_pausable = _native_pausable(pausable)
+    http = driver
     reentry_queue = _runner_reentry_queue(graph, runner)
 
-    def activate(native_ctx: Any) -> None:
-        if reentry_queue is not None and not reentry_queue._can_accept_activation():
-            return
-        native_gate = _AsyncCompletionGate(
-            native_ctx,
-            owner_thread=graph._owner_thread,
-            lifetime=graph._lifetime,
-            reentry_queue=reentry_queue,
-        )
-        job = _AsyncJob(runner, graph._lifetime, reentry_queue)
-        if not job.active:
-            native_gate.close()
-            return
-        native_gate.register_deactivation(job.cancel)
-        completion_gate = (
-            native_gate.queued_proxy() if reentry_queue is not None else native_gate
-        )
-
+    def body(gate: _AsyncCompletionGate | _QueuedCompletionGate, job: _AsyncJob) -> AsyncJobFactory:
         async def run() -> None:
             try:
                 if not job.active:
                     return
-                response = driver.request(request)
+                response = http.request(request)
                 if not isawaitable(response):
                     msg = "LocalHttpDriver.request(request) must return an awaitable"
                     raise GraphReflyRuntimeError(msg)
-                completion_gate.resolve(
-                    _normalize_http_response(await response),
-                    job.can_apply_completion,
-                )
-            except Exception as error:
-                if not _should_suppress_async_error(job, error):
-                    completion_gate.error(error, job.can_apply_completion)
+                gate.resolve(_normalize_http_response(await response), job.can_apply_completion)
             except BaseException as error:
-                if not _should_suppress_async_error(job, error):
-                    completion_gate.fatal(error, job.can_apply_completion)
+                _settle_async_error(gate, job, error)
             finally:
                 job.finish()
 
-        job.start(run)
+        return run
 
-    try:
-        return Node(
-            graph._native._async_source(activate, name, native_pausable),
-            owner_thread=graph._owner_thread,
-            lifetime=graph._lifetime,
-        )
-    except RuntimeError as error:
-        raise GraphReflyRuntimeError(str(error)) from error
-    except BaseException as error:
-        _poison_on_fatal(graph._lifetime, error)
+    return cast(
+        "Node[HttpResponse]",
+        graph._source(name, lambda ctx: _start_async(graph, ctx, runner, reentry_queue, body)),
+    )
 
 
 def from_sse(
@@ -3318,41 +2267,19 @@ def from_sse(
     stream_driver: LocalHttpStreamDriver | None = None,
     runner: AsyncRunner | None = None,
     name: str | None = None,
-    pausable: PausableMode = True,
 ) -> Node[SseEvent]:
     """Create an SSE source over a host-supplied HTTP byte-stream driver."""
 
     request = _sse_request_to_http_stream_request(_normalize_http_request(request_or_url))
     _validate_network_source_args(
-        graph,
-        runner,
-        stream_driver,
-        driver_method="stream",
-        driver_name="LocalHttpStreamDriver",
+        graph, runner, stream_driver, driver_method="stream", driver_name="LocalHttpStreamDriver"
     )
     assert runner is not None
     assert stream_driver is not None
-    native_pausable = _native_pausable(pausable)
+    streams = stream_driver
     reentry_queue = _runner_reentry_queue(graph, runner)
 
-    def activate(native_ctx: Any) -> None:
-        if reentry_queue is not None and not reentry_queue._can_accept_activation():
-            return
-        native_gate = _AsyncCompletionGate(
-            native_ctx,
-            owner_thread=graph._owner_thread,
-            lifetime=graph._lifetime,
-            reentry_queue=reentry_queue,
-        )
-        job = _AsyncJob(runner, graph._lifetime, reentry_queue)
-        if not job.active:
-            native_gate.close()
-            return
-        native_gate.register_deactivation(job.cancel)
-        completion_gate = (
-            native_gate.queued_proxy() if reentry_queue is not None else native_gate
-        )
-
+    def body(gate: _AsyncCompletionGate | _QueuedCompletionGate, job: _AsyncJob) -> AsyncJobFactory:
         async def run() -> None:
             parser = _SseParser()
             saw_head = False
@@ -3360,13 +2287,13 @@ def from_sse(
             try:
                 if not job.active:
                     return
-                stream = stream_driver.stream(request)
+                stream = streams.stream(request)
                 if not hasattr(stream, "__aiter__"):
                     msg = "LocalHttpStreamDriver.stream(request) must return an async iterable"
                     raise GraphReflyRuntimeError(msg)
                 stream_iter = stream.__aiter__()
                 try:
-                    async for raw_event in stream_iter:
+                    async for raw_event in cast("AsyncIterable[object]", stream_iter):
                         if not job.active:
                             return
                         event = _normalize_http_stream_event(raw_event)
@@ -3391,14 +2318,14 @@ def from_sse(
                                 parsed_events = parser.push(event.chunk)
                             except _SseParserError as error:
                                 for sse_event in error.events:
-                                    completion_gate.emit(sse_event, job.can_apply_completion)
+                                    gate.emit(sse_event, job.can_apply_completion)
                                 raise error
                             for sse_event in parsed_events:
-                                completion_gate.emit(sse_event, job.can_apply_completion)
+                                gate.emit(sse_event, job.can_apply_completion)
                             continue
                         if isinstance(event, HttpStreamErrorEvent):
                             if job.active:
-                                completion_gate.error(event.error, job.can_apply_completion)
+                                gate.error(event.error, job.can_apply_completion)
                             return
                         if not saw_head:
                             raise GraphReflyRuntimeError(
@@ -3408,36 +2335,26 @@ def from_sse(
                             parsed_events = parser.complete()
                         except _SseParserError as error:
                             for sse_event in error.events:
-                                completion_gate.emit(sse_event, job.can_apply_completion)
+                                gate.emit(sse_event, job.can_apply_completion)
                             raise error
                         for sse_event in parsed_events:
-                            completion_gate.emit(sse_event, job.can_apply_completion)
-                        completion_gate.complete(job.can_apply_completion)
+                            gate.emit(sse_event, job.can_apply_completion)
+                        gate.complete(job.can_apply_completion)
                         return
                 finally:
                     await _close_async_stream(stream_iter)
                 raise GraphReflyRuntimeError("from_sse: http stream ended without Complete")
-            except Exception as error:
-                if not _should_suppress_async_error(job, error):
-                    completion_gate.error(error, job.can_apply_completion)
             except BaseException as error:
-                if not _should_suppress_async_error(job, error):
-                    completion_gate.fatal(error, job.can_apply_completion)
+                _settle_async_error(gate, job, error)
             finally:
                 job.finish()
 
-        job.start(run)
+        return run
 
-    try:
-        return Node(
-            graph._native._async_source(activate, name, native_pausable),
-            owner_thread=graph._owner_thread,
-            lifetime=graph._lifetime,
-        )
-    except RuntimeError as error:
-        raise GraphReflyRuntimeError(str(error)) from error
-    except BaseException as error:
-        _poison_on_fatal(graph._lifetime, error)
+    return cast(
+        "Node[SseEvent]",
+        graph._source(name, lambda ctx: _start_async(graph, ctx, runner, reentry_queue, body)),
+    )
 
 
 def async_node[T](
@@ -3447,77 +2364,64 @@ def async_node[T](
     callback: Callable[..., Awaitable[T]],
     *,
     name: str | None = None,
-    pausable: PausableMode = True,
 ) -> Node[T]:
-    """Create a value-level async compute node over declared dependencies."""
+    """Create a value-level async compute node over declared dependencies.
+
+    Each run on new values (derived's gate) starts the callback; its result is a
+    later wave. A completion of a superseded run is ignored (a generation fence), and
+    the lifetime's close cancels every run still going.
+    """
 
     graph._check_thread()
-    deps = list(deps)
+    dep_list = list(deps)
     _reject_async_factory_instance(callback)
     if not callable(callback):
         msg = "async_node callback must be callable"
         raise GraphReflyValueError(msg)
     _validate_runner(runner)
-    native_deps = graph._native_deps(deps)
-    native_pausable = _native_pausable(pausable)
     reentry_queue = _runner_reentry_queue(graph, runner)
-    generation = 0
+    generation = [0]
 
-    def activate(native_ctx: Any, *values: object) -> None:
-        nonlocal generation
-        if reentry_queue is not None and not reentry_queue._can_accept_activation():
+    def run(ctx: _k.Ctx) -> None:
+        values = _gate(ctx)
+        if values is None:
             return
-        generation += 1
-        invocation_generation = generation
-        native_gate = _AsyncCompletionGate(
-            native_ctx,
-            owner_thread=graph._owner_thread,
-            lifetime=graph._lifetime,
-            reentry_queue=reentry_queue,
-        )
-        job = _AsyncJob(runner, graph._lifetime, reentry_queue)
-        if not job.active:
-            native_gate.close()
-            return
-        native_gate.register_deactivation(job.cancel)
-        completion_gate = (
-            native_gate.queued_proxy() if reentry_queue is not None else native_gate
-        )
+        generation[0] += 1
+        mine = generation[0]
 
-        def is_current() -> bool:
-            return invocation_generation == generation and job.can_apply_completion()
+        def body(
+            gate: _AsyncCompletionGate | _QueuedCompletionGate, job: _AsyncJob
+        ) -> AsyncJobFactory:
+            def is_current() -> bool:
+                return mine == generation[0] and job.can_apply_completion()
 
-        async def run() -> None:
-            try:
-                if not job.active:
-                    return
-                awaitable = callback(*values)
-                if not isawaitable(awaitable):
-                    msg = "async_node callback must return an awaitable"
-                    raise GraphReflyRuntimeError(msg)
-                value = await awaitable
-                completion_gate.emit(value, is_current, final=True)
-            except Exception as error:
-                if not _should_suppress_async_error(job, error):
-                    completion_gate.error(error, is_current)
-            except BaseException as error:
-                if not _should_suppress_async_error(job, error):
-                    completion_gate.fatal(error, is_current)
-            finally:
-                job.finish()
+            async def go() -> None:
+                try:
+                    if not job.active:
+                        return
+                    awaitable = callback(*values)
+                    if not isawaitable(awaitable):
+                        msg = "async_node callback must return an awaitable"
+                        raise GraphReflyRuntimeError(msg)
+                    value = await awaitable
+                    gate.emit(value, is_current, final=True)
+                except BaseException as error:
+                    if _should_suppress_async_error(job, error):
+                        return
+                    if isinstance(error, Exception):
+                        gate.error(error, is_current)
+                    else:
+                        gate.fatal(error, is_current)
+                finally:
+                    job.finish()
 
-        job.start(run)
+            return go
 
-    try:
-        return Node(
-            graph._native._async_node(native_deps, activate, name, native_pausable),
-            owner_thread=graph._owner_thread,
-            lifetime=graph._lifetime,
-        )
-    except RuntimeError as error:
-        raise GraphReflyRuntimeError(str(error)) from error
-    except BaseException as error:
-        _poison_on_fatal(graph._lifetime, error)
+        stop = _start_async(graph, ctx, runner, reentry_queue, body)
+        if stop is not None:
+            ctx.signal.on_abort(stop)
+
+    return cast("Node[T]", graph._add_node(name, dep_list, run, callback, None))
 
 
 def asyncio_runner(loop: object | None = None) -> AsyncRunner:
@@ -3562,156 +2466,54 @@ def version() -> str:
     return _VERSION
 
 
-def wire_bridge(graph: Graph, *, session_id: str, name: str | None = None) -> WireBridge:
-    """Create a graph-owned high-level wire bridge facade."""
-
-    if not isinstance(graph, Graph):
-        raise GraphReflyValueError("wire_bridge requires a graphrefly.Graph")
-    graph._check_thread()
-    if not isinstance(session_id, str) or session_id == "":
-        raise GraphReflyValueError("wire_bridge session_id must be a non-empty str")
-    native = graph._native._wire_bridge(session_id, name)
-    return WireBridge(native, graph)
-
-
-def wire_bridge_protobuf(
-    graph: Graph,
-    bridge: WireBridge,
+def restore_graph(
+    checkpoint: GraphCheckpoint,
     *,
+    registry: Mapping[str, RecipeFactory],
     name: str | None = None,
-) -> WireBridgeProtobuf:
-    """Attach protobuf byte transport nodes to a wire bridge."""
+    report: Callable[[HostReport], object] | None = None,
+) -> Graph:
+    """Build a new graph from ``checkpoint`` (R-checkpoint); no callback runs.
 
-    if not isinstance(graph, Graph):
-        raise GraphReflyValueError("wire_bridge_protobuf requires a graphrefly.Graph")
-    graph._check_thread()
-    bridge._check_attachable()
-    if bridge._lifetime is not graph._lifetime:
-        raise GraphReflyRuntimeError("wire_bridge_protobuf bridge must belong to graph")
-    native = graph._native._wire_bridge_protobuf(bridge._native, name)
-    return WireBridgeProtobuf(native, graph, bridge)
+    ``registry`` maps each recipe's ``ref`` to a factory called as
+    ``factory(config, RecipeContext(graph, name))``, returning the node callback or a
+    ``(callback, setup)`` pair. State nodes need no recipe. A node built without a
+    recipe is local-only, and restoring it fails, as do a missing recipe and a
+    checkpoint in another format.
+    """
 
-
-def wire_edge_group(
-    graph: Graph,
-    bridge: WireBridge,
-    *,
-    name: str | None = None,
-    inbound_edges: Iterable[str] | None = None,
-    outbound_edges: dict[str, Node[bytes]] | None = None,
-) -> WireEdgeGroup:
-    """Attach inbound or outbound wire edge grouping to a bridge."""
-
-    if not isinstance(graph, Graph):
-        raise GraphReflyValueError("wire_edge_group requires a graphrefly.Graph")
-    graph._check_thread()
-    bridge._check_attachable()
-    if bridge._lifetime is not graph._lifetime:
-        raise GraphReflyRuntimeError("wire_edge_group bridge must belong to graph")
-    has_inbound = inbound_edges is not None
-    has_outbound = outbound_edges is not None
-    if has_inbound == has_outbound:
-        raise GraphReflyValueError(
-            "wire_edge_group requires exactly one of inbound_edges or outbound_edges"
-        )
-    if outbound_edges is not None:
-        if not outbound_edges:
-            raise GraphReflyValueError("wire_edge_group outbound_edges must be non-empty")
-        native_edges: list[tuple[str, _native.Node]] = []
-        for edge_id, node in outbound_edges.items():
-            if not isinstance(edge_id, str) or edge_id == "":
-                raise GraphReflyValueError(
-                    "wire_edge_group outbound edge ids must be non-empty strings"
-                )
-            native_edges.append((edge_id, graph._native_node(node)))
-        native = graph._native._wire_edge_group_outbound(bridge._native, native_edges, name)
-        return WireEdgeGroup(native, graph, bridge)
-    edges = list(inbound_edges or ())
-    if not edges or any(not isinstance(edge, str) or edge == "" for edge in edges):
-        raise GraphReflyValueError("wire_edge_group inbound_edges must be non-empty strings")
-    native = graph._native._wire_edge_group(bridge._native, edges, name)
-    return WireEdgeGroup(native, graph, bridge)
-
-
-def wire_bridge_ack_driver(
-    graph: Graph,
-    bridge: WireBridge,
-    *,
-    clock: Node[int],
-    timeout_ms: int,
-    name: str | None = None,
-) -> WireBridgeAckDriver:
-    """Attach a clock-driven ack timeout driver to a bridge."""
-
-    if not isinstance(graph, Graph):
-        raise GraphReflyValueError("wire_bridge_ack_driver requires a graphrefly.Graph")
-    graph._check_thread()
-    bridge._check_attachable()
-    graph._native_node(clock)
-    if bridge._lifetime is not graph._lifetime:
-        raise GraphReflyRuntimeError("wire_bridge_ack_driver bridge must belong to graph")
-    if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int) or timeout_ms < 0:
-        raise GraphReflyValueError("wire_bridge_ack_driver timeout_ms must be non-negative int")
-    native = graph._native._wire_bridge_ack_driver(bridge._native, clock._native, timeout_ms, name)
-    return WireBridgeAckDriver(native, graph, bridge)
-
-
-def restore_ref(
-    ref: str,
-    *,
-    config: object | None = None,
-    config_version: object | None = None,
-) -> RestoreRef:
-    """Return strict-JSON factory metadata for a restorable function-backed node."""
-
-    if not isinstance(ref, str) or ref == "":
-        msg = "restore ref must be a non-empty str"
+    if not isinstance(registry, Mapping):
+        msg = "registry must map recipe refs to factories"
         raise GraphReflyValueError(msg)
-    _reject_awaitable(config)
-    _reject_awaitable(config_version)
-    _reject_sentinel_data(config)
-    _reject_sentinel_data(config_version)
-    return RestoreRef(ref=ref, config=config, config_version=config_version)
+    graph = Graph(name, report=report)
+    built: dict[str, tuple[NodeCallback, SetupCallback | None]] = {}
 
+    def adapt(ref: str, factory: RecipeFactory) -> _checkpoint.Factory:
+        def make(config: object, at: _checkpoint.RecipeContext) -> _checkpoint.Built:
+            made = factory(config, RecipeContext(graph, at.id))
+            callback, setup = made if isinstance(made, tuple) else (made, None)
+            if not callable(callback) or (setup is not None and not callable(setup)):
+                msg = f"recipe {ref} must give a callback, or a (callback, setup) pair"
+                raise GraphReflyRestoreError(msg)
+            built[at.id] = (callback, setup)
+            return _checkpoint.Built(
+                _guard_fn(graph._ctx_callback(callback)), _guard_setup(graph._ctx_setup(setup))
+            )
 
-def restore_registry(
-    entries: Iterable[RestoreDescriptor],
-    *,
-    include_builtins: bool = True,
-) -> RestoreRegistry:
-    """Build an explicit restore registry for `restore_graph`."""
+        return make
 
-    _reject_non_bool("include_builtins", include_builtins)
-    entry_list = list(entries)
-    _validate_restore_registry_entries(entry_list, include_builtins=include_builtins)
-    return _RestoreRegistryFacade(entry_list, include_builtins=include_builtins)
-
-
-def restore_graph(checkpoint: GraphCheckpoint, *, registry: RestoreRegistry) -> Graph:
-    """Construct a fresh graph from an already-loaded strict-JSON checkpoint."""
-
-    if not isinstance(registry, _RestoreRegistryFacade):
-        msg = "registry must be created by graphrefly.restore_registry(...)"
-        raise GraphReflyRestoreError(msg)
-    owner_thread = get_ident()
-    lifetime = _GraphLifetime(owner_thread)
+    adapted = {ref: adapt(ref, factory) for ref, factory in registry.items()}
     try:
-        native_registry = registry._native_registry(
-            owner_thread=owner_thread,
-            lifetime=lifetime,
+        _checkpoint.restore(checkpoint, adapted, into=graph._kernel)
+    except _checkpoint.CheckpointError as error:
+        raise GraphReflyRestoreError(str(error)) from error
+    for described in graph._kernel.describe():
+        handle: Node[Any] = (
+            State(graph, described.id) if described.kind == "state" else Node(graph, described.id)
         )
-        native_graph = _native.restore_graph(checkpoint, native_registry)
-        return Graph._from_native(
-            native_graph,
-            owner_thread=owner_thread,
-            lifetime=lifetime,
-        )
-    except ValueError as error:
-        raise GraphReflyRestoreError(str(error)) from error
-    except TypeError as error:
-        raise GraphReflyRestoreError(str(error)) from error
-    except RuntimeError as error:
-        raise GraphReflyRestoreError(str(error)) from error
+        callback, setup = built.get(described.id, (None, None))
+        graph._register(handle, callback, setup)
+    return graph
 
 
 def _normalize_http_request(request_or_url: HttpRequestLike) -> HttpRequest:
@@ -3795,9 +2597,7 @@ def _validate_sse_head(head: HttpStreamHead) -> None:
         raise GraphReflyRuntimeError("from_sse: missing text/event-stream content-type")
     media_type = content_type.split(";", 1)[0].strip()
     if media_type.lower() != "text/event-stream":
-        raise GraphReflyRuntimeError(
-            f"from_sse: unacceptable content-type {content_type}"
-        )
+        raise GraphReflyRuntimeError(f"from_sse: unacceptable content-type {content_type}")
 
 
 def _normalize_headers(headers: Iterable[tuple[str, str]]) -> tuple[tuple[str, str], ...]:
@@ -4078,41 +2878,6 @@ def _poison_on_fatal(lifetime: _GraphLifetime, error: BaseException) -> NoReturn
     raise error
 
 
-def _reject_non_string_lock_id(lock_id: str) -> None:
-    if not isinstance(lock_id, str):
-        msg = "pause/resume lock_id must be a str in the Python facade"
-        raise GraphReflyValueError(msg)
-
-
-def _reject_non_string_pull_id(pull_id: str) -> None:
-    if not isinstance(pull_id, str):
-        msg = "pull_id must be a str in the Python facade"
-        raise GraphReflyValueError(msg)
-
-
-def _native_pausable(pausable: PausableMode) -> Literal["true", "resumeAll", "false"]:
-    if pausable is True:
-        return "true"
-    if pausable is False:
-        return "false"
-    if pausable == "resumeAll":
-        return "resumeAll"
-    msg = "pausable must be True, False, or 'resumeAll' in the Python facade"
-    raise GraphReflyValueError(msg)
-
-
-def _normalize_toward_dep(toward_dep: int | None) -> int | None:
-    if toward_dep is None:
-        return None
-    if isinstance(toward_dep, bool) or not isinstance(toward_dep, int):
-        msg = "toward_dep must be an int dependency index in the Python facade"
-        raise GraphReflyValueError(msg)
-    if toward_dep < 0:
-        msg = "toward_dep must be non-negative in the Python facade"
-        raise GraphReflyValueError(msg)
-    return toward_dep
-
-
 def _reject_non_bool(name: str, value: bool) -> None:
     if not isinstance(value, bool):
         msg = f"{name} must be a bool in the Python facade"
@@ -4140,32 +2905,51 @@ def _reject_async_callable(callback: Callable[..., object]) -> None:
         raise GraphReflyRuntimeError(msg)
 
 
-def _validate_rewire_callback(callback: object) -> NodeCallback:
-    if not callable(callback):
-        msg = "rewire_next callback must be callable in the Python facade"
-        raise GraphReflyValueError(msg)
-    typed = cast("NodeCallback", callback)
-    _reject_async_callable(typed)
-    return typed
+def _message(message: _k.Message) -> Message[Any]:
+    kind = message[0]
+    if kind == _k.DATA:
+        return DataMessage(message[1])
+    if kind == _k.ERROR:
+        return ErrorMessage(message[1])
+    return ControlMessage(kind)
 
 
-def _message_from_native(kind: str, value: object) -> Message[Any]:
-    if kind == "DATA":
-        return DataMessage(value)
-    if kind == "ERROR":
-        return ErrorMessage(_graph_callback_error(value))
-    return ControlMessage(kind=kind, value=value)
+def _callback_error(error: BaseException) -> GraphCallbackError:
+    if isinstance(error, GraphCallbackError):
+        return error
+    return GraphCallbackError(type(error).__name__, str(error), raw=error)
 
 
-def _graph_callback_error(value: object) -> GraphCallbackError:
-    if isinstance(value, GraphCallbackError):
-        return value
-    text = str(value)
-    type_name, separator, message = text.partition(": ")
-    if not separator:
-        type_name = "Exception"
-        message = text
-    return GraphCallbackError(type_name=type_name, message=message, raw=value)
+def _guard_fn(fn: Callable[[_k.Ctx], None]) -> Callable[[_k.Ctx], None]:
+    """A node function whose Exception becomes a GraphCallbackError, the node's ERROR."""
+
+    def run(ctx: _k.Ctx) -> None:
+        try:
+            fn(ctx)
+        except GraphCallbackError:
+            raise
+        except Exception as error:
+            raise _callback_error(error) from error
+
+    return run
+
+
+def _guard_setup(
+    setup: Callable[[_k.Ctx], object] | None,
+) -> Callable[[_k.Ctx], object] | None:
+    if setup is None:
+        return None
+    start = setup
+
+    def run(ctx: _k.Ctx) -> object:
+        try:
+            return start(ctx)
+        except GraphCallbackError:
+            raise
+        except Exception as error:
+            raise _callback_error(error) from error
+
+    return run
 
 
 def _record_observer_error(
@@ -4204,26 +2988,6 @@ def _scrub_exception(error: Exception) -> Exception:
     error.__context__ = None
     error.__cause__ = None
     return error
-
-
-def _normalize_describe(snapshot: dict[str, Any]) -> dict[str, Any]:
-    nodes = []
-    for node in snapshot.get("nodes", []):
-        normalized = dict(node)
-        has_value = bool(normalized.get("has_value", normalized.get("value") is not None))
-        normalized["has_value"] = has_value
-        if not has_value:
-            normalized.pop("value", None)
-        nodes.append(normalized)
-
-    normalized_snapshot = dict(snapshot)
-    normalized_snapshot["nodes"] = nodes
-    subgraphs = normalized_snapshot.get("subgraphs")
-    if isinstance(subgraphs, list):
-        normalized_snapshot["subgraphs"] = [
-            _normalize_describe(cast("dict[str, Any]", subgraph)) for subgraph in subgraphs
-        ]
-    return normalized_snapshot
 
 
 def _source_tree_version() -> str | None:

@@ -1,46 +1,30 @@
 export const apiSidebar = [
   {
-    "label": "Exceptions and Issues",
+    "label": "Messages and Data",
     "items": [
       {
-        "label": "CallbackError",
-        "link": "/api/callbackerror"
+        "label": "SENTINEL",
+        "link": "/api/sentinel-attribute"
       },
       {
-        "label": "DataIssue",
-        "link": "/api/dataissue"
+        "label": "ControlMessage",
+        "link": "/api/controlmessage"
       },
       {
-        "label": "GraphCallbackError",
-        "link": "/api/graphcallbackerror"
+        "label": "DataMessage",
+        "link": "/api/datamessage"
       },
       {
-        "label": "GraphReflyCheckpointError",
-        "link": "/api/graphreflycheckpointerror"
+        "label": "ErrorMessage",
+        "link": "/api/errormessage"
       },
       {
-        "label": "GraphReflyError",
-        "link": "/api/graphreflyerror"
+        "label": "Message",
+        "link": "/api/message"
       },
       {
-        "label": "GraphReflyNoDataError",
-        "link": "/api/graphreflynodataerror"
-      },
-      {
-        "label": "GraphReflyRestoreError",
-        "link": "/api/graphreflyrestoreerror"
-      },
-      {
-        "label": "GraphReflyRuntimeError",
-        "link": "/api/graphreflyruntimeerror"
-      },
-      {
-        "label": "GraphReflyValueError",
-        "link": "/api/graphreflyvalueerror"
-      },
-      {
-        "label": "SubscriberCallbackError",
-        "link": "/api/subscribercallbackerror"
+        "label": "Sentinel",
+        "link": "/api/sentinel-class"
       }
     ]
   },
@@ -96,12 +80,12 @@ export const apiSidebar = [
         "link": "/api/sseevent"
       },
       {
-        "label": "async_node",
-        "link": "/api/async_node"
-      },
-      {
         "label": "anyio_runner",
         "link": "/api/anyio_runner"
+      },
+      {
+        "label": "async_node",
+        "link": "/api/async_node"
       },
       {
         "label": "asyncio_runner",
@@ -130,31 +114,47 @@ export const apiSidebar = [
     ]
   },
   {
-    "label": "Messages and Data",
+    "label": "Exceptions and Issues",
     "items": [
       {
-        "label": "ControlMessage",
-        "link": "/api/controlmessage"
+        "label": "CallbackError",
+        "link": "/api/callbackerror"
       },
       {
-        "label": "DataMessage",
-        "link": "/api/datamessage"
+        "label": "DataIssue",
+        "link": "/api/dataissue"
       },
       {
-        "label": "ErrorMessage",
-        "link": "/api/errormessage"
+        "label": "GraphCallbackError",
+        "link": "/api/graphcallbackerror"
       },
       {
-        "label": "Message",
-        "link": "/api/message"
+        "label": "GraphReflyCheckpointError",
+        "link": "/api/graphreflycheckpointerror"
       },
       {
-        "label": "SENTINEL",
-        "link": "/api/sentinel-attribute"
+        "label": "GraphReflyError",
+        "link": "/api/graphreflyerror"
       },
       {
-        "label": "Sentinel",
-        "link": "/api/sentinel-class"
+        "label": "GraphReflyNoDataError",
+        "link": "/api/graphreflynodataerror"
+      },
+      {
+        "label": "GraphReflyRestoreError",
+        "link": "/api/graphreflyrestoreerror"
+      },
+      {
+        "label": "GraphReflyRuntimeError",
+        "link": "/api/graphreflyruntimeerror"
+      },
+      {
+        "label": "GraphReflyValueError",
+        "link": "/api/graphreflyvalueerror"
+      },
+      {
+        "label": "SubscriberCallbackError",
+        "link": "/api/subscribercallbackerror"
       }
     ]
   },
@@ -178,20 +178,44 @@ export const apiSidebar = [
         "link": "/api/graphreentryqueue"
       },
       {
+        "label": "HostReport",
+        "link": "/api/hostreport"
+      },
+      {
         "label": "Node",
         "link": "/api/node"
       },
       {
-        "label": "PullContext",
-        "link": "/api/pullcontext"
+        "label": "NodeDefinition",
+        "link": "/api/nodedefinition"
+      },
+      {
+        "label": "NodeStatus",
+        "link": "/api/nodestatus"
+      },
+      {
+        "label": "Recipe",
+        "link": "/api/recipe"
+      },
+      {
+        "label": "RecipeContext",
+        "link": "/api/recipecontext"
+      },
+      {
+        "label": "RecipeFactory",
+        "link": "/api/recipefactory"
       },
       {
         "label": "Retain",
         "link": "/api/retain"
       },
       {
-        "label": "RewireNext",
-        "link": "/api/rewirenext"
+        "label": "Signal",
+        "link": "/api/signal"
+      },
+      {
+        "label": "State",
+        "link": "/api/state"
       },
       {
         "label": "Subscription",
@@ -207,105 +231,8 @@ export const apiSidebar = [
         "link": "/api/graphcheckpoint"
       },
       {
-        "label": "RestoreContext",
-        "link": "/api/restorecontext"
-      },
-      {
-        "label": "RestoreDescriptor",
-        "link": "/api/restoredescriptor"
-      },
-      {
-        "label": "RestoreRef",
-        "link": "/api/restoreref"
-      },
-      {
-        "label": "RestoreRegistry",
-        "link": "/api/restoreregistry"
-      },
-      {
         "label": "restore_graph",
         "link": "/api/restore_graph"
-      },
-      {
-        "label": "restore_ref",
-        "link": "/api/restore_ref"
-      },
-      {
-        "label": "restore_registry",
-        "link": "/api/restore_registry"
-      }
-    ]
-  },
-  {
-    "label": "Wire Bridge",
-    "items": [
-      {
-        "label": "WireBridge",
-        "link": "/api/wirebridge"
-      },
-      {
-        "label": "WireBridgeAckDriver",
-        "link": "/api/wirebridgeackdriver"
-      },
-      {
-        "label": "WireBridgeAckDriverIssue",
-        "link": "/api/wirebridgeackdriverissue"
-      },
-      {
-        "label": "WireBridgeAckDriverStatus",
-        "link": "/api/wirebridgeackdriverstatus"
-      },
-      {
-        "label": "WireBridgeAckTimeout",
-        "link": "/api/wirebridgeacktimeout"
-      },
-      {
-        "label": "WireBridgeIssue",
-        "link": "/api/wirebridgeissue"
-      },
-      {
-        "label": "WireBridgeProtobuf",
-        "link": "/api/wirebridgeprotobuf"
-      },
-      {
-        "label": "WireBridgeProtobufIssue",
-        "link": "/api/wirebridgeprotobufissue"
-      },
-      {
-        "label": "WireBridgeProtobufStatus",
-        "link": "/api/wirebridgeprotobufstatus"
-      },
-      {
-        "label": "WireBridgeStatus",
-        "link": "/api/wirebridgestatus"
-      },
-      {
-        "label": "WireEdgeGroup",
-        "link": "/api/wireedgegroup"
-      },
-      {
-        "label": "WireEdgeGroupIssue",
-        "link": "/api/wireedgegroupissue"
-      },
-      {
-        "label": "WireEdgeGroupStatus",
-        "link": "/api/wireedgegroupstatus"
-      },
-      {
-        "label": "wire_bridge",
-        "link": "/api/wire_bridge"
-      },
-      {
-        "label": "wire_bridge_ack_driver",
-        "link": "/api/wire_bridge_ack_driver"
-      },
-      {
-        "label": "wire_bridge_protobuf",
-        "link": "/api/wire_bridge_protobuf"
-      },
-      {
-        "label": "wire_edge_group",
-        "link": "/api/wire_edge_group"
       }
     ]
   },

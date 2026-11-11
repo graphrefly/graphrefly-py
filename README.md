@@ -1,17 +1,17 @@
 # GraphReFly Python
 
-`graphrefly` is the Python host package over GraphReFly's native Rust engine.
-Python owns the public facade, typing, lifetimes and ecosystem integration.
+`graphrefly` is GraphReFly for Python: a reactive graph on its own pure-Python
+kernel, with a typed facade, host lifetimes and ecosystem integration.
 
 ## Where things are
 
 | Path | Contents |
 |---|---|
-| [src/graphrefly/](src/graphrefly/) | Python facade and public docstrings |
-| [tests/](tests/) | Python package tests |
+| [src/graphrefly/](src/graphrefly/) | Kernel (`_kernel`), checkpoint, facade and public docstrings |
+| [tests/](tests/) | Package tests; [tests/kernel/](tests/kernel/) qualifies the kernel scenarios |
 | [docs/](docs/README.md) | Documentation map, package guides and policy |
 | [website/](website/) | Package-local site and generated API pipeline |
-| [Rust foundation](../graphrefly-rs/) | Native engine and Python binding crate |
+| [scripts/](scripts/) | API docs check, kernel benchmark, reference differential check |
 
 ## Where things stand
 
@@ -27,16 +27,16 @@ Python owns the public facade, typing, lifetimes and ecosystem integration.
 pip install graphrefly
 ```
 
-For development, use Python 3.12+ and uv, with the sibling Rust checkout available.
-[Development guidance](docs/development.md) explains native/toolchain setup.
+For development, use Python 3.12+ and uv. No Rust toolchain or sibling checkout is
+needed. [Development guidance](docs/development.md) has the details.
 
 | Command | What it does |
 |---|---|
 | `uv sync --group dev --group docs` | Set up development/docs dependencies |
-| `uv run maturin develop --release` | Build/install the local native extension |
 | `uv run pytest` | Package tests |
 | `uv run ruff check .` / `uv run mypy src` | Python lint and types |
 | `uv run python scripts/check_api_docs.py` | Public API documentation check |
+| `uv build` | Build the pure-Python wheel and sdist |
 | In `website/`: `pnpm docs:gen:check` | Generated API freshness |
 | In `website/`: `pnpm build` | Local package-site build |
 

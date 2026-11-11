@@ -1,29 +1,18 @@
 # Release
 
-GraphReFly Python is built with `maturin` over the native Rust binding crate.
-
-The 0.22 line publishes wheels only. Source distributions are deferred until
-the release artifact can include a self-contained Rust source tree instead of
-depending on a sibling checkout.
+GraphReFly Python is a pure-Python package built with hatchling and released as
+one universal wheel (`py3-none-any`) and an sdist for Python 3.12 and later
+(graphrefly-py:D6). It has no build or runtime dependency on graphrefly-rs
+(graphrefly:D800).
 
 ## Version
 
 The Python package version lives in `pyproject.toml`.
 
-## Wheels
+## Distributions
 
-Release wheels target the stable CPython ABI for Python 3.12+ (`abi3-py312`).
-This keeps one wheel usable across supported ordinary CPython 3.12, 3.13, and
-3.14 runtimes on the same platform.
-
-Free-threaded CPython wheels are not part of the 0.22 release policy.
-
-The release and CI workflows check out graphrefly-rs at
-`cf02fc97070e32560c0b4b22481418c8163d6e80`, the last commit that builds
-`graphrefly-bindings-py`. graphrefly:D800 pins it there: the Rust D797
-migration no longer keeps the binding compiling, and the pin stays until the
-Python kernel replaces `graphrefly._native` and the package builds without
-graphrefly-rs.
+`uv build` writes the wheel and the sdist to `dist/`. CI builds both on every pull
+request; the release workflow builds them once and publishes them.
 
 ## Publish
 
@@ -36,8 +25,8 @@ Trusted Publishing. The normal path is:
    `pyproject.toml`, updates `CHANGELOG.md`, and updates the release-please
    manifest.
 3. Merge the release PR when ready.
-4. The release workflow creates the GitHub release, builds wheels, and publishes
-   them to PyPI with OpenID Connect.
+4. The release workflow creates the GitHub release, runs the tests, builds the
+   wheel and sdist, and publishes them to PyPI with OpenID Connect.
 
 Configure PyPI Trusted Publishing for this repository before merging the first
 release PR. The workflow uses OpenID Connect, not a long-lived PyPI API token.
@@ -60,7 +49,7 @@ Manual fallback remains available. Dispatch the release workflow with
 pass that tag as the workflow ref:
 
 ```bash
-git tag v0.22.0
-git push origin v0.22.0
-gh workflow run release.yml --repo graphrefly/graphrefly-py --ref v0.22.0 -f publish=true
+git tag v0.24.0
+git push origin v0.24.0
+gh workflow run release.yml --repo graphrefly/graphrefly-py --ref v0.24.0 -f publish=true
 ```

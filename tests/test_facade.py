@@ -1,1735 +1,676 @@
+"""The public Python facade on the Python kernel (graphrefly-py:D2, D4, D5).
+
+The kernel scenarios are qualified in tests/kernel; these tests cover the facade:
+its API shape, value boundary, exception taxonomy, host lifetime and checkpoint.
+"""
+
+from __future__ import annotations
+
 import gc
-import json
-import subprocess
-import sys
-from dataclasses import FrozenInstanceError, is_dataclass
-from importlib import import_module, metadata
-from inspect import signature
+import threading
 from typing import Any
 
 import pytest
 
 import graphrefly
 from graphrefly import (
+    SENTINEL,
     CallbackError,
     ControlMessage,
     Ctx,
     DataMessage,
     ErrorMessage,
     Graph,
+    GraphCallbackError,
     GraphEvent,
+    GraphReflyCheckpointError,
     GraphReflyNoDataError,
     GraphReflyRestoreError,
     GraphReflyRuntimeError,
     GraphReflyValueError,
+    HostReport,
     Message,
-    RestoreContext,
-    RestoreDescriptor,
-    RestoreRef,
+    Node,
+    NodeStatus,
+    Recipe,
+    RecipeContext,
     Retain,
-    RewireNext,
+    Signal,
+    State,
     SubscriberCallbackError,
     Subscription,
-    restore_graph,
-    restore_ref,
-    restore_registry,
 )
 
-
-def _varint(value: int) -> bytes:
-    out = bytearray()
-    while value >= 0x80:
-        out.append((value & 0x7F) | 0x80)
-        value >>= 7
-    out.append(value)
-    return bytes(out)
+Arrays = list[tuple[Message[Any], ...]]
 
 
-def _key(field_no: int, wire_type: int) -> bytes:
-    return _varint((field_no << 3) | wire_type)
+def kinds(arrays: Arrays) -> list[list[str]]:
+    return [[m.kind for m in array] for array in arrays]
 
 
-def _varint_field(field_no: int, value: int) -> bytes:
-    return _key(field_no, 0) + _varint(value)
+def data(arrays: Arrays) -> list[object]:
+    return [m.value for array in arrays for m in array if isinstance(m, DataMessage)]
 
 
-def _bytes_field(field_no: int, value: bytes) -> bytes:
-    return _key(field_no, 2) + _varint(len(value)) + value
+# ---- package surface ------------------------------------------------------------
 
 
-def _string_field(field_no: int, value: str) -> bytes:
-    return _bytes_field(field_no, value.encode())
+def test_package_surface_is_the_d4_api() -> None:
+    expected = {
+        "Graph",
+        "Node",
+        "State",
+        "Ctx",
+        "Subscription",
+        "Retain",
+        "Signal",
+        "NodeStatus",
+        "NodeDefinition",
+        "Recipe",
+        "RecipeContext",
+        "restore_graph",
+        "HostReport",
+        "DataMessage",
+        "ErrorMessage",
+        "ControlMessage",
+        "GraphEvent",
+        "SENTINEL",
+        "from_awaitable",
+        "from_async_iter",
+        "async_node",
+        "from_http",
+        "from_sse",
+        "asyncio_runner",
+        "trio_runner",
+        "anyio_runner",
+        "GraphReentryQueue",
+        "GraphCallbackError",
+        "SubscriberCallbackError",
+        "GraphReflyNoDataError",
+    }
+    assert expected <= set(graphrefly.__all__)
+    removed = {
+        "PullContext",
+        "RewireNext",
+        "RestoreRef",
+        "RestoreDescriptor",
+        "RestoreContext",
+        "RestoreRegistry",
+        "restore_ref",
+        "restore_registry",
+        "wire_bridge",
+        "wire_edge_group",
+        "wire_bridge_protobuf",
+        "wire_bridge_ack_driver",
+        "WireBridge",
+        "WireEdgeGroup",
+        "WireBridgeStatus",
+        "WireEdgeGroupIssue",
+    }
+    for name in removed:
+        assert name not in graphrefly.__all__
+        assert not hasattr(graphrefly, name)
 
 
-def _message_field(field_no: int, value: bytes) -> bytes:
-    return _bytes_field(field_no, value)
+def test_the_package_imports_no_native_module() -> None:
+    import sys
 
-
-def _metadata(seq: int, session_id: str, *, ack_for_seq: int | None = None) -> bytes:
-    encoded = [
-        _varint_field(1, seq),
-        _varint_field(2, 0),
-        _string_field(
-            3,
-            json.dumps([session_id, str(seq)], separators=(",", ":"), ensure_ascii=False),
-        ),
-        _varint_field(4, 1),
-        _varint_field(5, 2),
-    ]
-    if ack_for_seq is not None:
-        encoded.append(_varint_field(7, ack_for_seq))
-    return b"".join(encoded)
-
-
-def _ack_envelope(seq: int, ack_for_seq: int, *, session_id: str = "s1") -> bytes:
-    return b"".join(
-        [
-            _string_field(1, session_id),
-            _message_field(2, _metadata(seq, session_id, ack_for_seq=ack_for_seq)),
-            _message_field(5, b""),
-        ]
-    )
-
-
-def _wire_edge_envelope(
-    seq: int,
-    *,
-    edge_id: str,
-    cause_id: str,
-    value: bytes | None = None,
-    session_id: str = "s1",
-) -> bytes:
-    frame = [
-        _varint_field(1, 1 if value is None else 2),
-        _string_field(2, edge_id),
-        _string_field(3, cause_id),
-    ]
-    if value is not None:
-        frame.append(_bytes_field(4, value))
-    return b"".join(
-        [
-            _string_field(1, session_id),
-            _message_field(2, _metadata(seq, session_id)),
-            _message_field(4, _message_field(2, b"".join(frame))),
-        ]
-    )
-
-
-def _record_data(target: list[Any]):
-    def record(message: Message[object]) -> None:
-        if isinstance(message, DataMessage):
-            target.append(message.value)
-
-    return record
-
-
-def _describe_has_prefix(snapshot: dict[str, object], *prefixes: str) -> bool:
-    nodes = snapshot.get("nodes", [])
-    if not isinstance(nodes, list):
-        return False
-    for node in nodes:
-        if isinstance(node, dict):
-            name = node.get("name")
-            if isinstance(name, str) and name.startswith(prefixes):
-                return True
-    return False
-
-
-def test_import_package_surface():
-    expected_version = metadata.version("graphrefly")
-    assert graphrefly.__version__ == expected_version
-    assert graphrefly.version() == expected_version
-    assert "_native" not in graphrefly.__all__
     assert not hasattr(graphrefly, "_native")
-    assert Graph("smoke").describe()["name"] == "smoke"
-    assert graphrefly.DataIssue("missing", "reserved").code == "missing"
-    assert graphrefly.Ctx is Ctx
-    assert graphrefly.RewireNext is RewireNext
-    assert graphrefly.Retain is Retain
-    assert graphrefly.RestoreContext is RestoreContext
-    assert graphrefly.RestoreDescriptor is RestoreDescriptor
-    assert graphrefly.RestoreRef is RestoreRef
-    assert graphrefly.restore_graph is restore_graph
-    assert graphrefly.restore_ref is restore_ref
-    assert graphrefly.restore_registry is restore_registry
-    assert graphrefly.wire_bridge
-    assert graphrefly.wire_bridge_protobuf
-    assert graphrefly.wire_edge_group
-    assert graphrefly.wire_bridge_ack_driver
-    assert issubclass(graphrefly.GraphReflyCheckpointError, GraphReflyValueError)
-    assert issubclass(graphrefly.GraphReflyRestoreError, GraphReflyRuntimeError)
-    assert issubclass(graphrefly.GraphReflyNoDataError, LookupError)
-    assert hasattr(import_module("graphrefly._native"), "Graph")
-    assert "_conformance" not in graphrefly.__all__
+    assert "graphrefly._native" not in sys.modules
 
 
-def test_import_graphrefly_does_not_expose_native_module_attribute():
-    probe = (
-        "import graphrefly; "
-        "assert '_native' not in graphrefly.__all__; "
-        "assert not hasattr(graphrefly, '_native')"
-    )
-    subprocess.run([sys.executable, "-c", probe], check=True)
+def test_host_input_lives_only_on_state() -> None:
+    for name in ("set", "invalidate", "complete", "error", "down"):
+        assert not hasattr(Node, name)
+    for name in ("set", "invalidate", "complete", "error"):
+        assert hasattr(State, name)
+    for name in ("invalidate", "pause", "resume", "set", "down"):
+        assert not hasattr(Graph, name)
+    for name in ("on_invalidate", "on_deactivation", "request_pull", "rewire_next", "up"):
+        assert not hasattr(Ctx, name)
 
 
-def test_public_facade_has_no_equals_substitution_surface():
-    graph = Graph("py-public-no-equals")
-    source = graph.state(1, name="source")
-    seen: list[Message[object]] = []
+def test_no_equality_dedup_surface() -> None:
+    from inspect import signature
 
     assert "equals" not in signature(Graph.node).parameters
     assert "equals" not in signature(Graph.derived).parameters
-    assert "distinctUntilChanged" not in graphrefly.__all__
-    assert not hasattr(graphrefly, "distinctUntilChanged")
 
-    with source.subscribe(seen.append):
-        seen.clear()
-        source.set(1)
-        source.set(1)
 
-    assert [message.kind for message in seen] == ["DIRTY", "DATA", "DIRTY", "DATA"]
-    assert [message.value for message in seen if isinstance(message, DataMessage)] == [1, 1]
-
-
-def test_public_facade_has_no_raw_wire_bridge_or_wire_edge_group_surface():
-    native = import_module("graphrefly._native")
-    forbidden = {
-        "WireEdgeGroupBundle",
-        "WireEdgeGroupEdge",
-        "WireEdgeGroupOptions",
-        "WireEdgeGroupIssueCode",
-        "WireEdgeGroupStatusState",
-        "WireBridgeBundle",
-        "WireBridgeAck",
-        "WireBridgeAttempt",
-        "WireBridgeInbound",
-        "WireBridgeIngress",
-        "WireBridgeEnvelope",
-        "WireBridgeEnvelopeInput",
-        "WireBridgeEnvelopeType",
-        "WireBridgeMetadata",
-        "WireBridgeNack",
-        "WireBridgeOptions",
-        "WireBridgePayload",
-        "WireBridgeReceipt",
-        "WireBridgeStatusState",
-        "WireEdgeFrame",
-        "WireBridgeCommand",
-        "WireBridgeEvent",
-        "CanonicalWireBridgeEnvelope",
-        "CanonicalWireEdgeFrame",
-        "CanonicalProtobufRoundtrip",
-        "CanonicalProtobufValidation",
-        "PyO3Handle",
-        "_roundtrip_canonical_wire_bridge_envelope",
-        "_roundtrip_canonical_wire_edge_frame",
-        "_validate_canonical_wire_bridge_envelope",
-        "_validate_canonical_wire_edge_frame",
-    }
-
-    for name in forbidden:
-        assert name not in graphrefly.__all__
-        assert not hasattr(graphrefly, name)
-        if not name.startswith("_") and not name.startswith("CanonicalProtobuf"):
-            assert not hasattr(native, name)
-
-    assert hasattr(native, "_roundtrip_canonical_wire_bridge_envelope")
-    assert hasattr(native, "_roundtrip_canonical_wire_edge_frame")
-    assert hasattr(native, "_validate_canonical_wire_bridge_envelope")
-    assert hasattr(native, "_validate_canonical_wire_edge_frame")
-    assert not hasattr(graphrefly.Node, "up")
-    assert not hasattr(graphrefly.Node, "down")
-    assert not hasattr(graphrefly.Ctx, "up")
-    assert not hasattr(graphrefly.Ctx, "down")
-
-
-def test_wire_bridge_public_facade_shape_and_dataclasses():
-    for cls in [
-        graphrefly.WireBridgeStatus,
-        graphrefly.WireBridgeIssue,
-        graphrefly.WireEdgeGroupStatus,
-        graphrefly.WireEdgeGroupIssue,
-        graphrefly.WireBridgeProtobufStatus,
-        graphrefly.WireBridgeProtobufIssue,
-        graphrefly.WireBridgeAckTimeout,
-        graphrefly.WireBridgeAckDriverStatus,
-        graphrefly.WireBridgeAckDriverIssue,
-    ]:
-        assert is_dataclass(cls)
-        if cls is graphrefly.WireBridgeStatus:
-            assert "__dict__" not in cls(state="idle", session_id="s").__class__.__slots__
-
-    status = graphrefly.WireBridgeStatus(state="idle", session_id="s")
-    with pytest.raises(FrozenInstanceError):
-        status.state = "open"  # type: ignore[misc]
-
-    graph = Graph("py-c1-shape")
-    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
-    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
-    group = graphrefly.wire_edge_group(graph, bridge, name="group", inbound_edges=["a"])
-    clock = graph.state(0, name="clock")
-    ack = graphrefly.wire_bridge_ack_driver(
-        graph,
-        bridge,
-        clock=clock,
-        timeout_ms=5,
-        name="ack",
-    )
-
-    assert not hasattr(bridge, "close")
-    assert set(group.inbound_edges) == {"a"}
-    assert protobuf.inbound_bytes.has_value is False
-    with ack.status.subscribe(lambda _msg: None):
-        clock.set(1)
-        assert ack.status.cache().timeout_ms == 5
-    ack.release()
-    group.release()
-    protobuf.release()
-    bridge.release()
-    bridge.release()
-
-
-def test_wire_bridge_public_constructor_guards():
-    graph = Graph("py-c1-guards")
-    bridge = graphrefly.wire_bridge(graph, session_id="s1")
-
-    with pytest.raises(GraphReflyValueError, match="exactly one"):
-        graphrefly.wire_edge_group(graph, bridge)
-    with pytest.raises(GraphReflyValueError, match="exactly one"):
-        graphrefly.wire_edge_group(
-            graph,
-            bridge,
-            inbound_edges=["a"],
-            outbound_edges={"b": graph.state(b"b")},
-        )
-    outbound = graphrefly.wire_edge_group(
-        graph,
-        bridge,
-        outbound_edges={"a": graph.state(b"a")},
-    )
-    assert outbound.inbound_edges == {}
-    outbound.release()
-
-    bridge.release()
-    with pytest.raises(GraphReflyRuntimeError, match="released"):
-        graphrefly.wire_bridge_protobuf(graph, bridge)
-    with pytest.raises(GraphReflyRuntimeError, match="released"):
-        graphrefly.wire_edge_group(graph, bridge, inbound_edges=["a"])
-    with pytest.raises(GraphReflyRuntimeError, match="released"):
-        graphrefly.wire_bridge_ack_driver(
-            graph,
-            bridge,
-            clock=graph.state(0),
-            timeout_ms=5,
-        )
-
-
-def test_wire_bridge_ack_driver_invalid_clock_is_issue_not_timeout():
-    graph = Graph("py-c1-ack-invalid-clock")
-    bridge = graphrefly.wire_bridge(graph, session_id="s1")
-    clock = graph.state(0, name="clock")
-    ack = graphrefly.wire_bridge_ack_driver(graph, bridge, clock=clock, timeout_ms=5)
-    timeouts: list[graphrefly.WireBridgeAckTimeout] = []
-    issues: list[graphrefly.WireBridgeAckDriverIssue] = []
-
-    def record_timeout(msg: Message[object]) -> None:
-        if isinstance(msg, DataMessage):
-            timeouts.append(msg.value)
-
-    def record_issue(msg: Message[object]) -> None:
-        if isinstance(msg, DataMessage):
-            issues.append(msg.value)
-
-    with ack.timeouts.subscribe(record_timeout), ack.issues.subscribe(record_issue):
-        timeouts.clear()
-        issues.clear()
-        clock.set("bad")  # type: ignore[arg-type]
-
-    assert timeouts == []
-    assert issues == [
-        graphrefly.WireBridgeAckDriverIssue(
-            code="invalid_clock",
-            message="wire_bridge_ack_driver clock facts must be non-negative integers",
-        )
-    ]
-
-    with ack.issues.subscribe(record_issue):
-        issues.clear()
-        clock.set(10)
-        clock.set(9)
-
-    assert issues == [
-        graphrefly.WireBridgeAckDriverIssue(
-            code="invalid_clock",
-            message="wire_bridge_ack_driver clock facts must be monotonic non-decreasing",
-        )
-    ]
-
-
-def test_c1c_ack_driver_clock_driven_timeout_retries_and_exhausts():
-    graph = Graph("py-c1c-ack-driver-retry-exhaust")
-    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
-    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
-    clock = graph.state(1000, name="clock")
-    ack = graphrefly.wire_bridge_ack_driver(graph, bridge, clock=clock, timeout_ms=5, name="ack")
-    source = graph.state(b"first", name="edge-source")
-    graphrefly.wire_edge_group(graph, bridge, outbound_edges={"edge-a": source}, name="group")
-    timeouts: list[graphrefly.WireBridgeAckTimeout] = []
-    ack_statuses: list[graphrefly.WireBridgeAckDriverStatus] = []
-    bridge_statuses: list[graphrefly.WireBridgeStatus] = []
-    bridge_issues: list[graphrefly.WireBridgeIssue] = []
-    outbound: list[bytes] = []
-
-    with (
-        ack.timeouts.subscribe(_record_data(timeouts)),
-        ack.status.subscribe(_record_data(ack_statuses)),
-        bridge.status.subscribe(_record_data(bridge_statuses)),
-        bridge.issues.subscribe(_record_data(bridge_issues)),
-        protobuf.outbound_bytes.subscribe(_record_data(outbound)),
-    ):
-        assert len(outbound) == 1
-        clock.set(1004)
-        assert timeouts == []
-        clock.set(1005)
-        assert any(timeout.attempt == 1 and timeout.observed_at_ms == 1005 for timeout in timeouts)
-        assert len(outbound) > 1
-        assert any(status.state == "waiting" for status in bridge_statuses)
-        clock.set(1010)
-
-    assert any(timeout.attempt == 2 and timeout.observed_at_ms == 1010 for timeout in timeouts)
-    assert any(status.state == "exhausted" for status in bridge_statuses)
-    assert bridge_issues[-1].code == "bridge_error"
-    assert "ack timeout for seq" in bridge_issues[-1].message
-    assert ack_statuses[-1].last_timeout == timeouts[-1]
-
-
-def test_c1c_stale_mismatched_and_malformed_timeout_ingress_fail_closed():
-    graph = Graph("py-c1c-ack-driver-private-ingress")
-    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
-    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
-    clock = graph.state(1000, name="clock")
-    ack = graphrefly.wire_bridge_ack_driver(graph, bridge, clock=clock, timeout_ms=5, name="ack")
-    source = graph.state(b"first", name="edge-source")
-    graphrefly.wire_edge_group(graph, bridge, outbound_edges={"edge-a": source}, name="group")
-    bridge_statuses: list[graphrefly.WireBridgeStatus] = []
-    bridge_issues: list[graphrefly.WireBridgeIssue] = []
-
-    with (
-        bridge.status.subscribe(_record_data(bridge_statuses)),
-        bridge.issues.subscribe(_record_data(bridge_issues)),
-        protobuf.outbound_bytes.subscribe(lambda _msg: None),
-    ):
-        ack._native._conformance_ack_timeout(1, 2, 1005)  # noqa: SLF001
-        assert bridge_issues == []
-        assert bridge_statuses[-1].pending >= 1
-
-        ack._native._conformance_ack_timeout(1, 0, 1005)  # noqa: SLF001
-        ack._native._conformance_ack_timeout(0, 1, 1005)  # noqa: SLF001
-
-        protobuf.inbound_bytes.set(_ack_envelope(1, 1))
-        ack._native._conformance_ack_timeout(1, 1, 1005)  # noqa: SLF001
-
-    assert [issue.message for issue in bridge_issues] == [
-        "wireBridge: ack-timeout command attempt must be positive",
-        "wireBridge: ack-timeout command seq must be positive",
-    ]
-    assert not any(status.state == "exhausted" for status in bridge_statuses)
-
-
-def test_c1c_ack_driver_release_detaches_private_command_source():
-    graph = Graph("py-c1c-ack-driver-release")
-    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
-    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
-    clock = graph.state(1000, name="clock")
-    ack = graphrefly.wire_bridge_ack_driver(graph, bridge, clock=clock, timeout_ms=5, name="ack")
-    source = graph.state(b"first", name="edge-source")
-    graphrefly.wire_edge_group(graph, bridge, outbound_edges={"edge-a": source}, name="group")
-    timeouts: list[graphrefly.WireBridgeAckTimeout] = []
-    outbound: list[bytes] = []
-
-    with (
-        ack.timeouts.subscribe(_record_data(timeouts)),
-        protobuf.outbound_bytes.subscribe(_record_data(outbound)),
-    ):
-        assert len(outbound) == 1
-
-    ack.release()
-    clock.set(1005)
-
-    assert timeouts == []
-    assert len(outbound) == 1
-    assert not _describe_has_prefix(graph.describe(), "ack/", "ack.")
-
-
-def test_c1c_ack_driver_release_reports_scope_error_after_native_cleanup():
-    graph = Graph("py-c1c-ack-driver-release-scope-error")
-    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
-    clock = graph.state(1000, name="clock")
-    ack = graphrefly.wire_bridge_ack_driver(graph, bridge, clock=clock, timeout_ms=5, name="ack")
-
-    class FailingResource:
-        def _close_from_graph(self) -> None:
-            raise RuntimeError("scope cleanup failed")
-
-    ack._scope.register(FailingResource())  # noqa: SLF001
-
-    with pytest.raises(RuntimeError, match="scope cleanup failed"):
-        ack.release()
-
-    assert ack._released is True  # noqa: SLF001
-    assert ack not in bridge._children  # noqa: SLF001
-    assert not _describe_has_prefix(graph.describe(), "ack/", "ack.")
-
-
-def test_c1c_subscription_order_variants_keep_timeout_issue_and_status_visible():
-    graph = Graph("py-c1c-ack-driver-subscription-order")
-    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
-    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
-    clock = graph.state(1000, name="clock")
-    ack = graphrefly.wire_bridge_ack_driver(graph, bridge, clock=clock, timeout_ms=5, name="ack")
-    source = graph.state(b"first", name="edge-source")
-    graphrefly.wire_edge_group(graph, bridge, outbound_edges={"edge-a": source}, name="group")
-    statuses: list[graphrefly.WireBridgeAckDriverStatus] = []
-
-    with ack.status.subscribe(_record_data(statuses)), protobuf.outbound_bytes.subscribe(
-        lambda _msg: None
-    ):
-        clock.set(1005)
-
-    timeout = ack.timeouts.cache()
-    assert timeout.attempt == 1
-    assert timeout.observed_at_ms == 1005
-    assert statuses[-1].last_timeout == timeout
-
-    issue_graph = Graph("py-c1c-ack-driver-issue-order")
-    issue_bridge = graphrefly.wire_bridge(issue_graph, session_id="s1")
-    issue_clock = issue_graph.state(0, name="clock")
-    issue_ack = graphrefly.wire_bridge_ack_driver(
-        issue_graph,
-        issue_bridge,
-        clock=issue_clock,
-        timeout_ms=5,
-    )
-    issues: list[graphrefly.WireBridgeAckDriverIssue] = []
-
-    with issue_ack.issues.subscribe(_record_data(issues)):
-        issue_clock.set("bad")  # type: ignore[arg-type]
-    assert issues[-1].code == "invalid_clock"
-
-
-def test_d542_bridge_release_cascades_children_and_late_child_release_is_noop():
-    graph = Graph("py-c1-release-cascade")
-    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
-    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
-    group = graphrefly.wire_edge_group(graph, bridge, inbound_edges=["edge-a"], name="group")
-    ack = graphrefly.wire_bridge_ack_driver(
-        graph,
-        bridge,
-        clock=graph.state(0, name="clock"),
-        timeout_ms=5,
-        name="ack",
-    )
-
-    bridge.release()
-    ack.release()
-    group.release()
-    protobuf.release()
-
-    with pytest.raises(GraphReflyRuntimeError, match="released"):
-        graphrefly.wire_bridge_protobuf(graph, bridge)
-
-
-def test_b100_explicit_child_release_closes_live_public_child_observers():
-    graph = Graph("py-b100-explicit-child-release-live-observers")
-    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
-    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
-    group = graphrefly.wire_edge_group(graph, bridge, inbound_edges=["edge-a"], name="group")
-    ack = graphrefly.wire_bridge_ack_driver(
-        graph,
-        bridge,
-        clock=graph.state(0, name="clock"),
-        timeout_ms=5,
-        name="ack",
-    )
-
-    protobuf_sub = protobuf.outbound_bytes.subscribe(lambda _msg: None)
-    group_status_sub = group.status.subscribe(lambda _msg: None)
-    group_edge_sub = group.inbound_edges["edge-a"].subscribe(lambda _msg: None)
-    ack_sub = ack.timeouts.subscribe(lambda _msg: None)
-
-    group.release()
-    ack.release()
-    protobuf.release()
-
-    assert group_status_sub.closed is True
-    assert group_edge_sub.closed is True
-    assert ack_sub.closed is True
-    assert protobuf_sub.closed is True
-    assert group._released is True  # noqa: SLF001
-    assert ack._released is True  # noqa: SLF001
-    assert protobuf._released is True  # noqa: SLF001
-    assert not _describe_has_prefix(
-        graph.describe(),
-        "group/",
-        "group.",
-        "ack/",
-        "ack.",
-        "protobuf/",
-    )
-
-
-def test_b100_live_graph_observer_survives_child_release():
-    graph = Graph("py-b100-live-graph-observer-child-release")
-    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
-    group = graphrefly.wire_edge_group(graph, bridge, inbound_edges=["edge-a"], name="group")
-    unrelated = graph.state(0, name="unrelated")
-    graph_events: list[GraphEvent] = []
-
-    graph_observer = graph.observe(graph_events.append)
-    group_status_sub = group.status.subscribe(lambda _msg: None)
-
-    group.release()
-    unrelated.set(1)
-
-    assert group_status_sub.closed is True
-    assert graph_observer.closed is False
-    graph_observer.unsubscribe()
-    assert group._released is True  # noqa: SLF001
-    assert not _describe_has_prefix(graph.describe(), "group/", "group.")
-    assert any(
-        event.path == "unrelated" and event.message == DataMessage(1)
-        for event in graph_events
-    )
-    assert not any(
-        event.path.startswith("group")
-        and isinstance(event.message, (ControlMessage, ErrorMessage))
-        and event.message.kind in {"COMPLETE", "ERROR", "TEARDOWN"}
-        for event in graph_events
-    )
-
-
-def test_b100_bridge_cascade_release_closes_live_public_child_observers():
-    graph = Graph("py-b100-bridge-cascade-live-child-observers")
-    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
-    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
-    group = graphrefly.wire_edge_group(graph, bridge, inbound_edges=["edge-a"], name="group")
-    ack = graphrefly.wire_bridge_ack_driver(
-        graph,
-        bridge,
-        clock=graph.state(0, name="clock"),
-        timeout_ms=5,
-        name="ack",
-    )
-
-    protobuf_sub = protobuf.status.subscribe(lambda _msg: None)
-    group_sub = group.issues.subscribe(lambda _msg: None)
-    ack_sub = ack.status.subscribe(lambda _msg: None)
-
-    bridge.release()
-
-    assert protobuf_sub.closed is True
-    assert group_sub.closed is True
-    assert ack_sub.closed is True
-    assert protobuf._released is True  # noqa: SLF001
-    assert group._released is True  # noqa: SLF001
-    assert ack._released is True  # noqa: SLF001
-    assert bridge._released is True  # noqa: SLF001
-    assert bridge._children == []  # noqa: SLF001
-
-
-def test_d542_wire_edge_group_outbound_non_bytes_is_public_issue_status():
-    graph = Graph("py-c1-outbound-non-bytes")
-    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
-    source = graph.state(b"ok", name="edge-source")
-    group = graphrefly.wire_edge_group(
-        graph,
-        bridge,
-        outbound_edges={"edge-a": source},
-        name="group",
-    )
-    issues: list[graphrefly.WireEdgeGroupIssue] = []
-    statuses: list[graphrefly.WireEdgeGroupStatus] = []
-
-    with (
-        group.issues.subscribe(
-            lambda msg: issues.append(msg.value)
-            if isinstance(msg, graphrefly.DataMessage)
-            else None
-        ),
-        group.status.subscribe(
-            lambda msg: statuses.append(msg.value)
-            if isinstance(msg, graphrefly.DataMessage)
-            else None
-        ),
-    ):
-        source.set("not bytes")
-
-    assert issues[-1].code == "malformed_frame"
-    assert issues[-1].edge_id == "edge-a"
-    assert "must emit bytes" in issues[-1].message
-    assert statuses[-1].state == "issues"
-    assert statuses[-1].last_issue == issues[-1]
-
-
-def test_d559_wire_edge_group_outbound_bytearray_is_copied_to_bytes():
-    graph = Graph("py-d559-bytearray-copy")
-    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
-    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
-    source = graph.state(b"initial", name="edge-source")
-    trigger = graph.state(b"trigger-0", name="edge-trigger")
-    graphrefly.wire_edge_group(
-        graph,
-        bridge,
-        outbound_edges={"edge-a": source, "edge-b": trigger},
-        name="group",
-    )
-    outbound: list[bytes] = []
-
-    with protobuf.outbound_bytes.subscribe(_record_data(outbound)):
-        outbound.clear()
-        mutable = bytearray(b"first")
-        source.set(mutable)
-        assert not outbound
-        mutable[:] = b"later"
-        trigger.set(b"trigger-1")
-
-    assert outbound
-    assert all(isinstance(value, bytes) for value in outbound)
-    assert any(b"first" in value for value in outbound)
-    assert not any(b"later" in value for value in outbound)
-
-
-def test_d559_wire_edge_group_inbound_bytearray_is_copied_to_bytes():
-    graph = Graph("py-d559-inbound-bytearray-copy")
-    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
-    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
-    group = graphrefly.wire_edge_group(
-        graph,
-        bridge,
-        inbound_edges=["edge-a"],
-        name="group",
-    )
-    released: list[bytes] = []
-    dirty = bytearray(_wire_edge_envelope(1, edge_id="edge-a", cause_id="c1"))
-    data = bytearray(
-        _wire_edge_envelope(2, edge_id="edge-a", cause_id="c1", value=b"first")
-    )
-
-    with group.inbound_edges["edge-a"].subscribe(_record_data(released)):
-        protobuf.inbound_bytes.set(dirty)
-        protobuf.inbound_bytes.set(data)
-        dirty[:] = b"later-dirty"
-        data[:] = b"later-data"
-
-    assert released == [b"first"]
-
-
-def test_python_callback_runs_through_rust_graph_and_subscription_observes_wave():
-    seen: list[Message[object]] = []
-    graph = Graph("py-smoke")
-    source = graph.state(1, name="source")
-    plus_one = graph.derived([source], lambda value: value + 1, name="plus_one")
-
-    with plus_one.subscribe(seen.append):
-        assert plus_one.cache() == 2
-        source.set(4)
-        assert plus_one.cache() == 5
-        assert plus_one.status in {"settled", "resolved"}
-
-    assert DataMessage(2) in seen
-    assert DataMessage(5) in seen
-
-
-def test_callback_exception_becomes_graph_error_observation():
-    seen: list[Message[object]] = []
-    graph = Graph("py-error-smoke")
-    source = graph.state(1, name="source")
-
-    def boom(_value: int) -> int:
-        raise ValueError("boom")
-
-    bad = graph.derived([source], boom, name="bad")
-    with bad.subscribe(seen.append):
-        pass
-
-    assert any(
-        isinstance(msg, ErrorMessage)
-        and msg.error.type_name == "ValueError"
-        and msg.error.message == "boom"
-        for msg in seen
-    )
-
-
-def test_derived_async_callback_is_rejected_at_registration():
-    graph = Graph("py-async-error-smoke")
-    source = graph.state(1, name="source")
-
-    async def async_callback(_value: int) -> int:
-        return 2
-
-    with pytest.raises(GraphReflyRuntimeError, match="async callbacks are deferred"):
-        graph.derived([source], async_callback, name="bad_async")
-
-
-def test_batch_callback_exception_rolls_back_and_reraises_original_exception():
-    graph = Graph("py-batch-smoke")
-    source = graph.state(1, name="source")
-
-    def mutate_then_raise() -> None:
-        source.set(9)
-        raise ValueError("boom")
-
-    with pytest.raises(ValueError, match="boom"):
-        graph.batch(mutate_then_raise)
-
-    assert source.cache() == 1
-
-
-def test_async_batch_callback_is_rejected_before_commit():
-    graph = Graph("py-async-batch-smoke")
-    source = graph.state(1, name="source")
-
-    async def async_batch() -> None:
-        source.set(9)
-
-    with pytest.raises(GraphReflyRuntimeError, match="async callbacks are deferred"):
-        graph.batch(async_batch)
-
-    assert source.cache() == 1
-
-
-def test_async_subscribe_callback_is_rejected_at_registration():
-    graph = Graph("py-async-subscribe-smoke")
-    source = graph.state(1, name="source")
-
-    async def async_subscriber(_msg: Message[object]) -> None:
-        pass
-
-    with pytest.raises(GraphReflyRuntimeError, match="async callbacks are deferred"):
-        source.subscribe(async_subscriber)
-
-
-def test_none_is_valid_python_data_payload():
-    seen: list[Message[object]] = []
-    graph = Graph("py-none-smoke")
-    source = graph.state(None, name="none_value")
-
-    with source.subscribe(seen.append):
-        pass
-
-    assert source.cache() is None
-    assert DataMessage(None) in seen
-    node = next(node for node in graph.describe()["nodes"] if node["name"] == "none_value")
-    assert node["has_value"] is True
-
-
-def test_absent_cache_raises_without_conflating_cached_none():
-    graph = Graph("py-no-data-smoke")
-    source = graph.state(1, name="source")
-    plus_one = graph.derived([source], lambda value: value + 1, name="plus_one")
-    none_value = graph.state(None, name="none_value")
-
-    assert plus_one.has_value is False
-    with pytest.raises(GraphReflyNoDataError, match="no cached DATA"):
-        plus_one.cache()
-    assert plus_one.cache(default="missing") == "missing"
-
-    assert none_value.has_value is True
-    assert none_value.cache() is None
-
-
-def test_advanced_node_ctx_emit_preserves_none_and_no_data_absence():
-    graph = Graph("py-node-none-no-data-smoke")
-    source = graph.state(1, name="source")
-    none_node = graph.node([source], lambda ctx: ctx.emit(None), name="none_node")
-    quiet_node = graph.node([source], lambda _ctx: None, name="quiet_node")
-
-    with none_node.subscribe(lambda _msg: None), quiet_node.subscribe(lambda _msg: None):
-        assert none_node.has_value is True
-        assert none_node.cache() is None
-        assert quiet_node.has_value is False
-        with pytest.raises(GraphReflyNoDataError, match="no cached DATA"):
-            quiet_node.cache()
-
-
-def test_advanced_ctx_dep_presence_does_not_conflate_none_with_absence():
-    graph = Graph("py-node-dep-presence-smoke")
-    none_source = graph.state(None, name="none_source")
-    trigger = graph.state(1, name="trigger")
-    seen: list[tuple[bool, object, int]] = []
-
-    def body(ctx: Ctx) -> None:
-        seen.append((ctx.has_data(0), ctx.data(0, "missing"), ctx.data(1)))
-        ctx.emit(seen[-1])
-
-    node = graph.node([none_source, trigger], body, name="presence")
-    with node.subscribe(lambda _msg: None):
-        assert node.cache() == (True, None, 1)
-        graph.invalidate(none_source)
-        trigger.set(2)
-        assert node.cache() == (False, "missing", 2)
-
-    assert seen == [(True, None, 1), (False, "missing", 2)]
-
-
-def test_advanced_node_decorator_form_uses_function_name_and_ctx():
-    graph = Graph("py-node-decorator-smoke")
-    source = graph.state(1, name="source")
-
-    @graph.node([source])
-    def plus_ten(ctx: Ctx) -> None:
-        ctx.emit(ctx.data(0) + 10)
-
-    with plus_ten.subscribe(lambda _msg: None):
-        assert plus_ten.cache() == 11
-
-    entry = next(node for node in graph.describe()["nodes"] if node["name"] == "plus_ten")
-    assert entry["factory"] == "node"
-
-
-def test_advanced_ctx_state_none_does_not_conflate_absence_when_has_state_is_checked():
-    graph = Graph("py-node-state-none-smoke")
-    source = graph.state(1, name="source")
-    seen: list[tuple[bool, object | None]] = []
-
-    def body(ctx: Ctx) -> None:
-        seen.append((ctx.has_state, ctx.state))
-        ctx.state = None
-        ctx.emit(seen[-1])
-
-    node = graph.node([source], body, name="state_none")
-    with node.subscribe(lambda _msg: None):
-        assert node.cache() == (False, None)
-        source.set(2)
-        assert node.cache() == (True, None)
-
-    assert seen == [(False, None), (True, None)]
-
-
-def test_advanced_node_async_callback_is_rejected_at_registration():
-    graph = Graph("py-node-async-registration-smoke")
-    source = graph.state(1, name="source")
-
-    async def async_body(_ctx: Ctx) -> None:
-        return None
-
-    with pytest.raises(GraphReflyRuntimeError, match="async callbacks are deferred"):
-        graph.node([source], async_body, name="async_node")
-
-    with pytest.raises(GraphReflyRuntimeError, match="async callbacks are deferred"):
-        @graph.node([source])
-        async def async_decorated(_ctx: Ctx) -> None:
+# ---- values and arrays ------------------------------------------------------------
+
+
+def test_subscribe_gets_one_tuple_per_array_starting_with_start() -> None:
+    with Graph("arrays") as g:
+        a = g.state(1, name="a")
+        d = g.derived([a], lambda v: v * 2, name="d")
+        seen: Arrays = []
+        d.subscribe(seen.append)
+        a.set(3)
+        assert seen == [
+            (ControlMessage("START"), DataMessage(2)),
+            (ControlMessage("PENDING"), DataMessage(6)),
+        ]
+
+
+def test_none_is_valid_data_and_absence_is_not_none() -> None:
+    with Graph("none") as g:
+        a = g.state(None, name="a")
+        assert a.cache() is None and a.has_value
+        empty = g.state(name="empty")
+        assert not empty.has_value
+        with pytest.raises(GraphReflyNoDataError):
+            empty.cache()
+        assert empty.cache("fallback") == "fallback"
+        with pytest.raises(GraphReflyValueError, match="SENTINEL"):
+            a.set(SENTINEL)
+        with pytest.raises(GraphReflyValueError, match="SENTINEL"):
+            g.state(SENTINEL)
+
+
+def test_set_with_a_callable_computes_from_the_current_value() -> None:
+    with Graph("set-fn") as g:
+        a = g.state(1, name="a")
+        seen: Arrays = []
+        a.subscribe(seen.append)
+        a.set(lambda v: v + 1)
+        a.set(lambda v: v)  # returns its argument: nothing is written
+        empty = g.state(name="empty")
+        got: list[object] = []
+        empty.set(lambda v: got.append(v) or 5)
+        assert got == [SENTINEL] and empty.cache() == 5
+        a.set(lambda _: print)  # a callable value is written wrapped
+        assert a.cache() is print
+        assert data(seen) == [1, 2, print]
+
+
+def test_invalidate_complete_and_error_are_state_host_inputs() -> None:
+    with Graph("host") as g:
+        a = g.state(1, name="a")
+        seen: Arrays = []
+        a.subscribe(seen.append)
+        a.invalidate()
+        assert not a.has_value
+        a.set(2)
+        a.complete()
+        assert a.status == NodeStatus("ready", "completed", "active")
+        with pytest.raises(GraphReflyRuntimeError, match="has ended"):
+            a.set(3)
+        b = g.state(0, name="b")
+        b.error({"code": 7})
+        assert b.status.output == "errored"
+        with pytest.raises(GraphReflyValueError):
+            g.state(0).error(True)
+        assert kinds(seen)[1:] == [
+            ["PENDING", "INVALIDATE"],
+            ["PENDING", "DATA"],
+            ["PENDING", "COMPLETE"],
+        ]
+
+
+def test_batch_returns_its_result_commits_once_and_a_raising_body_commits_nothing() -> None:
+    with Graph("batch") as g:
+        a = g.state(0, name="a")
+        seen: Arrays = []
+        a.subscribe(seen.append)
+
+        def body() -> str:
+            a.set(1)
+            a.set(2)
+            return "done"
+
+        assert g.batch(body) == "done"
+        assert seen[-1] == (ControlMessage("PENDING"), DataMessage(1), DataMessage(2))
+
+        class Boom(Exception):
+            pass
+
+        def failing() -> None:
+            a.set(3)
+            raise Boom
+
+        with pytest.raises(Boom):
+            g.batch(failing)
+        assert a.cache() == 2
+
+        async def async_body() -> None:
             return None
 
-
-def test_advanced_ctx_multiple_emit_order_is_preserved():
-    graph = Graph("py-node-multi-emit-smoke")
-    source = graph.state(1, name="source")
-    seen: list[Message[object]] = []
-
-    def body(ctx: Ctx) -> None:
-        ctx.emit(("first", ctx.data(0)))
-        ctx.emit(("second", ctx.data(0)))
-
-    node = graph.node([source], body, name="multi_emit")
-    with node.subscribe(seen.append):
-        assert node.cache() == ("second", 1)
-
-    assert [msg.value for msg in seen if isinstance(msg, DataMessage)] == [
-        ("first", 1),
-        ("second", 1),
-    ]
+        with pytest.raises(GraphReflyRuntimeError, match="async"):
+            g.batch(async_body)  # type: ignore[arg-type]
 
 
-def test_advanced_ctx_index_out_of_range_raises_index_error():
-    graph = Graph("py-node-index-error-smoke")
-    source = graph.state(1, name="source")
-    checked = False
-
-    def body(ctx: Ctx) -> None:
-        nonlocal checked
-        with pytest.raises(IndexError):
-            ctx.has_data(1)
-        with pytest.raises(IndexError):
-            ctx.data(1)
-        checked = True
-        ctx.emit(ctx.data(0))
-
-    node = graph.node([source], body, name="index_error")
-    with node.subscribe(lambda _msg: None):
-        assert node.cache() == 1
-
-    assert checked is True
+# ---- advanced nodes and Ctx ----------------------------------------------------------
 
 
-def test_advanced_ctx_hook_async_callback_becomes_graph_error_without_leaking_coroutine(
-    recwarn: pytest.WarningsRecorder,
-):
-    graph = Graph("py-node-async-hook-smoke")
-    source = graph.state(1, name="source")
-    seen: list[Message[object]] = []
+def test_node_ctx_reads_inputs_and_emits_one_array_per_call() -> None:
+    with Graph("ctx") as g:
+        a = g.state(None, name="a")
+        b = g.state(name="b")
+        reads: list[tuple[object, ...]] = []
 
-    async def async_cleanup() -> None:
+        @g.node([a, b])
+        def n(ctx: Ctx) -> None:
+            reads.append(
+                (
+                    ctx.dep_len,
+                    ctx.has_data(0),
+                    ctx.data(0),
+                    ctx.has_data(1),
+                    ctx.data(1, "none"),
+                    ctx.wave_data,
+                )
+            )
+            ctx.emit(None, 1)
+            ctx.emit(2)
+
+        seen: Arrays = []
+        n.subscribe(seen.append)
+        assert n.name == "n"
+        assert reads == [(2, True, None, False, "none", [[[None]], []])]
+        assert seen == [(ControlMessage("START"), DataMessage(2))]  # the last array with DATA
+        b.set("x")
+        assert seen[-2:] == [
+            (ControlMessage("PENDING"), DataMessage(None), DataMessage(1)),
+            (ControlMessage("PENDING"), DataMessage(2)),
+        ]
+
+
+def test_ctx_index_errors_and_terminal_and_invalidated_reads() -> None:
+    with Graph("ctx-reads") as g:
+        a = g.state(1, name="a")
+        seen: list[object] = []
+
+        def n(ctx: Ctx) -> None:
+            seen.append((ctx.terminal(0), ctx.invalidated(0)))
+            with pytest.raises(IndexError):
+                ctx.data(5)
+
+        node = g.node([a], n, complete="manual", invalidate="manual")
+        node.subscribe(lambda _: None)
+        a.invalidate()
+        a.complete()
+        assert seen == [(None, False), (None, True), (ControlMessage("COMPLETE"), False)]
+
+
+def test_ctx_down_sends_mixed_arrays_and_rejects_kernel_only_types() -> None:
+    with Graph("down") as g:
+        a = g.state(1, name="a")
+        rejected: list[str] = []
+
+        def n(ctx: Ctx) -> None:
+            for bad in (
+                ControlMessage("START"),
+                ControlMessage("PENDING"),
+                ControlMessage("RESOLVED"),
+            ):
+                try:
+                    ctx.down(bad)
+                except GraphReflyValueError as error:
+                    rejected.append(str(error))
+            ctx.down(DataMessage(ctx.data(0)), ControlMessage("COMPLETE"))
+
+        node = g.node([a], n)
+        seen: Arrays = []
+        node.subscribe(seen.append)
+        assert len(rejected) == 3
+        assert seen == [(ControlMessage("START"), DataMessage(1), ControlMessage("COMPLETE"))]
+
+
+def test_a_callback_exception_is_the_nodes_error_as_graph_callback_error() -> None:
+    with Graph("error") as g:
+        a = g.state(1, name="a")
+        boom = ValueError("boom")
+
+        def n(ctx: Ctx) -> None:
+            raise boom
+
+        node = g.node([a], n)
+        seen: Arrays = []
+        node.subscribe(seen.append)
+        (start, error) = seen[0]
+        assert start == ControlMessage("START")
+        assert isinstance(error, ErrorMessage) and isinstance(error.error, GraphCallbackError)
+        assert (error.error.type_name, error.error.message, error.error.raw) == (
+            "ValueError",
+            "boom",
+            boom,
+        )
+        assert node.status.output == "errored"
+
+
+def test_an_uncaught_rejected_down_is_the_nodes_error() -> None:
+    with Graph("reject") as g:
+        a = g.state(1, name="a")
+        node = g.node([a], lambda ctx: ctx.down(ControlMessage("START")))
+        seen: Arrays = []
+        node.subscribe(seen.append)
+        error = seen[0][1]
+        assert isinstance(error, ErrorMessage) and isinstance(error.error, GraphCallbackError)
+        assert error.error.type_name == "GraphReflyValueError"
+
+
+def test_async_callbacks_are_rejected_at_registration() -> None:
+    async def callback(*_: object) -> None:
         return None
 
-    def cleanup() -> object:
-        return async_cleanup()
-
-    def body(ctx: Ctx) -> None:
-        ctx.on_invalidate(cleanup)
-        ctx.emit(ctx.data(0))
-
-    node = graph.node([source], body, name="async_hook")
-    with node.subscribe(seen.append):
-        seen.clear()
-        graph.invalidate(source)
-
-    gc.collect()
-    assert any(
-        isinstance(msg, ErrorMessage) and "async callbacks are deferred" in msg.error.message
-        for msg in seen
-    )
-    assert not [
-        warning
-        for warning in recwarn
-        if issubclass(warning.category, RuntimeWarning) and "never awaited" in str(warning.message)
-    ]
+    with Graph("async") as g:
+        a = g.state(1)
+        with pytest.raises(GraphReflyRuntimeError, match="async"):
+            g.derived([a], callback)
+        with pytest.raises(GraphReflyRuntimeError, match="async"):
+            g.node([a], callback)
+        with pytest.raises(GraphReflyRuntimeError, match="async"):
+            a.subscribe(callback)
 
 
-def test_advanced_node_callback_exception_becomes_graph_error_observation():
-    graph = Graph("py-node-error-smoke")
-    source = graph.state(1, name="source")
-    seen: list[Message[object]] = []
+def test_an_awaitable_returned_by_a_callback_is_an_error_without_leaking_it() -> None:
+    async def later() -> None:
+        return None
 
-    def boom(_ctx: Ctx) -> None:
-        raise ValueError("node boom")
-
-    bad = graph.node([source], boom, name="bad")
-    with bad.subscribe(seen.append):
-        pass
-
-    assert any(
-        isinstance(msg, ErrorMessage)
-        and msg.error.type_name == "ValueError"
-        and msg.error.message == "node boom"
-        for msg in seen
-    )
+    with Graph("awaitable") as g:
+        a = g.state(1)
+        node = g.node([a], lambda ctx: later())
+        seen: Arrays = []
+        node.subscribe(seen.append)
+        error = seen[0][1]
+        assert isinstance(error, ErrorMessage) and isinstance(error.error, GraphCallbackError)
+        assert error.error.type_name == "CallbackError"
 
 
-def test_advanced_ctx_cleanup_hook_exception_becomes_graph_error():
-    graph = Graph("py-node-hook-error-smoke")
-    source = graph.state(1, name="source")
-    seen: list[Message[object]] = []
+def test_setup_runs_once_per_lifetime_and_its_cleanup_at_close() -> None:
+    log: list[str] = []
+    with Graph("setup") as g:
+        a = g.state(1, name="a")
 
-    def flush() -> None:
-        raise ValueError("hook boom")
+        def setup(ctx: Ctx) -> Any:
+            log.append("setup")
+            assert isinstance(ctx.signal, Signal)
+            ctx.signal.on_abort(lambda: log.append("abort"))
+            return lambda: log.append(f"cleanup state={ctx.state}")
 
-    def body(ctx: Ctx) -> None:
-        ctx.on_invalidate(flush)
-        ctx.emit(ctx.data(0))
+        def n(ctx: Ctx) -> None:
+            ctx.state = ctx.data(0)
 
-    node = graph.node([source], body, name="hook_error")
-    with node.subscribe(seen.append):
-        seen.clear()
-        graph.invalidate(source)
-
-    assert any(
-        isinstance(msg, ErrorMessage)
-        and msg.error.type_name == "ValueError"
-        and msg.error.message == "hook boom"
-        for msg in seen
-    )
-
-
-def test_advanced_ctx_commit_preserves_hook_order_before_emit_reentry():
-    graph = Graph("py-node-hook-order-smoke")
-    source = graph.state(1, name="source")
-    events: list[str] = []
-    subscription: list[Subscription] = []
-
-    def cleanup() -> None:
-        events.append("cleanup")
-
-    def body(ctx: Ctx) -> None:
-        ctx.on_deactivation(cleanup)
-        ctx.emit(ctx.data(0))
-
-    def observe(msg: Message[object]) -> None:
-        if isinstance(msg, DataMessage) and msg.value == 2:
-            events.append("data")
-            subscription[0].unsubscribe()
-
-    node = graph.node([source], body, name="hook_order")
-    sub = node.subscribe(observe)
-    subscription.append(sub)
-    events.clear()
-
-    source.set(2)
-
-    assert events == ["data", "cleanup"]
-    assert sub.closed is True
-
-
-def test_advanced_ctx_is_inactive_during_commit_reentry():
-    graph = Graph("py-node-ctx-scope-smoke")
-    source = graph.state(1, name="source")
-    stashed: list[Ctx] = []
-    errors: list[GraphReflyRuntimeError] = []
-
-    def body(ctx: Ctx) -> None:
-        stashed.clear()
-        stashed.append(ctx)
-        ctx.emit(ctx.data(0))
-
-    def observe(msg: Message[object]) -> None:
-        if isinstance(msg, DataMessage) and msg.value == 2:
-            with pytest.raises(GraphReflyRuntimeError) as exc_info:
-                stashed[0].emit("late")
-            errors.append(exc_info.value)
-
-    node = graph.node([source], body, name="ctx_scope")
-    with node.subscribe(observe):
-        source.set(2)
-
-    assert errors
-    assert "ctx is only valid" in str(errors[0])
-
-
-def test_advanced_node_fatal_base_exception_propagates_and_poisons_facade():
-    graph = Graph("py-node-fatal-smoke")
-    source = graph.state(1, name="source")
-    seen: list[Message[object]] = []
-
-    def boom(_ctx: Ctx) -> None:
-        raise SystemExit("node exit")
-
-    bad = graph.node([source], boom, name="bad")
-    with pytest.raises(SystemExit, match="node exit"):
-        bad.subscribe(seen.append)
-
-    assert graph.closed is True
-    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
-        bad.cache(default=None)
-    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
-
-
-def test_advanced_node_fatal_deactivation_hook_propagates_and_poisons_facade():
-    graph = Graph("py-node-deactivation-fatal-smoke")
-    source = graph.state(1, name="source")
-    seen: list[Message[object]] = []
-
-    def cleanup() -> None:
-        raise SystemExit("deactivation exit")
-
-    def body(ctx: Ctx) -> None:
-        ctx.on_deactivation(cleanup)
-        ctx.emit(ctx.data(0))
-
-    node = graph.node([source], body, name="fatal_cleanup")
-    sub = node.subscribe(seen.append)
-
-    with pytest.raises(SystemExit, match="deactivation exit"):
+        node = g.node([a], n, setup=setup)
+        sub = node.subscribe(lambda _: None)
+        a.set(2)
         sub.unsubscribe()
+        assert log == ["setup", "abort", "cleanup state=2"]
+
+
+def test_a_cleanup_failure_goes_to_the_host_reporter_not_the_node() -> None:
+    reports: list[HostReport] = []
+    with Graph("cleanup", report=reports.append) as g:
+        a = g.state(1)
+
+        def setup(ctx: Ctx) -> Any:
+            def cleanup() -> None:
+                raise RuntimeError("cleanup failed")
+
+            return cleanup
+
+        node = g.node([a], lambda ctx: None, setup=setup)
+        node.subscribe(lambda _: None).unsubscribe()
+        assert [(r.source, str(r.error)) for r in reports] == [
+            (f"cleanup {node.name}", "cleanup failed")
+        ]
+        assert node.status.output == "open"
+
+
+def test_policies_quiet_and_manual_invalidate() -> None:
+    with Graph("policies") as g:
+        a = g.state(1, name="a")
+        runs: list[list[bool]] = []
+
+        def n(ctx: Ctx) -> None:
+            runs.append([ctx.invalidated(0)])
+
+        node = g.node([a], n, invalidate="manual")
+        node.subscribe(lambda _: None)
+        a.invalidate()
+        assert runs == [[False], [True]]
+        with pytest.raises(GraphReflyValueError):
+            g.node([a], n, complete="sometimes")  # type: ignore[arg-type]
+        quiet = g.node([a], lambda ctx: None, quiet=True)
+        assert g.definition(quiet).quiet is True
+
+
+def test_ctx_rewire_replace_and_definition() -> None:
+    with Graph("topology") as g:
+        a = g.state(1, name="a")
+        b = g.state(10, name="b")
+        kept: list[Ctx] = []
+
+        def total(ctx: Ctx) -> None:
+            kept.append(ctx)
+            ctx.emit(sum(ctx.data(i, 0) for i in range(ctx.dep_len)))
+
+        n = g.node([a], total, name="n", recipe=Recipe("total"))
+        n.subscribe(lambda _: None)
+        kept[-1].rewire([a, b])
+        assert n.cache() == 11
+        definition = g.definition(n)
+        assert definition.deps == (a,) and definition.callback is total
+        assert definition.recipe == Recipe("total")
+        assert [entry["deps"] for entry in g.describe()["nodes"] if entry["name"] == "n"] == [
+            ["a", "b"]
+        ]
+        g.replace(n, [b], lambda ctx: ctx.emit(ctx.data(0) * 2))
+        assert n.cache() == 20
+        assert g.definition(n).recipe is None
+        with pytest.raises(GraphReflyRuntimeError, match="not a computed node"):
+            g.replace(a, [], lambda ctx: None)
+
+
+# ---- describe and observe ------------------------------------------------------------
+
+
+def test_describe_is_topology_data_without_function_bodies() -> None:
+    with Graph("describe") as g:
+        a = g.state(1, name="a")
+        g.derived([a], lambda v: v, name="d")
+        assert g.describe() == {
+            "name": "describe",
+            "nodes": [
+                {
+                    "name": "a",
+                    "kind": "state",
+                    "deps": [],
+                    "quiet": False,
+                    "has_value": True,
+                    "value": 1,
+                },
+                {"name": "d", "kind": "node", "deps": ["a"], "quiet": False, "has_value": False},
+            ],
+        }
+
+
+def test_observe_sees_every_published_array_without_activating() -> None:
+    with Graph("observe") as g:
+        a = g.state(1, name="a")
+        d = g.derived([a], lambda v: v + 1, name="d")
+        events: list[GraphEvent] = []
+        g.observe(events.append)
+        assert d.status.lifecycle == "inactive"
+        a.set(2)
+        assert [(e.path, e.messages) for e in events] == [
+            ("a", (ControlMessage("PENDING"), DataMessage(2)))
+        ]
+        d.subscribe(lambda _: None)  # d's activation run publishes its first array
+        a.set(3)
+        assert [e.path for e in events[1:]] == ["d", "a", "d"]
+        assert [e.seq for e in events] == [1, 2, 3, 4]
 
-    assert graph.closed is True
-    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
-        node.cache(default=None)
-    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
 
+def test_observe_callback_errors_are_captured() -> None:
+    with Graph("observe-errors") as g:
+        a = g.state(1)
 
-def test_advanced_node_fatal_during_batch_commit_propagates_without_graph_error():
-    graph = Graph("py-node-batch-fatal-smoke")
-    source = graph.state(0, name="source")
-    seen: list[Message[object]] = []
+        def failing(event: GraphEvent) -> None:
+            raise RuntimeError("observer failed")
 
-    def boom(ctx: Ctx) -> None:
-        if ctx.data(0) == 1:
-            raise SystemExit("node batch exit")
-        ctx.emit(ctx.data(0))
+        sub = g.observe(failing)
+        a.set(2)
+        assert [type(e) for e in sub.callback_errors] == [SubscriberCallbackError]
 
-    bad = graph.node([source], boom, name="bad")
-    with pytest.raises(SystemExit, match="node batch exit"), bad.subscribe(seen.append):
-        graph.batch(lambda: source.set(1))
 
-    assert graph.closed is True
-    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
-        bad.cache(default=None)
-    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
+# ---- subscriber boundary -----------------------------------------------------------------
 
 
-def test_rewire_next_fatal_callback_propagates_without_graph_error():
-    graph = Graph("py-rewire-next-fatal-smoke")
-    source = graph.state(0, name="source")
-    helper = graph.state("helper", name="helper")
-    seen: list[Message[object]] = []
+def test_subscriber_errors_are_captured_bounded_and_not_node_errors() -> None:
+    with Graph("subscriber") as g:
+        a = g.state(0)
+        handled: list[SubscriberCallbackError] = []
 
-    def body(ctx: Ctx) -> None:
-        if ctx.dep_len > 1 and ctx.has_data(1):
-            raise SystemExit("rewire next exit")
-        if ctx.has_data(0) and ctx.data(0) == 1:
-            ctx.rewire_next.subscribe_dep(helper, body)
-        ctx.emit(ctx.data(0))
+        def failing(_: object) -> None:
+            raise ValueError("sink failed")
 
-    node = graph.node([source], body, name="rewire-next-fatal", partial=True)
-    with pytest.raises(SystemExit, match="rewire next exit"), node.subscribe(seen.append):
-        source.set(1)
+        sub = a.subscribe(failing, on_error=handled.append)
+        for v in range(40):
+            a.set(v + 1)
+        assert len(sub.callback_errors) == 32
+        assert isinstance(sub.callback_errors[0], SubscriberCallbackError)
+        assert len(handled) == 41
+        assert a.status.output == "open"
 
-    assert graph.closed is True
-    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
-        node.cache(default=None)
-    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
 
+def test_subscriber_on_error_failures_are_captured() -> None:
+    with Graph("on-error") as g:
+        a = g.state(0)
 
-def test_fatal_poison_preserves_original_exception_when_teardown_also_fails():
-    graph = Graph("py-fatal-teardown-mask-smoke")
-    source = graph.state(1, name="source")
+        def failing(_: object) -> None:
+            raise ValueError("sink failed")
 
-    def cleanup() -> None:
-        raise SystemExit("cleanup exit")
+        def handler(_: SubscriberCallbackError) -> None:
+            raise RuntimeError("handler failed")
 
-    def cleanup_body(ctx: Ctx) -> None:
-        ctx.on_deactivation(cleanup)
-        ctx.emit(ctx.data(0))
+        sub = a.subscribe(failing, on_error=handler)
+        assert [str(e) for e in sub.callback_errors] == ["sink failed", "handler failed"]
 
-    cleanup_node = graph.node([source], cleanup_body, name="cleanup")
-    cleanup_subscription = cleanup_node.subscribe(lambda _msg: None)
 
-    def original(_ctx: Ctx) -> None:
-        raise SystemExit("original exit")
+@pytest.mark.parametrize("fatal", [KeyboardInterrupt, SystemExit])
+def test_a_fatal_in_a_subscriber_propagates_and_poisons_the_facade(
+    fatal: type[BaseException],
+) -> None:
+    g = Graph("fatal-sink")
+    a = g.state(0)
 
-    fatal_node = graph.node([source], original, name="fatal")
-    with pytest.raises(SystemExit, match="original exit"):
-        fatal_node.subscribe(lambda _msg: None)
+    def sink(array: tuple[Message[int], ...]) -> None:
+        if array[0] == ControlMessage("PENDING"):
+            raise fatal
 
-    assert graph.closed is True
-    assert cleanup_subscription.closed is True
-    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
-        source.cache()
+    sub = a.subscribe(sink)
+    with pytest.raises(fatal):
+        a.set(1)
+    assert g.closed and sub.closed
+    assert sub.callback_errors == ()
+    with pytest.raises(GraphReflyRuntimeError, match="fatal"):
+        a.cache()
 
 
-def test_decorators_and_context_manager_are_explicit_graph_owned_sugar():
-    with Graph("py-decorator-smoke") as graph:
-        source = graph.state(1, name="source")
+@pytest.mark.parametrize("where", ["callback", "setup", "batch-commit", "cleanup"])
+def test_a_fatal_from_a_callback_propagates_without_a_graph_error(where: str) -> None:
+    g = Graph("fatal")
+    a = g.state(0, name="a")
+    armed = [False]
 
-        @graph.derived([source])
-        def plus_one(value: int) -> int:
-            return value + 1
-
-        effects: list[int] = []
-
-        @graph.effect([plus_one])
-        def record(value: int) -> None:
-            effects.append(value)
-
-        with record.subscribe(lambda _msg: None):
-            assert plus_one.cache() == 2
-            source.set(4)
-            assert plus_one.cache() == 5
-            assert effects[-1] == 5
-
-    assert graph.closed is True
-    with pytest.raises(GraphReflyRuntimeError, match="graph is closed"):
-        plus_one.cache()
-
-
-def test_subscriber_callback_errors_are_captured_at_python_boundary():
-    graph = Graph("py-subscriber-error-smoke")
-    source = graph.state(1, name="source")
-    captured: list[SubscriberCallbackError] = []
-
-    def subscriber(_msg: Message[int]) -> None:
-        raise ValueError("observer boom")
-
-    sub = source.subscribe(subscriber, on_error=captured.append)
-
-    assert captured
-    assert sub.callback_errors == tuple(captured)
-    assert isinstance(captured[0].original, ValueError)
-    assert captured[0].original.__traceback__ is None
-    sub.unsubscribe()
-
-
-def test_subscriber_fatal_base_exception_propagates_without_boundary_wrapping():
-    graph = Graph("py-subscriber-fatal-smoke")
-    source = graph.state(1, name="source")
-    events: list[GraphEvent] = []
-
-    def subscriber(_msg: Message[int]) -> None:
-        raise SystemExit("exit")
-
-    observer = graph.observe(events.append)
-    with pytest.raises(SystemExit, match="exit"):
-        source.subscribe(subscriber)
-
-    assert graph.closed is True
-    assert observer.closed is True
-    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
-        source.cache()
-    assert not any(isinstance(event.message, ErrorMessage) for event in events)
-
-
-def test_subscriber_keyboard_interrupt_propagates_without_boundary_wrapping():
-    graph = Graph("py-subscriber-keyboard-interrupt-smoke")
-    source = graph.state(1, name="source")
-    events: list[GraphEvent] = []
-
-    def subscriber(_msg: Message[int]) -> None:
-        raise KeyboardInterrupt
-
-    observer = graph.observe(events.append)
-    with pytest.raises(KeyboardInterrupt):
-        source.subscribe(subscriber)
-
-    assert graph.closed is True
-    assert observer.closed is True
-    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
-        source.cache()
-    assert not any(isinstance(event.message, ErrorMessage) for event in events)
-
-
-def test_subscriber_callback_errors_keep_bounded_history():
-    graph = Graph("py-subscriber-error-history-smoke")
-    source = graph.state(0, name="source")
-
-    def subscriber(_msg: Message[int]) -> None:
-        raise ValueError("observer boom")
-
-    sub = source.subscribe(subscriber)
-    for value in range(40):
-        source.set(value)
-
-    assert len(sub.callback_errors) == 32
-    assert all(error.original.__traceback__ is None for error in sub.callback_errors)
-    sub.unsubscribe()
-
-
-def test_subscriber_on_error_failures_are_captured_at_python_boundary():
-    graph = Graph("py-subscriber-on-error-smoke")
-    source = graph.state(1, name="source")
-    raised = False
-
-    def subscriber(_msg: Message[int]) -> None:
-        nonlocal raised
-        if not raised:
-            raised = True
-            raise ValueError("observer boom")
-
-    def on_error(_error: SubscriberCallbackError) -> None:
-        raise RuntimeError("handler boom")
-
-    sub = source.subscribe(subscriber, on_error=on_error)
-
-    assert len(sub.callback_errors) == 2
-    assert isinstance(sub.callback_errors[0].original, ValueError)
-    assert isinstance(sub.callback_errors[1].original, RuntimeError)
-    sub.unsubscribe()
-
-
-def test_observe_callback_errors_are_captured_at_python_boundary():
-    graph = Graph("py-observe-error-smoke")
-    source = graph.state(1, name="source")
-    captured: list[SubscriberCallbackError] = []
-
-    def observer(event: GraphEvent) -> None:
-        if event.message == DataMessage(2):
-            raise ValueError("observe boom")
-
-    sub = graph.observe(observer, on_error=captured.append)
-    source.set(2)
-
-    assert captured
-    assert sub.callback_errors == tuple(captured)
-    assert isinstance(captured[0].original, ValueError)
-    assert captured[0].original.__traceback__ is None
-    sub.unsubscribe()
-
-
-def test_observe_fatal_base_exception_propagates_to_initiating_call():
-    graph = Graph("py-observe-fatal-smoke")
-    source = graph.state(1, name="source")
-
-    def observer(event: GraphEvent) -> None:
-        if event.message == DataMessage(2):
-            raise SystemExit("observe exit")
-
-    sub = graph.observe(observer)
-    with pytest.raises(SystemExit, match="observe exit"):
-        source.set(2)
-
-    assert graph.closed is True
-    assert sub.closed is True
-    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
-        source.cache()
-
-
-def test_observe_fatal_during_registration_propagates_without_graph_error():
-    graph = Graph("py-observe-eager-fatal-smoke")
-    source = graph.state(1, name="source")
-    source.subscribe(lambda _msg: None)
-    calls = 0
-
-    def observer(_event: GraphEvent) -> None:
-        nonlocal calls
-        calls += 1
-        raise SystemExit("observe eager exit")
-
-    with pytest.raises(SystemExit, match="observe eager exit"):
-        graph.observe(observer)
-
-    assert graph.closed is True
-    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
-        source.cache()
-    assert calls == 1
-
-
-def test_graph_observe_uses_typed_message_shape():
-    seen: list[GraphEvent] = []
-    graph = Graph("py-observe-shape-smoke")
-    source = graph.state(1, name="source")
-    graph.derived([source], lambda value: value + 1, name="plus_one")
-
-    with graph.observe(seen.append):
-        source.set(4)
-
-    assert any(
-        event.path.endswith("plus_one")
-        and event.message == DataMessage(5)
-        and event.tier == 3
-        for event in seen
-    )
-
-
-def test_describe_exposes_factory_metadata_without_raw_function_bodies():
-    graph = Graph("py-describe-smoke")
-    source = graph.state(1, name="source")
-    plus_one = graph.derived([source], lambda value: value + 1, name="plus_one")
-
-    sub = plus_one.subscribe(lambda _msg: None)
-    snapshot = graph.describe()
-    sub.unsubscribe()
-    nodes = {node["name"]: node for node in snapshot["nodes"]}
-
-    assert nodes["source"]["factory"] == "state"
-    assert nodes["plus_one"]["factory"] == "derived"
-    assert nodes["plus_one"]["has_value"] is True
-    assert "lambda" not in repr(snapshot)
-
-
-def test_restore_public_surface_has_no_storage_or_hidden_runtime_hydration():
-    checkpoint_params = signature(Graph.checkpoint).parameters
-    restore_params = signature(restore_graph).parameters
-    registry_params = signature(restore_registry).parameters
-    ref_params = signature(restore_ref).parameters
-
-    assert list(checkpoint_params) == ["self"]
-    assert list(restore_params) == ["checkpoint", "registry"]
-    assert restore_params["registry"].kind is restore_params["registry"].KEYWORD_ONLY
-    assert "storage" not in restore_params
-    assert "runner" not in restore_params
-    assert "hydrate" not in restore_params
-    assert "into" not in restore_params
-    assert list(registry_params) == ["entries", "include_builtins"]
-    assert (
-        registry_params["include_builtins"].kind
-        is registry_params["include_builtins"].KEYWORD_ONLY
-    )
-    assert list(ref_params) == ["ref", "config", "config_version"]
-    assert ref_params["config"].kind is ref_params["config"].KEYWORD_ONLY
-    assert ref_params["config_version"].kind is ref_params["config_version"].KEYWORD_ONLY
-
-    public_registry = restore_registry([])
-    native = import_module("graphrefly._native")
-    assert not isinstance(public_registry, native.RestoreRegistry)
-    with pytest.raises(GraphReflyRestoreError, match="graphrefly.restore_registry"):
-        restore_graph({}, registry=native.restore_registry([], True))
-    assert not hasattr(graphrefly, "NativeGraph")
-    assert not hasattr(graphrefly, "NativeNode")
-    assert not hasattr(graphrefly, "RestoreNativeContext")
-
-
-def test_public_value_and_runtime_errors_are_facade_exceptions():
-    graph = Graph("py-error-boundary-smoke")
-
-    graph.state(1, name="same")
-    with pytest.raises(GraphReflyRuntimeError, match="duplicate graph node id"):
-        graph.state(2, name="same")
-
-    source = graph.state(1, name="source")
-    derived = graph.derived([source], lambda value: value + 1, name="derived")
-    with pytest.raises(GraphReflyRuntimeError, match="state nodes"):
-        derived.set(3)
-
-
-def test_public_control_facade_is_graph_owned_and_validates_lock_id():
-    graph = Graph("py-control-facade-smoke")
-    other_graph = Graph("py-control-other-graph")
-    source = graph.state(1, name="source")
-    other_source = other_graph.state(1, name="other_source")
-    derived = graph.derived([source], lambda value: value + 1, name="derived")
-    seen: list[Message[int]] = []
-
-    with derived.subscribe(seen.append):
-        assert derived.cache() == 2
-        graph.pause(derived, "lock")
-        source.set(2)
-        assert derived.cache() == 2
-        graph.resume(derived, "lock")
-        assert derived.cache() == 3
-        seen.clear()
-        graph.invalidate(derived)
-
-    assert ControlMessage("INVALIDATE") in seen
-    with pytest.raises(GraphReflyRuntimeError, match="must belong"):
-        graph.invalidate(other_source)
-    with pytest.raises(GraphReflyValueError, match="lock_id must be a str"):
-        graph.pause(derived, object())  # type: ignore[arg-type]
-
-
-def test_graph_callback_fatal_base_exception_propagates_without_graph_error():
-    graph = Graph("py-graph-fatal-smoke")
-    source = graph.state(1, name="source")
-
-    def boom(_value: int) -> int:
-        raise SystemExit("graph exit")
-
-    bad = graph.derived([source], boom, name="bad")
-    with pytest.raises(SystemExit, match="graph exit"):
-        bad.subscribe(lambda _msg: None)
-
-    assert graph.closed is True
-    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
-        bad.cache(default=None)
-
-
-def test_graph_callback_keyboard_interrupt_propagates_without_graph_error():
-    graph = Graph("py-graph-keyboard-interrupt-smoke")
-    source = graph.state(1, name="source")
-
-    def boom(_value: int) -> int:
-        raise KeyboardInterrupt
-
-    bad = graph.derived([source], boom, name="bad")
-    with pytest.raises(KeyboardInterrupt):
-        bad.subscribe(lambda _msg: None)
-
-    assert graph.closed is True
-    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
-        bad.cache(default=None)
-
-
-def test_graph_callback_fatal_during_batch_commit_propagates_without_graph_error():
-    graph = Graph("py-batch-commit-fatal-smoke")
-    source = graph.state(0, name="source")
-    seen: list[Message[object]] = []
-
-    def boom(value: int) -> int:
-        if value == 1:
-            raise SystemExit("batch commit exit")
-        return value
-
-    bad = graph.derived([source], boom, name="bad")
-    with pytest.raises(SystemExit, match="batch commit exit"), bad.subscribe(seen.append):
-        graph.batch(lambda: source.set(1))
-
-    assert graph.closed is True
-    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
-        bad.cache(default=None)
-    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
-
-
-def test_graph_callback_keyboard_interrupt_during_batch_commit_stays_fatal():
-    graph = Graph("py-batch-commit-keyboard-interrupt-smoke")
-    source = graph.state(0, name="source")
-    seen: list[Message[object]] = []
-
-    def boom(value: int) -> int:
-        if value == 1:
+    def boom() -> None:
+        if armed[0]:
+            armed[0] = False
             raise KeyboardInterrupt
-        return value
 
-    bad = graph.derived([source], boom, name="bad")
-    with pytest.raises(KeyboardInterrupt), bad.subscribe(seen.append):
-        graph.batch(lambda: source.set(1))
+    def setup(ctx: Ctx) -> Any:
+        if where == "setup":
+            boom()
+        return (lambda: boom()) if where == "cleanup" else None
 
-    assert graph.closed is True
-    with pytest.raises(GraphReflyRuntimeError, match="fatal host boundary abort"):
-        bad.cache(default=None)
-    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
+    def n(ctx: Ctx) -> None:
+        if where in ("callback", "batch-commit"):
+            boom()
+        ctx.emit(ctx.data(0))
+
+    node = g.node([a], n, setup=setup)
+    seen: Arrays = []
+    armed[0] = where == "setup"
+    if where == "setup":
+        with pytest.raises(KeyboardInterrupt):
+            node.subscribe(seen.append)
+    else:
+        sub = node.subscribe(seen.append)
+        armed[0] = True
+        with pytest.raises(KeyboardInterrupt):
+            if where == "callback":
+                a.set(1)
+            elif where == "batch-commit":
+                g.batch(lambda: a.set(1))
+            else:
+                sub.unsubscribe()
+    assert g.closed
+    assert not any(isinstance(m, ErrorMessage) for array in seen for m in array)
 
 
-def test_graph_close_releases_facade_subscriptions_and_rejects_later_use():
-    graph = Graph("py-close-smoke")
-    source = graph.state(1, name="source")
-    seen: list[Message[int]] = []
-    sub = source.subscribe(seen.append)
+# ---- host lifetime -----------------------------------------------------------------------
 
-    assert sub.closed is False
-    graph.close()
-    graph.close()
 
-    assert graph.closed is True
-    assert sub.closed is True
+def test_close_releases_subscriptions_and_rejects_later_use() -> None:
+    g = Graph("close")
+    a = g.state(1, name="a")
+    sub = a.subscribe(lambda _: None)
+    g.close()
+    g.close()
+    assert g.closed and sub.closed
     sub.unsubscribe()
     with pytest.raises(GraphReflyRuntimeError, match="graph is closed"):
-        source.cache()
+        a.cache()
     with pytest.raises(GraphReflyRuntimeError, match="graph is closed"):
-        graph.state(2, name="after_close")
+        g.state(2)
 
 
-def test_graph_retain_keeps_node_active_after_returned_handle_is_dropped():
-    graph = Graph("py-retain-drop-smoke")
-    source = graph.state(1, name="source")
-    runs: list[int] = []
-
-    def double(value: int) -> int:
-        runs.append(value)
-        return value * 2
-
-    retained = graph.derived([source], double, name="retained")
-    graph.retain(retained, reason="test.keepalive")
+def test_a_dropped_subscription_handle_stays_subscribed_until_close() -> None:
+    g = Graph("drop")
+    a = g.state(1, name="a")
+    seen: Arrays = []
+    a.subscribe(seen.append)
     gc.collect()
-
-    assert retained.cache() == 2
-    source.set(2)
-
-    assert runs == [1, 2]
-    assert retained.cache() == 4
-    graph.close()
+    a.set(2)
+    assert data(seen) == [1, 2]
+    g.close()
+    assert g.closed
 
 
-def test_graph_retain_release_is_idempotent_and_stops_activation_root():
-    graph = Graph("py-retain-release-smoke")
-    source = graph.state(1, name="source")
-    runs: list[int] = []
-
-    retained = graph.derived(
-        [source],
-        lambda value: runs.append(value) or value,
-        name="retained",
-    )
-    keepalive = graph.retain(retained)
-
-    assert runs == [1]
-    keepalive.release()
-    keepalive.release()
-    source.set(2)
-
-    assert keepalive.closed is True
-    assert runs == [1]
-
-
-def test_graph_retain_close_releases_handle_and_rejects_cross_graph_nodes():
-    graph = Graph("py-retain-close-smoke")
-    other = Graph("py-retain-other")
-    source = graph.state(1, name="source")
-    retained = graph.derived([source], lambda value: value, name="retained")
-    keepalive = graph.retain(retained)
-
-    assert keepalive.closed is False
-    with pytest.raises(GraphReflyRuntimeError, match="node must belong"):
-        other.retain(retained)
-    graph.close()
-
-    assert keepalive.closed is True
-    other.close()
+def test_retain_keeps_a_node_active_and_release_is_idempotent() -> None:
+    with Graph("retain") as g:
+        a = g.state(1)
+        runs: list[int] = []
+        d = g.derived([a], lambda v: runs.append(v) or v)
+        keepalive = g.retain(d, reason="test")
+        gc.collect()
+        a.set(2)
+        assert runs == [1, 2] and d.cache() == 2
+        assert isinstance(keepalive, Retain) and not isinstance(keepalive, Subscription)
+        assert not hasattr(keepalive, "unsubscribe")
+        keepalive.release()
+        keepalive.release()
+        a.set(3)
+        assert runs == [1, 2] and keepalive.closed
+        with g.retain(d) as scoped:
+            assert not scoped.closed
+        assert scoped.closed
+        with pytest.raises(GraphReflyValueError, match="retain reason"):
+            g.retain(d, reason=object())  # type: ignore[arg-type]
+        other = Graph("other")
+        with pytest.raises(GraphReflyRuntimeError, match="node must belong"):
+            other.retain(d)
+        other.close()
 
 
-def test_graph_retain_is_release_token_not_observer_subscription():
-    graph = Graph("py-retain-shape-smoke")
-    node = graph.state(1, name="source")
-    keepalive = graph.retain(node)
-
-    assert isinstance(keepalive, Retain)
-    assert not isinstance(keepalive, Subscription)
-    assert not hasattr(keepalive, "unsubscribe")
-    assert not hasattr(keepalive, "callback_errors")
-
-    keepalive.release()
-
-
-def test_graph_retain_context_manager_releases_activation_root():
-    graph = Graph("py-retain-context-smoke")
-    source = graph.state(1, name="source")
-    runs: list[int] = []
-    retained = graph.derived(
-        [source],
-        lambda value: runs.append(value) or value,
-        name="retained",
-    )
-
-    with graph.retain(retained) as keepalive:
-        assert keepalive.closed is False
-        assert runs == [1]
-
-    assert keepalive.closed is True
-    source.set(2)
-    assert runs == [1]
-
-
-def test_graph_retain_rejects_non_string_reason():
-    graph = Graph("py-retain-reason-smoke")
-    node = graph.state(1, name="source")
-
-    with pytest.raises(GraphReflyValueError, match="retain reason"):
-        graph.retain(node, reason=object())  # type: ignore[arg-type]
-
-
-def test_d557_graph_close_uses_reverse_graph_owned_resource_stack():
-    graph = Graph("py-d557-resource-stack")
-    source = graph.state(1, name="source")
-    retained = graph.derived([source], lambda value: value, name="retained")
-    keepalive = graph.retain(retained)
-    bridge = graphrefly.wire_bridge(graph, session_id="s1", name="bridge")
-    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge, name="protobuf")
-    group = graphrefly.wire_edge_group(graph, bridge, inbound_edges=["edge-a"], name="group")
-    ack = graphrefly.wire_bridge_ack_driver(
-        graph,
-        bridge,
-        clock=graph.state(0, name="clock"),
-        timeout_ms=5,
-        name="ack",
-    )
-    subscription = source.subscribe(lambda _msg: None)
-    order: list[str] = []
-
-    def wrap_close(resource: object, label: str) -> None:
-        original = resource._close_from_graph  # type: ignore[attr-defined]
-
-        def close() -> None:
-            order.append(label)
-            original()
-
-        resource._close_from_graph = close  # type: ignore[attr-defined]
-
-    wrap_close(keepalive, "retain")
-    wrap_close(bridge, "bridge")
-    wrap_close(protobuf, "protobuf")
-    wrap_close(group, "group")
-    wrap_close(ack, "ack")
-    wrap_close(subscription, "subscription")
-    wrap_close(keepalive._subscription, "retain-subscription")  # noqa: SLF001
-
-    graph.close()
-
-    assert order == [
-        "subscription",
-        "ack",
-        "group",
-        "protobuf",
-        "bridge",
-        "retain",
-        "retain-subscription",
-    ]
-    assert keepalive.closed is True
-    assert subscription.closed is True
-
-
-def test_d557_resource_stack_continues_after_resource_close_error():
-    graph = Graph("py-d557-resource-stack-error")
+def test_close_uses_the_reverse_resource_stack_and_continues_after_an_error() -> None:
+    g = Graph("stack")
     order: list[str] = []
 
     class Resource:
-        def __init__(self, label: str, *, raises: bool = False) -> None:
+        def __init__(self, label: str, raises: bool = False) -> None:
             self.label = label
             self.raises = raises
 
@@ -1738,56 +679,94 @@ def test_d557_resource_stack_continues_after_resource_close_error():
             if self.raises:
                 raise RuntimeError(self.label)
 
-    first = Resource("first")
-    second = Resource("second")
-    third = Resource("third", raises=True)
-    graph._lifetime.register_resource(first)  # noqa: SLF001
-    graph._lifetime.register_resource(second)  # noqa: SLF001
-    graph._lifetime.register_resource(third)  # noqa: SLF001
-
+    for label, raises in (("first", False), ("second", False), ("third", True)):
+        g._lifetime.register_resource(Resource(label, raises))
     with pytest.raises(RuntimeError, match="third"):
-        graph.close()
-
+        g.close()
     assert order == ["third", "second", "first"]
 
 
-def test_d557_graph_close_closes_public_resource_subscriptions_before_resource_stack():
-    graph = Graph("py-d557-resource-close-with-public-subscription")
-    bridge = graphrefly.wire_bridge(graph, session_id="s1")
-    protobuf = graphrefly.wire_bridge_protobuf(graph, bridge)
-    clock = graph.state(1000, name="clock")
-    ack = graphrefly.wire_bridge_ack_driver(graph, bridge, clock=clock, timeout_ms=5)
-    source = graph.state(b"first", name="source")
-    graphrefly.wire_edge_group(graph, bridge, outbound_edges={"edge-a": source})
-    timeouts: list[graphrefly.WireBridgeAckTimeout] = []
-    outbound: list[bytes] = []
+def test_a_graph_is_bound_to_its_owner_thread() -> None:
+    g = Graph("thread")
+    a = g.state(1)
+    errors: list[BaseException] = []
 
-    with (
-        ack.timeouts.subscribe(_record_data(timeouts)),
-        protobuf.outbound_bytes.subscribe(_record_data(outbound)),
-    ):
-        assert len(outbound) == 1
-        graph.close()
+    def other() -> None:
+        try:
+            a.cache()
+        except BaseException as error:
+            errors.append(error)
 
-    assert graph.closed is True
-    assert ack._released is True  # noqa: SLF001
-    assert bridge._released is True  # noqa: SLF001
+    thread = threading.Thread(target=other)
+    thread.start()
+    thread.join()
+    assert len(errors) == 1 and isinstance(errors[0], GraphReflyRuntimeError)
+    g.close()
 
 
-def test_dropped_subscription_handle_releases_native_subscription():
-    graph = Graph("py-subscription-drop-smoke")
-    source = graph.state(1, name="source")
-    seen: list[Message[int]] = []
-
-    sub = source.subscribe(seen.append)
-    assert DataMessage(1) in seen
-    del sub
-    gc.collect()
-
-    source.set(2)
-
-    assert DataMessage(2) not in seen
+def test_node_names_are_unique_and_auto_names_are_reserved() -> None:
+    with Graph("names") as g:
+        g.state(1, name="a")
+        with pytest.raises(GraphReflyValueError, match="already used"):
+            g.state(2, name="a")
+        with pytest.raises(GraphReflyValueError, match="#"):
+            g.state(2, name="#1")
+        assert g.state(3).name.startswith("#")
 
 
-def test_callback_error_class_is_public_taxonomy_for_future_mapping():
+# ---- checkpoint and restore ---------------------------------------------------------------
+
+
+def _registry() -> dict[str, Any]:
+    def total(config: object, at: RecipeContext) -> Any:
+        def run(ctx: Ctx) -> None:
+            ctx.state = (ctx.state or 0) + 1
+            ctx.emit(sum(ctx.data(i, 0) for i in range(ctx.dep_len)) + (config or 0))
+
+        return run
+
+    return {"total": total}
+
+
+def test_checkpoint_and_restore_graph_round_trip() -> None:
+    reg = _registry()
+    g = Graph("cp")
+    a = g.state(1, name="a")
+    built = reg["total"](100, RecipeContext(g, "t"))
+    t = g.node([a], built, name="t", recipe=Recipe("total", 100))
+    t.subscribe(lambda _: None)
+    a.set(2)
+    cp = g.checkpoint()
+    r = graphrefly.restore_graph(cp, registry=reg)
+    assert r.describe()["nodes"] == g.describe()["nodes"]
+    restored = next(n for n in (r._nodes.values()) if n.name == "t")
+    seen: Arrays = []
+    restored.subscribe(seen.append)
+    assert seen == [(ControlMessage("START"), DataMessage(102))]
+    state = r._nodes["a"]
+    assert isinstance(state, State)
+    state.set(5)
+    assert restored.cache() == 105
+    g.close()
+    r.close()
+
+
+def test_checkpoint_refuses_non_json_and_restore_refuses_local_only_nodes() -> None:
+    with Graph("cp-errors") as g:
+        g.state((1, 2), name="tuple")
+        with pytest.raises(GraphReflyCheckpointError, match="not JSON"):
+            g.checkpoint()
+    with Graph("local") as g:
+        a = g.state(1)
+        g.node([a], lambda ctx: None)
+        cp = g.checkpoint()
+        with pytest.raises(GraphReflyRestoreError, match="local-only"):
+            graphrefly.restore_graph(cp, registry={})
+        with pytest.raises(GraphReflyRestoreError, match="checkpoint@1"):
+            graphrefly.restore_graph({"nodes": []}, registry={})
+
+
+def test_callback_error_is_public_taxonomy() -> None:
     assert issubclass(CallbackError, graphrefly.GraphReflyError)
+    assert issubclass(GraphCallbackError, CallbackError)
+    assert issubclass(SubscriberCallbackError, CallbackError)

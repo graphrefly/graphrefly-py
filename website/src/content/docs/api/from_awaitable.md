@@ -9,14 +9,17 @@ description: "Create a source from a fresh awaitable produced on each activation
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_facade.py:3121`
+**Source:** `src/graphrefly/_facade.py:2139`
 
 ## Signature
 
 ```python
-from_awaitable(graph: Graph, runner: AsyncRunner, factory: Callable[[], Awaitable[T]], *, name: str | None = None, pausable: PausableMode = True)
+from_awaitable(graph: Graph, runner: AsyncRunner, factory: Callable[[], Awaitable[T]], *, name: str | None = None)
 ```
 
 ## Description
 
 Create a source from a fresh awaitable produced on each activation.
+
+It sends the awaited value and COMPLETE in one array, or ERROR. Its lifetime's
+close cancels the job.

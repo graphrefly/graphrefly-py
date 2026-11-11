@@ -1,64 +1,70 @@
 # Python development
 
 Use [package metadata](../pyproject.toml) and [docs policy](docs.jsonl) for the
-package/tooling contract. The native engine is in the sibling Rust repository.
+package/tooling contract. The package is pure Python (graphrefly:D800,
+graphrefly-py:D6): no Rust toolchain or sibling checkout is needed.
 
 ```sh
 uv sync --group dev --group docs
-uv run maturin develop --release
 uv run pytest
 uv run ruff check .
 uv run mypy src
 uv run python scripts/check_api_docs.py
+uv build
 cd website
 pnpm docs:gen:check
 pnpm build
 ```
 
-Maturin needs the Rust toolchain from the sibling checkout, checked out at
-`cf02fc97070e32560c0b4b22481418c8163d6e80` (graphrefly:D800) until the Python
-kernel replaces `graphrefly._native`. In an agent shell,
-run it through that checkout's mise environment while keeping uv's working
-project here. Follow [Rust development](../../graphrefly-rs/docs/development.md)
-for toolchain and long-command observation. The native binding gate is
-`mise exec -- cargo test -p graphrefly-bindings-py` from the Rust checkout when
-that foundation is affected.
+uv manages the environment only (`package = false`); tests import the package from
+`src` through pytest's `pythonpath`. Scripts that import it run with
+`PYTHONPATH=src`:
 
-## Existing Python facade boundary
+```sh
+PYTHONPATH=src uv run python scripts/bench_kernel.py
+PYTHONPATH=src uv run python scripts/diff_reference.py --count 3000
+```
 
-The following moved from AGENTS under approved B142. It retains existing package
-guidance; no D796 draft is activated or implemented by this document.
+`bench_kernel.py` measures time per node run on the root benchmark scenarios (a
+reference, not a gate); `diff_reference.py` compares sink traces with the root
+reference kernel on random graphs (needs `node`; reads the root checkout only).
 
+## Package layout
 
-- PyPI distribution/project name: `graphrefly`
-- import package/module name: `graphrefly`
-- product/repo label: `@graphrefly/py`
-- private native extension: `graphrefly._native`
+- `graphrefly._kernel` is the private pure-Python kernel for the rules active by
+  graphrefly:D798, D799, D801 and D802 (graphrefly-py:D2). It is single-threaded,
+  catches `Exception` only, and has no awaitables.
+- `graphrefly._checkpoint` is capture and restore over the kernel (R-checkpoint).
+- `graphrefly._facade` is the public facade (graphrefly-py:D4); `graphrefly` exports it.
+- `tests/kernel/` qualifies the kernel scenarios against `graphrefly._kernel`;
+  the other tests cover the facade.
 
-Python owns the public facade, typing, decorators/context managers, value registry and lifetime policy, exception taxonomy, async/runtime adapters, ecosystem adapters, and product recipes. Rust owns the synchronous graph engine and native foundation. Do not implement a separate Python wave core.
+## Python facade boundary
 
-Current Python value/message boundary:
-
-- `None` is valid Python DATA.
-- No-DATA is a private native presence state, not a public `None` sentinel.
-- Public `Node.cache()` raises `GraphReflyNoDataError` when no DATA is present; `cache(default=...)` is the explicit fallback path.
-- Public observations use `DataMessage`, `ErrorMessage`, and `ControlMessage`.
-- Public advanced authoring uses `Graph.node(deps, callback, name=None)`, where
-  `callback` receives a Python-owned callback-scoped `Ctx` facade. `Ctx` may expose
-  host-natural dep presence/value reads, raw `wave_data`, `terminal(index)`, `emit`,
-  per-node `state`, `on_invalidate`, and `on_deactivation`; it is not a raw PyO3
-  object and must not expose arbitrary raw protocol message construction/sending.
-  `wave_data` is the only raw dep-value input surface (`dep -> waves -> values`):
-  no-wave is `[]`, RESOLVED-only is `[[]]`, INVALIDATE projects as exported
-  `graphrefly.SENTINEL`, and COMPLETE/ERROR live only in `terminal(index)`. Do not
-  add raw `latest`, `prevData`, `latestData`, `depRecords[i].latest`, or equivalent
-  parallel value aliases. `graphrefly.SENTINEL` itself is not legal DATA.
-- Public graph-owned control convenience is `Graph.pause(node, lock_id)`, `Graph.resume(node, lock_id)`, and `Graph.invalidate(node)`. Do not expose raw protocol ingress or arbitrary public message sending.
-- Node callback failures become graph `ERROR` payloads wrapped as `GraphCallbackError`.
-- Subscribe/observe callback failures are Python observer-boundary failures captured as `SubscriberCallbackError`.
-- Fatal Python `BaseException` process-control failures must propagate to the Python caller, not become graph `ERROR` or `SubscriberCallbackError`. D431 narrows the native batch edge: batch-body rollback remains normal, but a fatal first observed after native commit has begun is a host-boundary abort without a full transactional rollback claim. D436 requires the public Python facade to auto-close/poison after such fatal propagation.
-- `Graph.close()` / context managers are Python host lifetime scopes only: release facade-created subscriptions/observers and reject later facade use without protocol `TEARDOWN`/`COMPLETE`.
-
+- PyPI distribution/project name: `graphrefly`; import package/module name: `graphrefly`.
+- `None` is valid Python DATA. No-DATA is presence, never a `None` sentinel;
+  `graphrefly.SENTINEL` is never legal DATA or an ERROR diagnostic.
+- `Node.cache()` raises `GraphReflyNoDataError` when no DATA is held;
+  `cache(default=...)` is the explicit fallback.
+- `subscribe` and `observe` call back once per array, with a tuple of
+  `DataMessage`, `ErrorMessage` and `ControlMessage` values; the first array is START
+  and the snapshot.
+- Host input lives only on `State` (`set`, `invalidate`, `complete`, `error`);
+  `set(callable)` computes from the current value in request order. A plain `Node`
+  has no write and no public `down`.
+- `Graph.node(deps, callback, ...)` gives the callback a `Ctx`: per-dependency reads
+  (`data`, `has_data`, `wave_data`, `terminal`, `invalidated`), private `state`,
+  `emit`, `down` (checked by the kernel), the lifetime `signal` and `rewire`. A
+  node's `setup` runs once per lifetime and may return its cleanup. `derived`,
+  `effect` and `producer` keep a first-run gate: Python sugar, not protocol.
+- A callback `Exception` becomes the node's ERROR as `GraphCallbackError`. A
+  subscribe/observe callback `Exception` is a `SubscriberCallbackError` on the
+  subscription. A fatal `BaseException` (KeyboardInterrupt, SystemExit, ...)
+  propagates to the caller and poisons the graph facade (graphrefly-py:D2).
+- `Graph.close()` / context managers release facade subscriptions, retains and
+  async work; they send no protocol message.
+- Async enters only through runners, sources and adapters; their results are later
+  waves on the graph owner thread (graphrefly:D477, D480).
 
 ## Existing contribution and migration constraints
 
@@ -76,7 +82,7 @@ not mint a D# merely for an attempt, rerun, receipt, incident, provider/model ch
   the old port model, or structural cross-language parity.
 - Cross-runtime parity is behavioral conformance, not matching symbols.
 - Async belongs at source/pool/adapter boundaries, not inside the sync wave core.
-- Native handles are single-thread host objects in this foundation slice.
+- A graph is bound to the thread that created it.
 - Generated documentation output must be regenerated through the Starlight API generator,
   not edited by hand.
 - Decision admission is owner-first: Python-only facade, lifetime, packaging or ecosystem locks

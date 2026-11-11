@@ -9,7 +9,7 @@ description: "Streaming driver event carrying a host-side stream error."
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:142`
+**Source:** `src/graphrefly/_facade.py:182`
 
 ## Signature
 

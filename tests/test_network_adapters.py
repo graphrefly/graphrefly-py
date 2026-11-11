@@ -183,7 +183,7 @@ def test_from_http_emits_response_data_then_complete():
         runner=runner,
         name="http",
     )
-    with node.subscribe(seen.append):
+    with node.subscribe(seen.extend):
         runner.run()
 
     assert driver.requests == [
@@ -211,7 +211,7 @@ def test_from_http_driver_error_becomes_graph_error():
     seen: list[Message[object]] = []
 
     node = from_http(graph, "https://example.test", driver=driver, runner=runner)
-    with node.subscribe(seen.append):
+    with node.subscribe(seen.extend):
         runner.run()
 
     assert error_messages(seen) == ["network down"]
@@ -235,7 +235,7 @@ def test_from_http_deactivation_cancels_job_before_driver_runs():
     seen: list[Message[object]] = []
 
     node = from_http(graph, "https://example.test", driver=driver, runner=runner)
-    sub = node.subscribe(seen.append)
+    sub = node.subscribe(seen.extend)
     sub.unsubscribe()
     runner.run()
 
@@ -266,7 +266,7 @@ def test_from_sse_http_stream_fallback_parses_split_events_and_complete():
     seen: list[Message[object]] = []
 
     node = from_sse(graph, "https://example.test/events", stream_driver=driver, runner=runner)
-    with node.subscribe(seen.append):
+    with node.subscribe(seen.extend):
         runner.run()
 
     assert driver.requests == [
@@ -276,9 +276,7 @@ def test_from_sse_http_stream_fallback_parses_split_events_and_complete():
             headers=(("Accept", "text/event-stream"),),
         )
     ]
-    assert data_values(seen) == [
-        SseEvent(event="message", data="café", id="42", retry_ms=500)
-    ]
+    assert data_values(seen) == [SseEvent(event="message", data="café", id="42", retry_ms=500)]
     assert seen[-1] == ControlMessage("COMPLETE")
 
 
@@ -297,7 +295,7 @@ def test_from_sse_rejects_bad_head_and_ignores_later_chunks():
     seen: list[Message[object]] = []
 
     node = from_sse(graph, "https://example.test/events", stream_driver=driver, runner=runner)
-    with node.subscribe(seen.append):
+    with node.subscribe(seen.extend):
         runner.run()
 
     assert error_messages(seen) == ["from_sse: unacceptable http status 404"]
@@ -320,7 +318,7 @@ def test_from_sse_closes_host_stream_on_terminal_lifecycle_error():
     seen: list[Message[object]] = []
 
     node = from_sse(graph, "https://example.test/events", stream_driver=driver, runner=runner)
-    with node.subscribe(seen.append):
+    with node.subscribe(seen.extend):
         runner.run()
 
     assert error_messages(seen) == ["from_sse: unacceptable http status 503"]
@@ -360,7 +358,7 @@ def test_from_sse_rejects_illegal_stream_lifecycle():
         stream_driver=duplicate_head,
         runner=runner,
     )
-    with chunk_node.subscribe(chunk_seen.append), duplicate_node.subscribe(duplicate_seen.append):
+    with chunk_node.subscribe(chunk_seen.extend), duplicate_node.subscribe(duplicate_seen.extend):
         runner.run(0)
         runner.run(1)
 
@@ -403,7 +401,7 @@ def test_from_sse_complete_flushes_buffered_data_and_ignores_empty_tail():
         stream_driver=no_data_driver,
         runner=runner,
     )
-    with node.subscribe(seen.append), no_data_node.subscribe(no_data_seen.append):
+    with node.subscribe(seen.extend), no_data_node.subscribe(no_data_seen.extend):
         runner.run(0)
         runner.run(1)
 
@@ -450,7 +448,7 @@ def test_from_sse_invalid_utf8_and_parser_overflow_emit_error():
         stream_driver=overflow,
         runner=runner,
     )
-    with invalid_node.subscribe(invalid_seen.append), overflow_node.subscribe(overflow_seen.append):
+    with invalid_node.subscribe(invalid_seen.extend), overflow_node.subscribe(overflow_seen.extend):
         runner.run(0)
         runner.run(1)
 
@@ -474,7 +472,7 @@ def test_from_sse_explicit_stream_error_is_not_swallowed_as_cancellation():
     seen: list[Message[object]] = []
 
     node = from_sse(graph, "https://example.test/events", stream_driver=driver, runner=runner)
-    with node.subscribe(seen.append):
+    with node.subscribe(seen.extend):
         runner.run()
 
     assert error_messages(seen) == ["explicit terminal"]
@@ -497,7 +495,7 @@ def test_from_sse_ignores_overlong_retry_without_parser_error():
     seen: list[Message[object]] = []
 
     node = from_sse(graph, "https://example.test/events", stream_driver=driver, runner=runner)
-    with node.subscribe(seen.append):
+    with node.subscribe(seen.extend):
         runner.run()
 
     assert data_values(seen) == [SseEvent(data="ok")]
@@ -519,7 +517,7 @@ def test_from_sse_no_hidden_reconnect_retry_or_last_event_id():
     seen: list[Message[object]] = []
 
     node = from_sse(graph, "https://example.test/events", stream_driver=driver, runner=runner)
-    with node.subscribe(seen.append):
+    with node.subscribe(seen.extend):
         runner.run()
 
     assert driver.started == 1
@@ -543,7 +541,7 @@ def test_from_sse_synchronous_runner_completion_is_fenced():
     seen: list[Message[object]] = []
 
     node = from_sse(graph, "https://example.test/events", stream_driver=driver, runner=runner)
-    with node.subscribe(seen.append):
+    with node.subscribe(seen.extend):
         pass
 
     assert runner.tasks[0].cancelled is True

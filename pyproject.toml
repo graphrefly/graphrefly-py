@@ -1,11 +1,11 @@
 [build-system]
-requires = ["maturin>=1.14,<2.0"]
-build-backend = "maturin"
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
 
 [project]
 name = "graphrefly"
 version = "0.23.0"
-description = "Python host package for GraphReFly over the native Rust graph engine."
+description = "GraphReFly for Python: a reactive graph on its own pure-Python kernel."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
@@ -37,7 +37,6 @@ async = [
 
 [dependency-groups]
 dev = [
-    "maturin>=1.14,<2.0",
     "mypy>=2.1",
     "pytest>=9.1",
     "ruff>=0.15",
@@ -47,17 +46,19 @@ docs = [
 ]
 
 [tool.uv]
+# uv manages the environment only; the package is built with hatchling (uv build) and
+# tests import it from src (pytest pythonpath).
 package = false
 
-[tool.maturin]
-bindings = "pyo3"
-features = ["extension-module"]
-manifest-path = "../graphrefly-rs/crates/graphrefly-bindings-py/Cargo.toml"
-module-name = "graphrefly._native"
-python-source = "src"
+[tool.hatch.build.targets.wheel]
+packages = ["src/graphrefly"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/graphrefly", "README.md", "LICENSE", "CHANGELOG.md", "pyproject.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100
@@ -71,6 +72,7 @@ quote-style = "double"
 
 [tool.mypy]
 python_version = "3.12"
+mypy_path = "src"
 strict = true
 warn_return_any = true
 warn_unused_configs = true

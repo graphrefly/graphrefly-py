@@ -246,15 +246,21 @@ def restore(
     registry: Mapping[str, Factory],
     *,
     report: Reporter | None = None,
+    into: Graph | None = None,
 ) -> Graph:
-    """Build a new graph from ``checkpoint``; no subscriber, no recipe function runs."""
+    """Build a new graph from ``checkpoint``; no subscriber, no recipe function runs.
+
+    ``into`` is an empty graph to build into, for a host that made the graph itself.
+    """
 
     if not isinstance(checkpoint, dict) or checkpoint.get("format") != FORMAT:
         raise CheckpointError(f"restore: not a {FORMAT} checkpoint")
     nodes = cast("list[dict[str, Any]]", checkpoint.get("nodes"))
     if not isinstance(nodes, list):
         raise CheckpointError("restore: the checkpoint has no nodes")
-    graph = Graph(report=report)
+    if into is not None and into.describe():
+        raise CheckpointError("restore: the graph to restore into is not empty")
+    graph = into if into is not None else Graph(report=report)
 
     def make(ref: str, config: object, node_id: str) -> Built:
         factory = registry.get(ref)

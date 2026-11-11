@@ -1,11 +1,12 @@
 # Python agent entrypoint
 
 Start with [README](README.md) and the [documentation map](docs/README.md).
-Python owns the host facade; [Rust](../graphrefly-rs/AGENTS.md) owns the native
-engine. [Root authority](../graphrefly/AGENTS.md) governs protocol/cross-project work.
+Python owns its kernel, sugar and host facade in pure Python (graphrefly:D800,
+graphrefly-py:D2); [Rust](../graphrefly-rs/AGENTS.md) is a separate package.
+[Root authority](../graphrefly/AGENTS.md) governs protocol/cross-project work.
 
 - [Development](docs/development.md) owns Python boundary/lifetime guidance,
-  contributor constraints, native setup and checks.
+  contributor constraints, setup and checks.
 - [Docs policy](docs/docs.jsonl) owns package-local docs and generation; do not migrate skills.
 - [Local work](plan/work.jsonl) and [root work locator](../graphrefly/authority/work-ledgers.jsonl)
   locate delivery without inferring state from history.

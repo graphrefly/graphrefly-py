@@ -155,7 +155,7 @@ def test_from_awaitable_source_emits_data_then_complete():
         return work()
 
     node = from_awaitable(graph, runner, factory, name="awaitable")
-    with node.subscribe(seen.append):
+    with node.subscribe(seen.extend):
         assert calls == 0
         assert len(runner.jobs) == 1
         runner.run(0)
@@ -177,7 +177,7 @@ def test_from_async_iter_source_emits_yields_then_complete():
         yield "b"
 
     node = from_async_iter(graph, runner, values, name="aiter")
-    with node.subscribe(seen.append):
+    with node.subscribe(seen.extend):
         runner.run(0)
         assert node.cache() == "b"
 
@@ -194,7 +194,7 @@ def test_asyncio_runner_uses_caller_owned_loop():
             return 9
 
         node = from_awaitable(graph, asyncio_runner(), work, name="asyncio_source")
-        with node.subscribe(seen.append):
+        with node.subscribe(seen.extend):
             await asyncio.sleep(0)
             await asyncio.sleep(0)
             assert node.cache() == 9
@@ -234,7 +234,7 @@ def test_anyio_runner_wraps_reentry_queue_without_owning_task_group(monkeypatch)
         return 11
 
     node = from_awaitable(graph, runner, work, name="anyio_source")
-    with node.subscribe(seen.append):
+    with node.subscribe(seen.extend):
         assert len(task_group.started) == 1
         task_group.run()
         assert queue.pending_count == 1
@@ -257,7 +257,7 @@ def test_trio_runner_wraps_reentry_queue_without_owning_nursery(monkeypatch):
         return 10
 
     node = from_awaitable(graph, runner, work, name="trio_source")
-    with node.subscribe(seen.append):
+    with node.subscribe(seen.extend):
         assert len(nursery.started) == 1
         nursery.run()
         assert queue.pending_count == 1
@@ -279,7 +279,7 @@ def test_trio_runner_deactivation_cancels_private_job_scope(monkeypatch):
         return 12
 
     node = from_awaitable(graph, runner, work, name="trio_cancel")
-    sub = node.subscribe(seen.append)
+    sub = node.subscribe(seen.extend)
     sub.unsubscribe()
     nursery.run()
 
@@ -343,7 +343,7 @@ def test_anyio_runner_graph_close_cancels_private_job_scope(monkeypatch):
         return 13
 
     node = from_awaitable(graph, runner, work, name="anyio_cancel")
-    node.subscribe(seen.append)
+    node.subscribe(seen.extend)
     graph.close()
     task_group.run()
 
@@ -367,7 +367,7 @@ def test_anyio_runner_exception_typed_cancellation_is_cleanup_not_graph_error(mo
         raise BackendCancelledError("cancelled")
 
     node = from_awaitable(graph, runner, work, name="anyio_exception_cancel")
-    with node.subscribe(seen.append):
+    with node.subscribe(seen.extend):
         task_group.run()
 
     assert not node.has_value
@@ -391,7 +391,7 @@ def test_reentry_queue_enqueues_cross_thread_completion_and_owner_thread_drain_a
         return 42
 
     node = from_awaitable(graph, queue.wrap_runner(runner), work, name="queued_awaitable")
-    with node.subscribe(seen.append):
+    with node.subscribe(seen.extend):
         runner.join()
         assert runner.worker_threads[0] != get_ident()
         assert queue.pending_count == 1
@@ -466,7 +466,7 @@ def test_reentry_queue_closed_after_node_construction_does_not_spawn_on_activati
     node = from_awaitable(graph, queue.wrap_runner(runner), work, name="close_before_sub")
     queue.close()
 
-    with node.subscribe(seen.append):
+    with node.subscribe(seen.extend):
         pass
 
     assert runner.tasks == []
@@ -486,7 +486,7 @@ def test_reentry_queue_drain_respects_max_items_fifo():
         yield "b"
 
     node = from_async_iter(graph, queue.wrap_runner(runner), values, name="queued_iter")
-    with node.subscribe(seen.append):
+    with node.subscribe(seen.extend):
         runner.join()
         assert queue.pending_count == 3
         assert queue.drain(max_items=2) == 2
@@ -507,7 +507,7 @@ def test_reentry_queue_graph_close_drops_pending_completions_without_graph_error
         return 7
 
     node = from_awaitable(graph, queue.wrap_runner(runner), work, name="queued_close")
-    sub = node.subscribe(seen.append)
+    sub = node.subscribe(seen.extend)
     runner.join()
     assert queue.pending_count == 1
 
@@ -530,7 +530,7 @@ def test_reentry_queue_fatal_completion_poison_closes_without_graph_error():
         raise KeyboardInterrupt("stop")
 
     node = from_awaitable(graph, queue.wrap_runner(runner), work, name="queued_fatal")
-    sub = node.subscribe(seen.append)
+    sub = node.subscribe(seen.extend)
     runner.join()
     assert queue.pending_count == 1
 
@@ -558,7 +558,7 @@ def test_reentry_queue_deactivation_drops_pending_completion_without_graph_error
         return value + 1
 
     node = async_node(graph, [source], queue.wrap_runner(runner), compute, name="queued_cleanup")
-    sub = node.subscribe(seen.append)
+    sub = node.subscribe(seen.extend)
     assert entered.wait(timeout=5)
     assert queue.pending_count == 0
 
@@ -587,7 +587,7 @@ def test_reentry_queue_close_cancels_active_queue_owned_job_without_graph_error(
         return value + 1
 
     node = async_node(graph, [source], queue.wrap_runner(runner), compute, name="queued_active")
-    with node.subscribe(seen.append):
+    with node.subscribe(seen.extend):
         assert entered.wait(timeout=5)
         queue.close()
         assert runner.tasks[0].cancelled is True
@@ -610,7 +610,7 @@ def test_async_node_stale_generation_completion_is_ignored_after_queue_drain():
         return value * 10
 
     node = async_node(graph, [source], queue.wrap_runner(runner), compute, name="queued_compute")
-    with node.subscribe(seen.append):
+    with node.subscribe(seen.extend):
         runner.join(0)
         source.set(2)
         runner.join(1)
@@ -665,9 +665,7 @@ def test_reentry_queue_drain_continues_after_non_final_failure_for_terminal_clea
             return True
 
     queue._gates[0] = FakeGate()  # type: ignore[assignment]
-    queue._items.append(
-        _GraphReentryCompletion(gate_id=0, op="emit", value="bad", final=False)
-    )
+    queue._items.append(_GraphReentryCompletion(gate_id=0, op="emit", value="bad", final=False))
     queue._items.append(_GraphReentryCompletion(gate_id=0, op="complete", final=True))
 
     with pytest.raises(RuntimeError, match="emit failed"):
@@ -692,8 +690,7 @@ def test_asyncio_runner_closes_coroutine_when_create_task_fails(recwarn):
     leaked = [
         warning
         for warning in recwarn
-        if issubclass(warning.category, RuntimeWarning)
-        and "never awaited" in str(warning.message)
+        if issubclass(warning.category, RuntimeWarning) and "never awaited" in str(warning.message)
     ]
     assert leaked == []
 
@@ -708,7 +705,7 @@ def test_async_node_stale_generation_completion_is_ignored():
         return value * 10
 
     node = async_node(graph, [source], runner, compute, name="async_compute")
-    with node.subscribe(seen.append):
+    with node.subscribe(seen.extend):
         assert len(runner.jobs) == 1
         source.set(2)
         assert len(runner.jobs) == 2
@@ -730,7 +727,7 @@ def test_async_node_deactivation_cleans_up_pending_task_without_graph_error():
         return value + 1
 
     node = async_node(graph, [source], runner, compute, name="async_cleanup")
-    sub = node.subscribe(seen.append)
+    sub = node.subscribe(seen.extend)
     assert len(runner.tasks) == 1
     sub.unsubscribe()
 
@@ -809,8 +806,7 @@ def test_sync_data_ingress_rejects_awaitables_without_leaking_warning(recwarn):
     leaked = [
         warning
         for warning in recwarn
-        if issubclass(warning.category, RuntimeWarning)
-        and "never awaited" in str(warning.message)
+        if issubclass(warning.category, RuntimeWarning) and "never awaited" in str(warning.message)
     ]
     assert leaked == []
 
@@ -837,9 +833,9 @@ def test_ctx_state_and_pull_params_reject_async_material_without_leaking_warning
 
     seen: list[Message[object]] = []
     with (
-        state_node.subscribe(seen.append),
-        pull_node.subscribe(seen.append),
-        sentinel_node.subscribe(seen.append),
+        state_node.subscribe(seen.extend),
+        pull_node.subscribe(seen.extend),
+        sentinel_node.subscribe(seen.extend),
     ):
         pass
 
@@ -849,8 +845,7 @@ def test_ctx_state_and_pull_params_reject_async_material_without_leaking_warning
     leaked = [
         warning
         for warning in recwarn
-        if issubclass(warning.category, RuntimeWarning)
-        and "never awaited" in str(warning.message)
+        if issubclass(warning.category, RuntimeWarning) and "never awaited" in str(warning.message)
     ]
     assert leaked == []
 

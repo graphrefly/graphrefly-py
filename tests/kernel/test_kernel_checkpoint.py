@@ -339,9 +339,7 @@ def test_c38_a_missing_recipe_a_local_only_node_and_an_earlier_format_fail() -> 
 def _times() -> dict[str, Factory]:
     return {
         "times": lambda c, at: (
-            lambda ctx: (
-                ctx.down([(DATA, ctx.deps[0].value * c["k"])]) if ctx.deps[0].has else None
-            )
+            lambda ctx: ctx.down([(DATA, ctx.deps[0].value * c["k"])]) if ctx.deps[0].has else None
         )
     }
 

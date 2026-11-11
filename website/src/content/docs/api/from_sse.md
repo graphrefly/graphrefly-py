@@ -9,12 +9,12 @@ description: "Create an SSE source over a host-supplied HTTP byte-stream driver.
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_facade.py:3331`
+**Source:** `src/graphrefly/_facade.py:2263`
 
 ## Signature
 
 ```python
-from_sse(graph: Graph, request_or_url: HttpRequestLike, *, stream_driver: LocalHttpStreamDriver | None = None, runner: AsyncRunner | None = None, name: str | None = None, pausable: PausableMode = True)
+from_sse(graph: Graph, request_or_url: HttpRequestLike, *, stream_driver: LocalHttpStreamDriver | None = None, runner: AsyncRunner | None = None, name: str | None = None)
 ```
 
 ## Description
