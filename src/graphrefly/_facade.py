@@ -1453,8 +1453,10 @@ class State(Node[T]):
         """Write a value; given a callable, compute it from the state's value when the
         write runs in request order.
 
-        The callable gets ``graphrefly.SENTINEL`` when the state holds no value, and
-        a callable that returns its argument writes nothing. To store a callable as
+        The callable gets ``graphrefly.SENTINEL`` when the state holds no value (not
+        ``None``, which is valid DATA in Python; TS passes ``undefined`` and Rust
+        ``None`` for the same absence), and a callable that returns its argument
+        writes nothing. To store a callable as
         the value, wrap it: ``set(lambda _: fn)``.
         """
 
@@ -1822,6 +1824,19 @@ class Graph:
             definition.invalidate,
             definition.quiet,
         )
+
+    def find(self, name: str) -> Node[Any] | None:
+        """Return the node named ``name``, or ``None``.
+
+        A state node comes back as its ``State``, so it can be written after a lookup or
+        a restore; narrow the result with ``isinstance(node, State)``.
+        """
+
+        self._check_thread()
+        if not isinstance(name, str):
+            msg = "a node name is a str"
+            raise GraphReflyValueError(msg)
+        return self._nodes.get(name)
 
     def describe(self) -> dict[str, Any]:
         """Return the topology as JSON-ready data: each node with its current deps."""

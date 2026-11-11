@@ -26,8 +26,10 @@ set(value: T | Callable[[T], T]) -> None
 Write a value; given a callable, compute it from the state's value when the
 write runs in request order.
 
-The callable gets ``graphrefly.SENTINEL`` when the state holds no value, and
-a callable that returns its argument writes nothing. To store a callable as
+The callable gets ``graphrefly.SENTINEL`` when the state holds no value (not
+``None``, which is valid DATA in Python; TS passes ``undefined`` and Rust
+``None`` for the same absence), and a callable that returns its argument
+writes nothing. To store a callable as
 the value, wrap it: ``set(lambda _: fn)``.
 
 Source: `src/graphrefly/_facade.py:1452`
@@ -40,7 +42,7 @@ invalidate() -> None
 
 Remove the state's value and invalidate its dependents.
 
-Source: `src/graphrefly/_facade.py:1478`
+Source: `src/graphrefly/_facade.py:1480`
 
 ### `complete`
 
@@ -50,7 +52,7 @@ complete() -> None
 
 End the state with COMPLETE; later host input is refused.
 
-Source: `src/graphrefly/_facade.py:1485`
+Source: `src/graphrefly/_facade.py:1487`
 
 ### `error`
 
@@ -60,4 +62,4 @@ error(error: object) -> None
 
 End the state with ERROR carrying ``error``; later host input is refused.
 
-Source: `src/graphrefly/_facade.py:1492`
+Source: `src/graphrefly/_facade.py:1494`

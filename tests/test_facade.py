@@ -704,6 +704,15 @@ def test_a_graph_is_bound_to_its_owner_thread() -> None:
     g.close()
 
 
+def test_find_returns_the_nodes_own_handle_and_a_state_as_state() -> None:
+    with Graph("find") as g:
+        a = g.state(1, name="a")
+        d = g.derived([a], lambda v: v, name="d")
+        assert g.find("a") is a and isinstance(g.find("a"), State)
+        assert g.find("d") is d and not isinstance(g.find("d"), State)
+        assert g.find("missing") is None
+
+
 def test_node_names_are_unique_and_auto_names_are_reserved() -> None:
     with Graph("names") as g:
         g.state(1, name="a")
@@ -739,12 +748,13 @@ def test_checkpoint_and_restore_graph_round_trip() -> None:
     cp = g.checkpoint()
     r = graphrefly.restore_graph(cp, registry=reg)
     assert r.describe()["nodes"] == g.describe()["nodes"]
-    restored = next(n for n in (r._nodes.values()) if n.name == "t")
+    restored = r.find("t")
+    assert restored is not None and not isinstance(restored, State)
     seen: Arrays = []
     restored.subscribe(seen.append)
     assert seen == [(ControlMessage("START"), DataMessage(102))]
-    state = r._nodes["a"]
-    assert isinstance(state, State)
+    state = r.find("a")
+    assert isinstance(state, State)  # a restored state is writable through its State
     state.set(5)
     assert restored.cache() == 105
     g.close()
