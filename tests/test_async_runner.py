@@ -277,8 +277,8 @@ def test_trio_runner_deactivation_cancels_private_job_scope(monkeypatch):
         return 12
 
     node = from_awaitable(graph, runner, work, name="trio_cancel")
-    sub = node.subscribe(seen.extend)
-    sub.unsubscribe()
+    stop = node.subscribe(seen.extend)
+    stop()
     nursery.run()
 
     assert FakeCancelScope.instances[-1].cancelled is True
@@ -505,14 +505,14 @@ def test_reentry_queue_graph_close_drops_pending_completions_without_graph_error
         return 7
 
     node = from_awaitable(graph, queue.wrap_runner(runner), work, name="queued_close")
-    sub = node.subscribe(seen.extend)
+    stop = node.subscribe(seen.extend)
     runner.join()
     assert queue.pending_count == 1
 
     graph.close()
 
     assert graph.closed is True
-    assert sub.closed is True
+    assert stop.closed is True
     assert queue.closed is True
     assert queue.pending_count == 0
     assert not any(msg[0] == "ERROR" for msg in seen)
@@ -528,7 +528,7 @@ def test_reentry_queue_fatal_completion_poison_closes_without_graph_error():
         raise KeyboardInterrupt("stop")
 
     node = from_awaitable(graph, queue.wrap_runner(runner), work, name="queued_fatal")
-    sub = node.subscribe(seen.extend)
+    stop = node.subscribe(seen.extend)
     runner.join()
     assert queue.pending_count == 1
 
@@ -536,7 +536,7 @@ def test_reentry_queue_fatal_completion_poison_closes_without_graph_error():
         queue.drain()
 
     assert graph.closed is True
-    assert sub.closed is True
+    assert stop.closed is True
     assert queue.closed is True
     assert not any(msg[0] == "ERROR" for msg in seen)
 
@@ -556,11 +556,11 @@ def test_reentry_queue_deactivation_drops_pending_completion_without_graph_error
         return value + 1
 
     node = async_node(graph, [source], queue.wrap_runner(runner), compute, name="queued_cleanup")
-    sub = node.subscribe(seen.extend)
+    stop = node.subscribe(seen.extend)
     assert entered.wait(timeout=5)
     assert queue.pending_count == 0
 
-    sub.unsubscribe()
+    stop()
 
     assert runner.tasks[0].cancelled is True
     release.set()
@@ -725,9 +725,9 @@ def test_async_node_deactivation_cleans_up_pending_task_without_graph_error():
         return value + 1
 
     node = async_node(graph, [source], runner, compute, name="async_cleanup")
-    sub = node.subscribe(seen.extend)
+    stop = node.subscribe(seen.extend)
     assert len(runner.tasks) == 1
-    sub.unsubscribe()
+    stop()
 
     assert runner.tasks[0].cancelled is True
     runner.run(0)

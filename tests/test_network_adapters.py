@@ -232,8 +232,8 @@ def test_from_http_deactivation_cancels_job_before_driver_runs():
     seen: list[Message[object]] = []
 
     node = from_http(graph, "https://example.test", driver=driver, runner=runner)
-    sub = node.subscribe(seen.extend)
-    sub.unsubscribe()
+    stop = node.subscribe(seen.extend)
+    stop()
     runner.run()
 
     assert runner.tasks[0].cancelled is True

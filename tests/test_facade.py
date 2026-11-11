@@ -428,9 +428,9 @@ def test_setup_runs_once_per_lifetime_and_its_cleanup_at_close() -> None:
             ctx.state = ctx.deps[0].value
 
         node = g.node([a], n, setup=setup)
-        sub = node.subscribe(lambda _: None)
+        stop = node.subscribe(lambda _: None)
         a.set(2)
-        sub.unsubscribe()
+        stop()
         assert log == ["setup", "abort", "cleanup state=2"]
 
 
@@ -446,7 +446,7 @@ def test_a_cleanup_failure_goes_to_the_host_reporter_not_the_node() -> None:
             return cleanup
 
         node = g.node([a], lambda ctx: None, setup=setup)
-        node.subscribe(lambda _: None).unsubscribe()
+        node.subscribe(lambda _: None)()
         assert [(r.source, str(r.error)) for r in reports] == [
             (f"cleanup {node.name}", "cleanup failed")
         ]
@@ -515,7 +515,7 @@ def test_observe_is_a_subscriber_with_one_event_per_array() -> None:
         a = g.state(1, name="a")
         d = g.derived([a], lambda v: v + 1, name="d")
         events: list[GraphEvent] = []
-        sub = g.observe([a, d], events.append)
+        stop = g.observe([a, d], events.append)
         assert d.status.lifecycle == "active"  # observing a cold node activates it
         assert [(e.id, e.msgs) for e in events] == [
             ("a", (("START",), ("DATA", 1))),
@@ -528,7 +528,7 @@ def test_observe_is_a_subscriber_with_one_event_per_array() -> None:
             ("d", (("PENDING",), ("DATA", 3))),
         ]
         assert not hasattr(events[0], "seq")
-        sub.unsubscribe()
+        stop()
         assert d.status.lifecycle == "inactive"
         events.clear()
         a.set(3)
@@ -546,9 +546,9 @@ def test_an_observer_stopped_in_its_callback_gets_nothing_more() -> None:
         def once(event: GraphEvent) -> None:
             events.append(event)
             if event.msgs[0] == ("PENDING",):
-                sub.unsubscribe()  # during the wave: b's array must not follow
+                stop()  # during the wave: b's array must not follow
 
-        sub = g.observe([a, b], once)
+        stop = g.observe([a, b], once)
         a.set(2)
         assert [(e.id, e.msgs) for e in events][2:] == [("a", (("PENDING",), ("DATA", 2)))]
 
@@ -582,7 +582,7 @@ def test_a_subscriber_failure_goes_to_the_reporter_and_nothing_keeps_it() -> Non
         def failing(_: object) -> None:
             raise ValueError("sink failed")
 
-        sub = a.subscribe(failing)
+        stop = a.subscribe(failing)
         a.subscribe(later.append)
         for v in range(40):
             a.set(v + 1)
@@ -590,7 +590,7 @@ def test_a_subscriber_failure_goes_to_the_reporter_and_nothing_keeps_it() -> Non
         assert all(isinstance(r.error, SubscriberCallbackError) for r in reports)
         assert isinstance(reports[0].error.original, ValueError)  # type: ignore[attr-defined]
         assert reports[0].source.startswith("sink ")
-        assert not hasattr(sub, "callback_errors")
+        assert not hasattr(stop, "callback_errors")
         assert a.status.output == "open" and later[-1][-1] == ("DATA", 40)
 
 
@@ -621,10 +621,10 @@ def test_a_fatal_in_a_subscriber_propagates_and_poisons_the_facade(
         if array[0] == ("PENDING",):
             raise fatal
 
-    sub = a.subscribe(sink)
+    stop = a.subscribe(sink)
     with pytest.raises(fatal):
         a.set(1)
-    assert g.closed and sub.closed
+    assert g.closed and stop.closed
     with pytest.raises(GraphReflyRuntimeError, match="fatal"):
         a.cache()
 
@@ -660,7 +660,7 @@ def test_a_fatal_from_a_callback_propagates_without_a_graph_error(
         with pytest.raises(fatal):
             node.subscribe(seen.append)
     else:
-        sub = node.subscribe(seen.append)
+        stop = node.subscribe(seen.append)
         armed[0] = True
         with pytest.raises(fatal):
             if where == "callback":
@@ -668,7 +668,7 @@ def test_a_fatal_from_a_callback_propagates_without_a_graph_error(
             elif where == "batch-commit":
                 g.batch(lambda: a.set(1))
             else:
-                sub.unsubscribe()
+                stop()
     assert g.closed
     assert not any(m[0] == "ERROR" for array in seen for m in array)
 
@@ -679,11 +679,11 @@ def test_a_fatal_from_a_callback_propagates_without_a_graph_error(
 def test_close_releases_subscriptions_and_rejects_later_use() -> None:
     g = Graph("close")
     a = g.state(1, name="a")
-    sub = a.subscribe(lambda _: None)
+    stop = a.subscribe(lambda _: None)
     g.close()
     g.close()
-    assert g.closed and sub.closed
-    sub.unsubscribe()
+    assert g.closed and stop.closed
+    stop()
     with pytest.raises(GraphReflyRuntimeError, match="graph is closed"):
         a.cache()
     with pytest.raises(GraphReflyRuntimeError, match="graph is closed"):
@@ -702,27 +702,58 @@ def test_a_dropped_subscription_handle_stays_subscribed_until_close() -> None:
     assert g.closed
 
 
+def test_subscribe_observe_and_retain_return_a_stop_to_call() -> None:
+    """The shared shape is a function to call (graphrefly-py:D16); ``with`` and
+    ``closed`` are Python extensions, and there is no ``unsubscribe``."""
+
+    with Graph("stop") as g:
+        a = g.state(1, name="a")
+
+        def two_arrays(ctx: Ctx) -> None:  # two arrays in one run
+            ctx.down([(DATA, ctx.deps[0].value)])
+            ctx.down([(DATA, -1)])
+
+        b = g.node([a], two_arrays, name="b")
+        seen: Arrays = []
+
+        def stop_on_the_wave(array: tuple[Any, ...]) -> None:
+            seen.append(array)
+            if array[0] == ("PENDING",):
+                stop()  # during the wave: b's second array is not delivered
+
+        stop = b.subscribe(stop_on_the_wave)
+        a.set(2)
+        a.set(4)
+        assert seen == [(("START",), ("DATA", -1)), (("PENDING",), ("DATA", 2))]
+        assert stop.closed
+        for handle in (a.subscribe(lambda _: None), g.observe([a], lambda _: None), g.retain(b)):
+            assert callable(handle) and not hasattr(handle, "unsubscribe")
+            handle()
+            handle()  # idempotent
+            assert handle.closed
+
+
 def test_retain_is_a_subscription_that_ignores_what_it_receives() -> None:
     with Graph("retain") as g:
         a = g.state(1)
         runs: list[int] = []
         d = g.derived([a], lambda v: runs.append(v) or v)
-        keepalive = g.retain(d)
+        release = g.retain(d)
         gc.collect()
         a.set(2)
         assert runs == [1, 2] and d.cache() == 2
-        assert isinstance(keepalive, Subscription)
-        keepalive.unsubscribe()
-        keepalive.unsubscribe()  # idempotent
+        assert isinstance(release, Subscription)
+        release()
+        release()  # idempotent
         a.set(3)
-        assert runs == [1, 2] and keepalive.closed
+        assert runs == [1, 2] and release.closed
         assert d.status.lifecycle == "inactive"
         with g.retain(d) as scoped:
             assert not scoped.closed and d.status.lifecycle == "active"
         assert scoped.closed and d.status.lifecycle == "inactive"
-        held = g.retain(d)
+        release_d = g.retain(d)
         g.close()  # a retain is closed with the graph's other subscriptions
-        assert held.closed
+        assert release_d.closed
     other = Graph("other")
     with pytest.raises(GraphReflyRuntimeError, match="node must belong"):
         other.retain(d)

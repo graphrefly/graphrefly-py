@@ -64,8 +64,11 @@ reference kernel on random graphs (needs `node`; reads the root checkout only).
 - The graph layer (R-graph-surface, graphrefly-py:D15): `find(id)` gives the node
   (a state as its `State`) or `None`; `describe()` gives `{id, kind, deps, quiet}`
   per node, deps current; `retain(node)` is a subscriber that ignores what it gets.
-  None of `find` and `describe` activates anything; `observe` and `retain` return a
-  `Subscription` whose `unsubscribe()` stops or releases them.
+  None of `find` and `describe` activates anything.
+- `subscribe`, `observe` and `retain` return a stop to call, as TS (`() => void`)
+  and Rust (`FnOnce()`) do: `stop()` is idempotent and nothing is delivered after it.
+  Python adds a `with` block that stops on exit and `.closed`; there is no
+  `unsubscribe` (graphrefly-py:D16).
 - Host input lives only on `State` (`set`, `invalidate`, `complete`, `error`);
   `set(callable)` computes from the current value in request order. A plain `Node`
   has no write and no public `down`.

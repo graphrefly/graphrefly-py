@@ -297,7 +297,14 @@ class GraphEvent:
 
 
 class Subscription:
-    """Idempotent subscription handle returned by subscribe, observe and retain."""
+    """What subscribe, observe and retain return: call it to stop (R-graph-surface).
+
+    ``stop()`` is idempotent, and once it is called nothing more is delivered, also
+    when it is called during a wave. That is the shape every runtime shares (TS gives
+    ``() => void``, Rust ``FnOnce()``). Python adds two things: a ``with`` block stops
+    it on exit, and ``closed`` says whether it has stopped. ``Graph.close()`` stops
+    every one of them (graphrefly-py:D16).
+    """
 
     def __init__(
         self,
@@ -313,12 +320,12 @@ class Subscription:
 
     @property
     def closed(self) -> bool:
-        """Return whether this subscription has been unsubscribed."""
+        """Return whether this subscription has stopped (a Python extension)."""
 
         return self._closed
 
-    def unsubscribe(self) -> None:
-        """Detach this subscription from its graph node or observer."""
+    def __call__(self) -> None:
+        """Stop: detach from the node, nodes or retain; calling again does nothing."""
 
         self._check_thread()
         if not self._closed:
@@ -330,7 +337,7 @@ class Subscription:
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-        self.unsubscribe()
+        self()
 
     def _check_thread(self) -> None:
         if get_ident() != self._owner_thread:
@@ -584,13 +591,22 @@ class Node[T]:
         graph._check_thread()
         _reject_async_callable(callback)
 
+        stopped = False
+
         def sink(array: tuple[_k.Message, ...]) -> None:
-            _observed(lambda: callback(cast("Array[T]", array)))
+            if not stopped:
+                _observed(lambda: callback(cast("Array[T]", array)))
 
         sink_id = graph._new_sink_id()
         node_id = self._id
+
+        def stop() -> None:
+            nonlocal stopped
+            stopped = True  # a stop asked for during a wave runs after it
+            graph._kernel.unsubscribe(sink_id, node_id)
+
         subscription = Subscription(
-            lambda: graph._kernel.unsubscribe(sink_id, node_id),
+            stop,
             owner_thread=graph._owner_thread,
             lifetime=graph._lifetime,
         )
@@ -1019,8 +1035,8 @@ class Graph:
         It activates a cold node and keeps it active, and gets one ``GraphEvent(id,
         msgs)`` per array a node delivers, in delivery order: the START array first,
         PENDING prefixes and the kernel's RESOLVED included. Observing the whole graph
-        is observing every node ``describe`` gives. ``unsubscribe()`` stops it; nothing
-        more is handed on after that. A callback that raises goes to the graph's
+        is observing every node ``describe`` gives. Calling the returned ``stop()`` stops
+        it; nothing more is handed on after that. A callback that raises goes to the graph's
         reporter as a ``SubscriberCallbackError``, as a subscriber's does.
         """
 
@@ -1043,7 +1059,7 @@ class Graph:
 
         def stop() -> None:
             nonlocal stopped
-            stopped = True  # an unsubscribe asked for during a wave runs after it
+            stopped = True  # a stop asked for during a wave runs after it
             for node_id in ids:
                 self._kernel.unsubscribe(sink_id, node_id)
 
@@ -1064,8 +1080,9 @@ class Graph:
 
     def retain(self, node: Node[Any]) -> Subscription:
         """Hold a node active as a subscriber that ignores what it receives
-        (R-graph-surface); ``unsubscribe()`` is the release. Each call is its own
-        subscription, so a node retained twice stays active until both are released."""
+        (R-graph-surface); calling the returned ``release()`` releases it. Each call is
+        its own subscription, so a node retained twice stays active until both are
+        released."""
 
         self._check_thread()
         node_id = self._node_id(node)

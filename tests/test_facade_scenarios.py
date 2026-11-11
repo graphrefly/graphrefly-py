@@ -68,7 +68,7 @@ class Sinks:
 
     def close(self) -> None:
         for subscription in self.subscriptions:
-            subscription.unsubscribe()
+            subscription()
         self.subscriptions.clear()
 
 
@@ -229,7 +229,7 @@ def test_c11_an_operator_rewires_itself_to_each_inner_for_its_lifetime() -> None
         states.append(ctx.state)
 
     opn = g.node([s], op, name="OP")
-    sub = opn.subscribe(lambda _: None)
+    stop = opn.subscribe(lambda _: None)
     s.set("a")
     assert [d["deps"] for d in g.describe() if d["id"] == "OP"] == [["S", "inner_a"]]
     inner_a = inners["a"][1].ctx
@@ -244,7 +244,7 @@ def test_c11_an_operator_rewires_itself_to_each_inner_for_its_lifetime() -> None
     inner_b.emit("y")
     assert opn.cache() == "y" and states == sorted(states)  # private state went on
     assert g.definition(opn).deps == (s,)  # the declared dependencies never changed
-    sub.unsubscribe()  # the lifetime closes: back to the declared [S]
+    stop()  # the lifetime closes: back to the declared [S]
     assert cleaned == ["a", "b"]
     seen_deps.clear()
     opn.subscribe(lambda _: None)
@@ -663,7 +663,7 @@ def test_c33_a_closed_lifetime_revokes_old_ctx_and_cleanup_failures_stay_isolate
     work = Kept(remember)
     nn = g.node([p], work, name="N", setup=n_setup)
     assert (nn.status.lifecycle, nn.status.cache) == ("inactive", "empty")
-    sub = nn.subscribe(lambda _: None)
+    stop = nn.subscribe(lambda _: None)
     assert (nn.status.lifecycle, nn.status.cache) == ("active", "ready")
     a.set(2)
     assert order == ["N setup"]  # the second run runs no setup
@@ -673,7 +673,7 @@ def test_c33_a_closed_lifetime_revokes_old_ctx_and_cleanup_failures_stay_isolate
     old = work.ctx
     assert old is not None
     signal = old.signal
-    sub.unsubscribe()
+    stop()
     assert order == ["N setup", "P cleanup", "N cleanup read 3"]  # dependencies first
     assert statuses == ["closing"] and signal.aborted
     assert [r.source for r in reports] == ["cleanup N"]
@@ -1087,28 +1087,28 @@ def test_c48_find_describe_observe_and_retain() -> None:
     # A second observer goes on after the first stops; after both stop, b is inactive.
     second: list[GraphEvent] = []
     stop_second = g.observe([b], second.append)
-    stop_first.unsubscribe()
+    stop_first()
     a.set(3)
     assert len(first) == 2
     assert [(e.id, e.msgs) for e in second] == [
         ("b", ((START,), (DATA, 20))),
         ("b", ((PENDING,), (DATA, 30))),
     ]
-    stop_second.unsubscribe()
+    stop_second()
     assert b.status.lifecycle == "inactive"
 
     # Each retain is its own subscription.
-    one, two = g.retain(c), g.retain(c)
+    release_one, release_two = g.retain(c), g.retain(c)
     assert c.status.lifecycle == "active"
-    one.unsubscribe()
+    release_one()
     assert c.status.lifecycle == "active"
-    two.unsubscribe()
+    release_two()
     assert c.status.lifecycle == "inactive"
 
     # describe gives d's current deps after a rewire; its definition keeps the declared.
-    held = g.retain(d)
+    release_d = g.retain(d)
     kept[-1].rewire([a, c])
     assert [n["deps"] for n in g.describe() if n["id"] == "d"] == [["a", "c"]]
     assert g.definition(d).deps == (a,)
-    held.unsubscribe()
+    release_d()
     g.close()
