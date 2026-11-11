@@ -1017,3 +1017,45 @@ def test_derived_and_effect_keep_what_arrived_while_their_gate_was_closed() -> N
     n = g.node([a, b], lambda ctx: raw.append([dep.waves for dep in ctx.deps]))
     n.subscribe(lambda _: None)
     assert raw == [[[[2]], [["x"]]]]  # Graph.node has no gate (graphrefly-py:D4)
+
+
+# ---- R-primary-api-clean@2: value-level sugar takes and gives values ------------------
+
+
+def test_value_sugar_sees_only_values_whatever_the_protocol_does() -> None:
+    """derived and effect never see PENDING, RESOLVED, START, INVALIDATE or a terminal,
+    and never write a message: their callbacks get dependency values only."""
+
+    with Graph("primary-api-clean") as g:
+        a = g.state(1, name="a")
+        b = g.state(10, name="b")
+
+        def odd(ctx: Ctx) -> None:  # sends nothing on an even value: a RESOLVED below
+            for wave in ctx.deps[0].waves:
+                for value in wave:
+                    if value % 2:
+                        ctx.emit(value)
+
+        m = g.node([a], odd, name="m")
+        calls: list[tuple[object, ...]] = []
+
+        def total(x: int, y: int) -> int:
+            calls.append((x, y))
+            return x + y
+
+        d = g.derived([m, b], total, name="d")
+        effects: list[tuple[object, ...]] = []
+        g.retain(g.effect([d], lambda v: effects.append((v,))))
+        a.set(2)  # m resolves: no new value, so neither callback runs
+        a.set(3)
+        b.invalidate()  # d's INVALIDATE: the gate holds, nothing runs
+        b.set(20)
+        b.complete()  # a terminal alone: the sugar's gate holds
+        a.set(5)
+        a.error(RuntimeError("down"))  # auto ERROR ends d without a run
+        assert calls == [(1, 10), (3, 10), (3, 20), (5, 20)]
+        assert effects == [(11,), (13,), (23,), (25,)]
+        seen = [value for call in calls + effects for value in call]
+        assert all(type(value) is int for value in seen)
+        assert all(value is not SENTINEL for value in seen)
+        assert d.status.output == "errored"
