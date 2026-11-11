@@ -9,7 +9,7 @@ description: "Graph-owned activation root release token."
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:735`
+**Source:** `src/graphrefly/_facade.py:713`
 
 ## Signature
 
@@ -37,4 +37,4 @@ release() -> None
 
 Release this graph-owned activation root.
 
-Source: `src/graphrefly/_facade.py:756`
+Source: `src/graphrefly/_facade.py:734`

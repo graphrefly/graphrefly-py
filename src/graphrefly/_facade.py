@@ -245,10 +245,6 @@ class _ResourceScope:
             _close_lifecycle_resource(resource)
             raise GraphReflyRuntimeError(self._closed_message())
 
-    def adopt(self, resource: object, *, lifetime: _GraphLifetime) -> None:
-        lifetime.unregister_resource(resource)
-        self.register(resource)
-
     def unregister(self, resource: object) -> None:
         with self._lock:
             self._resources = [item for item in self._resources if item is not resource]
@@ -260,9 +256,6 @@ class _ResourceScope:
         for resource in resources:
             if isinstance(resource, Retain):
                 subscriptions.append(resource._subscription)
-            scope = getattr(resource, "_scope", None)
-            if isinstance(scope, _ResourceScope):
-                subscriptions.extend(scope.retained_subscriptions())
         return tuple(subscriptions)
 
     def close(self) -> None:
@@ -287,18 +280,6 @@ def _close_lifecycle_resource(resource: object) -> None:
     close = getattr(resource, "_close_from_graph", None)
     if callable(close):
         close()
-
-
-def _record_lifecycle_error(
-    first_error: BaseException | None,
-    cleanup: Callable[[], object],
-) -> BaseException | None:
-    try:
-        cleanup()
-    except BaseException as error:
-        if first_error is None:
-            return error
-    return first_error
 
 
 class _GraphLifetime:
@@ -379,9 +360,6 @@ class _GraphLifetime:
 
     def unregister_resource(self, resource: object) -> None:
         self.resources.unregister(resource)
-
-    def new_resource_scope(self) -> _ResourceScope:
-        return _ResourceScope(lambda: self.closed_message)
 
     def close(self, *, suppress_errors: bool = False) -> None:
         with self._lock:

@@ -9,7 +9,7 @@ description: "Owner-thread drain gate for GraphReFly-owned async completions."
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:448`
+**Source:** `src/graphrefly/_facade.py:426`
 
 ## Signature
 
@@ -38,7 +38,7 @@ wrap_runner(runner: AsyncRunner) -> AsyncRunner
 
 Return an AsyncRunner adapter whose completions are drained by this queue.
 
-Source: `src/graphrefly/_facade.py:485`
+Source: `src/graphrefly/_facade.py:463`
 
 ### `drain`
 
@@ -48,7 +48,7 @@ drain(max_items: int | None = None) -> int
 
 Drain queued private completions on the graph owner thread.
 
-Source: `src/graphrefly/_facade.py:493`
+Source: `src/graphrefly/_facade.py:471`
 
 ### `close`
 
@@ -58,4 +58,4 @@ close() -> None
 
 Close this queue and cancel queued private completions.
 
-Source: `src/graphrefly/_facade.py:521`
+Source: `src/graphrefly/_facade.py:499`

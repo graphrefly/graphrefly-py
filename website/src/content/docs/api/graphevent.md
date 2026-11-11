@@ -9,7 +9,7 @@ description: "One array a node published, as Graph.observe sees it."
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:439`
+**Source:** `src/graphrefly/_facade.py:417`
 
 ## Signature
 

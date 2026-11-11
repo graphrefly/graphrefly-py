@@ -9,7 +9,7 @@ description: "Return the installed Python package version."
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_facade.py:2452`
+**Source:** `src/graphrefly/_facade.py:2430`
 
 ## Signature
 

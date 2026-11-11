@@ -9,7 +9,7 @@ description: "One dependency as an invocation sees it, ``ctx.deps[i]`` (R-invoca
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:1193`
+**Source:** `src/graphrefly/_facade.py:1171`
 
 ## Signature
 
