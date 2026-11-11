@@ -151,10 +151,15 @@ Source: `src/graphrefly/_facade.py:1092`
 ### `describe`
 
 ```python
-describe() -> dict[str, Any]
+describe() -> list[dict[str, Any]]
 ```
 
-Return the topology as JSON-ready data: each node with its current deps.
+Return the topology as JSON-ready data (R-graph-surface, R-node).
+
+Every node in creation order as exactly ``&#123;"id", "kind", "deps", "quiet"&#125;``:
+``kind`` is ``"state"`` or ``"node"`` and ``deps`` are the current dependencies,
+a ``ctx.rewire``'s included, while ``definition`` gives the declared ones. A
+value or a status is read from the node. It activates and runs nothing.
 
 Source: `src/graphrefly/_facade.py:1105`
 
@@ -169,7 +174,7 @@ Observe every array any node publishes, without activating anything.
 A callback that raises goes to the graph's reporter as a
 ``SubscriberCallbackError``, as a subscriber's does.
 
-Source: `src/graphrefly/_facade.py:1124`
+Source: `src/graphrefly/_facade.py:1120`
 
 ### `retain`
 
@@ -179,7 +184,7 @@ retain(node: Node[T], *, reason: str | None = None) -> Retain
 
 Keep a node active until the returned retain token is released.
 
-Source: `src/graphrefly/_facade.py:1151`
+Source: `src/graphrefly/_facade.py:1147`
 
 ### `reentry_queue`
 
@@ -189,7 +194,7 @@ reentry_queue() -> GraphReentryQueue
 
 Return this graph's explicit owner-thread async re-entry queue.
 
-Source: `src/graphrefly/_facade.py:1171`
+Source: `src/graphrefly/_facade.py:1167`
 
 ### `checkpoint`
 
@@ -199,4 +204,4 @@ checkpoint() -> GraphCheckpoint
 
 Capture this graph at a wave boundary as strict JSON (R-checkpoint).
 
-Source: `src/graphrefly/_facade.py:1185`
+Source: `src/graphrefly/_facade.py:1181`

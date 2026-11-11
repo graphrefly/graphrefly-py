@@ -229,7 +229,7 @@ def test_c11_an_operator_rewires_itself_to_each_inner_for_its_lifetime() -> None
     opn = g.node([s], op, name="OP")
     sub = opn.subscribe(lambda _: None)
     s.set("a")
-    assert [d["deps"] for d in g.describe()["nodes"] if d["name"] == "OP"] == [["S", "inner_a"]]
+    assert [d["deps"] for d in g.describe() if d["id"] == "OP"] == [["S", "inner_a"]]
     inner_a = inners["a"][1].ctx
     assert inner_a is not None
     inner_a.emit("x")
@@ -579,7 +579,7 @@ def test_c29_a_batch_commits_once_and_its_topology_requests_follow() -> None:
     g.batch(body)
     assert reads == [0] and s_seen[-1] == ((PENDING,), (DATA, 1))
     assert t_seen == [((START,), (DATA, 1))]  # t starts from the committed value
-    assert [n["deps"] for n in g.describe()["nodes"] if n["name"] == "B"] == [["A", "C"]]
+    assert [n["deps"] for n in g.describe() if n["id"] == "B"] == [["A", "C"]]
 
     def throws() -> None:
         a.set(99)
@@ -820,7 +820,7 @@ def test_c37_rewire_keeps_the_lifetime_and_a_closed_one_drops_late_output() -> N
     first.emit("old")  # dropped
     assert all(array[-1] != (DATA, "old") for array in seen2)
     assert kept.ctx is not first
-    assert [d["deps"] for d in g.describe()["nodes"] if d["name"] == "N"] == [["A"]]
+    assert [d["deps"] for d in g.describe() if d["id"] == "N"] == [["A"]]
 
 
 # ---- C-38: restore keeps the saved state ----------------------------------------------------

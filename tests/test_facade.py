@@ -490,9 +490,7 @@ def test_ctx_rewire_replace_and_definition() -> None:
         definition = g.definition(n)
         assert definition.deps == (a,) and definition.callback is total
         assert definition.recipe == Recipe("total")
-        assert [entry["deps"] for entry in g.describe()["nodes"] if entry["name"] == "n"] == [
-            ["a", "b"]
-        ]
+        assert [entry["deps"] for entry in g.describe() if entry["id"] == "n"] == [["a", "b"]]
         g.replace(n, [b], lambda ctx: ctx.emit(ctx.deps[0].value * 2))
         assert n.cache() == 20
         assert g.definition(n).recipe is None
@@ -503,24 +501,15 @@ def test_ctx_rewire_replace_and_definition() -> None:
 # ---- describe and observe ------------------------------------------------------------
 
 
-def test_describe_is_topology_data_without_function_bodies() -> None:
+def test_describe_is_exactly_the_topology_of_each_node() -> None:
     with Graph("describe") as g:
         a = g.state(1, name="a")
-        g.derived([a], lambda v: v, name="d")
-        assert g.describe() == {
-            "name": "describe",
-            "nodes": [
-                {
-                    "name": "a",
-                    "kind": "state",
-                    "deps": [],
-                    "quiet": False,
-                    "has_value": True,
-                    "value": 1,
-                },
-                {"name": "d", "kind": "node", "deps": ["a"], "quiet": False, "has_value": False},
-            ],
-        }
+        d = g.derived([a], lambda v: v, name="d")
+        assert g.describe() == [
+            {"id": "a", "kind": "state", "deps": [], "quiet": False},
+            {"id": "d", "kind": "node", "deps": ["a"], "quiet": False},
+        ]
+        assert d.status.lifecycle == "inactive"  # describe activates nothing
 
 
 def test_observe_sees_every_published_array_without_activating() -> None:
@@ -798,7 +787,7 @@ def test_checkpoint_and_restore_graph_round_trip() -> None:
     a.set(2)
     cp = g.checkpoint()
     r = graphrefly.restore_graph(cp, registry=reg)
-    assert r.describe()["nodes"] == g.describe()["nodes"]
+    assert r.describe() == g.describe()
     restored = r.find("t")
     assert restored is not None and not isinstance(restored, State)
     seen: Arrays = []

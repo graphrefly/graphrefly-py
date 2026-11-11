@@ -1102,24 +1102,20 @@ class Graph:
             raise GraphReflyValueError(msg)
         return self._nodes.get(node_id)
 
-    def describe(self) -> dict[str, Any]:
-        """Return the topology as JSON-ready data: each node with its current deps."""
+    def describe(self) -> list[dict[str, Any]]:
+        """Return the topology as JSON-ready data (R-graph-surface, R-node).
+
+        Every node in creation order as exactly ``{"id", "kind", "deps", "quiet"}``:
+        ``kind`` is ``"state"`` or ``"node"`` and ``deps`` are the current dependencies,
+        a ``ctx.rewire``'s included, while ``definition`` gives the declared ones. A
+        value or a status is read from the node. It activates and runs nothing.
+        """
 
         self._check_thread()
-        nodes: list[dict[str, Any]] = []
-        for described in self._kernel.describe():
-            held = self._kernel.get(described.id)
-            entry: dict[str, Any] = {
-                "name": described.id,
-                "kind": described.kind,
-                "deps": list(described.deps),
-                "quiet": described.quiet,
-                "has_value": held.has,
-            }
-            if held.has:
-                entry["value"] = held.value
-            nodes.append(entry)
-        return {"name": self._name, "nodes": nodes}
+        return [
+            {"id": d.id, "kind": d.kind, "deps": list(d.deps), "quiet": d.quiet}
+            for d in self._kernel.describe()
+        ]
 
     def observe(self, callback: Callable[[GraphEvent], object]) -> Subscription:
         """Observe every array any node publishes, without activating anything.
