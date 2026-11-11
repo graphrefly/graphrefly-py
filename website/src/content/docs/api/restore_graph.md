@@ -23,6 +23,6 @@ Build a new graph from ``checkpoint`` (R-checkpoint); no callback runs.
 
 ``registry`` maps each recipe's ``ref`` to a factory called as
 ``factory(config, RecipeContext(graph, name, make))``, returning the node callback or
-a ``(callback, setup)`` pair; ``make`` builds another registered recipe. State nodes need no recipe. A node built without a
-recipe is local-only, and restoring it fails, as do a missing recipe and a
-checkpoint in another format.
+a ``(callback, setup)`` pair; ``make`` builds another registered recipe. State
+nodes need no recipe. A node built without a recipe is local-only, and restoring it
+fails, as do a missing recipe and a checkpoint in another format.
