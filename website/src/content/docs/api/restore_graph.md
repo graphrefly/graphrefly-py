@@ -9,7 +9,7 @@ description: "Build a new graph from ``checkpoint`` (R-checkpoint); no callback 
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_facade.py:2484`
+**Source:** `src/graphrefly/_facade.py:2463`
 
 ## Signature
 
@@ -22,7 +22,7 @@ restore_graph(checkpoint: GraphCheckpoint, *, registry: Mapping[str, RecipeFacto
 Build a new graph from ``checkpoint`` (R-checkpoint); no callback runs.
 
 ``registry`` maps each recipe's ``ref`` to a factory called as
-``factory(config, RecipeContext(graph, name))``, returning the node callback or a
-``(callback, setup)`` pair. State nodes need no recipe. A node built without a
+``factory(config, RecipeContext(graph, name, make))``, returning the node callback or
+a ``(callback, setup)`` pair; ``make`` builds another registered recipe. State nodes need no recipe. A node built without a
 recipe is local-only, and restoring it fails, as do a missing recipe and a
 checkpoint in another format.

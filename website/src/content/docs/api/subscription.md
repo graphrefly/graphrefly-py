@@ -9,12 +9,12 @@ description: "Idempotent subscription handle returned by observe and subscribe c
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:676`
+**Source:** `src/graphrefly/_facade.py:678`
 
 ## Signature
 
 ```python
-Subscription(detach: Callable[[], None], *, owner_thread: int, lifetime: _GraphLifetime | None = None, callback_errors: list[SubscriberCallbackError] | None = None)
+Subscription(detach: Callable[[], None], *, owner_thread: int, lifetime: _GraphLifetime | None = None)
 ```
 
 ## Description
@@ -26,7 +26,6 @@ Idempotent subscription handle returned by observe and subscribe calls.
 | Name | Type | Description |
 | --- | --- | --- |
 | `closed` | `bool` | Return whether this subscription has been unsubscribed. |
-| `callback_errors` | `tuple[SubscriberCallbackError, ...]` | Return observer callback failures captured at the Python boundary. |
 
 ## Methods
 
@@ -38,4 +37,4 @@ unsubscribe() -> None
 
 Detach this subscription from its graph node or observer.
 
-Source: `src/graphrefly/_facade.py:705`
+Source: `src/graphrefly/_facade.py:699`

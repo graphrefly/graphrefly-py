@@ -9,7 +9,7 @@ description: "Create an SSE source over a host-supplied HTTP byte-stream driver.
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_facade.py:2278`
+**Source:** `src/graphrefly/_facade.py:2257`
 
 ## Signature
 

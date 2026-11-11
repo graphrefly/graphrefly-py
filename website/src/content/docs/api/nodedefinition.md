@@ -9,7 +9,7 @@ description: "A node's current definition: declared dependencies, callback, setu
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:124`
+**Source:** `src/graphrefly/_facade.py:126`
 
 ## Signature
 

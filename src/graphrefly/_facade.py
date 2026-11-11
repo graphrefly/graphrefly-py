@@ -32,13 +32,14 @@ T = TypeVar("T")
 U = TypeVar("U")
 R = TypeVar("R")
 _VERSION = "0.23.0"
-_MAX_CALLBACK_ERRORS = 32
 _SSE_PARSER_MAX_BUFFER_BYTES = 64 * 1024
 _SSE_RETRY_MAX = (1 << 64) - 1
 _NO_DEFAULT = object()
 _ABSENT: Any = object()
 _GRAPH_REENTRY_QUEUE_TOKEN = object()
 _LOGGER = logging.getLogger("graphrefly")
+#: The attribute on a kernel function or setup that holds the user's callback or setup.
+_AUTHORED = "_graphrefly_authored"
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +75,6 @@ class ControlMessage:
 
 type Message[T] = DataMessage[T] | ErrorMessage | ControlMessage
 type Array[T] = tuple[Message[T], ...]
-type ObserverErrorHandler = Callable[[SubscriberCallbackError], object]
 type NodeCallback = Callable[["Ctx"], object]
 type SetupCallback = Callable[["Ctx"], object]
 type AsyncJobFactory = Callable[[], Awaitable[None]]
@@ -114,11 +114,13 @@ class Recipe:
 
 @dataclass(frozen=True, slots=True)
 class RecipeContext:
-    """What a recipe factory gets besides its config: the graph being restored and the
-    node's name."""
+    """What a recipe factory gets besides its config: the graph being restored, the
+    node's name, and ``make(ref, config, name)``, which builds another registered recipe
+    and returns its ``(callback, setup)`` (R-checkpoint)."""
 
     graph: Graph
     name: str
+    make: Callable[[str, object, str], tuple[NodeCallback, SetupCallback | None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -682,12 +684,10 @@ class Subscription:
         *,
         owner_thread: int,
         lifetime: _GraphLifetime | None = None,
-        callback_errors: list[SubscriberCallbackError] | None = None,
     ) -> None:
         self._detach = detach
         self._owner_thread = owner_thread
         self._lifetime = lifetime
-        self._callback_errors = callback_errors if callback_errors is not None else []
         self._closed = False
 
     @property
@@ -695,12 +695,6 @@ class Subscription:
         """Return whether this subscription has been unsubscribed."""
 
         return self._closed
-
-    @property
-    def callback_errors(self) -> tuple[SubscriberCallbackError, ...]:
-        """Return observer callback failures captured at the Python boundary."""
-
-        return tuple(self._callback_errors)
 
     def unsubscribe(self) -> None:
         """Detach this subscription from its graph node or observer."""
@@ -1360,7 +1354,9 @@ class Ctx:
         return deps[index]
 
     def _check(self) -> None:
-        self._graph._check_thread()
+        # A cleanup that Graph.close runs may still use its ctx (R-lifetime); a ctx whose
+        # lifetime has closed reads no state and sends nothing, so closed is no concern.
+        self._graph._check_thread(allow_closed=True)
 
 
 class Node[T]:
@@ -1409,31 +1405,20 @@ class Node[T]:
         status = self._graph._kernel.status(self._id)
         return NodeStatus(status.cache, status.output, status.lifecycle)
 
-    def subscribe(
-        self,
-        callback: Callable[[Array[T]], object],
-        *,
-        on_error: ObserverErrorHandler | None = None,
-    ) -> Subscription:
+    def subscribe(self, callback: Callable[[Array[T]], object]) -> Subscription:
         """Subscribe to this node: ``callback`` gets each array as a tuple of messages.
 
         The first array is START followed by the node's snapshot. A callback that
-        raises is recorded as a ``SubscriberCallbackError``; it is not the node's ERROR.
+        raises goes to the graph's reporter as a ``SubscriberCallbackError``; it is not
+        the node's ERROR, and nothing keeps it.
         """
 
         graph = self._graph
         graph._check_thread()
         _reject_async_callable(callback)
-        if on_error is not None:
-            _reject_async_callable(on_error)
-        callback_errors: list[SubscriberCallbackError] = []
 
         def sink(array: tuple[_k.Message, ...]) -> None:
-            try:
-                result = callback(cast("Array[T]", tuple(_message(m) for m in array)))
-                _reject_awaitable(result)
-            except Exception as error:
-                _record_observer_error(error, callback_errors, on_error)
+            _observed(lambda: callback(cast("Array[T]", tuple(_message(m) for m in array))))
 
         sink_id = graph._new_sink_id()
         node_id = self._id
@@ -1441,7 +1426,6 @@ class Node[T]:
             lambda: graph._kernel.unsubscribe(sink_id, node_id),
             owner_thread=graph._owner_thread,
             lifetime=graph._lifetime,
-            callback_errors=callback_errors,
         )
         graph._lifetime.register(subscription)
         graph._call(lambda: graph._kernel.subscribe(sink_id, node_id, sink))
@@ -1455,19 +1439,22 @@ class State(Node[T]):
     """A state node: the only place host input enters a graph."""
 
     def set(self, value: T | Callable[[T], T]) -> None:
-        """Write a value; given a callable, compute it from the state's value when the
+        """Write a value; given an updater, compute it from the state's value when the
         write runs in request order.
 
-        The callable gets ``graphrefly.SENTINEL`` when the state holds no value (not
-        ``None``, which is valid DATA in Python; TS passes ``undefined`` and Rust
-        ``None`` for the same absence), and a callable that returns its argument
-        writes nothing. To store a callable as
-        the value, wrap it: ``set(lambda _: fn)``.
+        An updater is a function, a method or a ``functools.partial``; a class or an
+        object with ``__call__`` is written as a value. The updater gets
+        ``graphrefly.SENTINEL`` when the state holds no value (not ``None``, which is
+        valid DATA in Python; TS passes ``undefined`` and Rust ``None`` for the same
+        absence). An updater that returns the value it was given writes nothing: the
+        same object, or an equal ``bool``, ``int``, ``float``, ``str`` or ``bytes``
+        (NaN counts as itself, ``-0.0`` differs from ``0.0``). To store a function as
+        the value, wrap it: ``set(lambda _: fn)`` (graphrefly-py:D11).
         """
 
         graph = self._graph
         graph._check_thread()
-        if callable(value):
+        if _k.is_updater(value):
             fn = cast("Callable[[object], object]", value)
             _reject_async_callable(fn)
 
@@ -1522,7 +1509,6 @@ class Graph:
         self._report_to = report
         self._kernel = _k.Graph(report=self._on_report)
         self._nodes: dict[str, Node[Any]] = {}
-        self._callbacks: dict[str, tuple[Callable[..., object] | None, SetupCallback | None]] = {}
         self._next_id = 0
         self._next_sink = 0
         self._reentry_queue: GraphReentryQueue | None = None
@@ -1572,7 +1558,7 @@ class Graph:
             _reject_awaitable(value)
             _reject_sentinel_data(value)
             self._call(lambda: self._kernel.state(node_id, value))
-        return cast("State[Any]", self._register(State(self, node_id), None, None))
+        return cast("State[Any]", self._register(State(self, node_id)))
 
     @overload
     def producer(self, callback: Callable[[], T], name: str | None = None) -> Node[T]: ...
@@ -1799,15 +1785,14 @@ class Graph:
         if recipe is not None and not isinstance(recipe, Recipe):
             msg = "recipe must be a graphrefly.Recipe"
             raise GraphReflyValueError(msg)
-        fn = _guard_fn(self._ctx_callback(callback))
-        kernel_setup = _guard_setup(self._ctx_setup(setup))
+        fn = _guard_fn(self._ctx_callback(callback), callback)
+        kernel_setup = _guard_setup(self._ctx_setup(setup), setup)
         kernel_recipe = None if recipe is None else {"ref": recipe.ref, "config": recipe.config}
 
         def run() -> None:
             self._kernel.replace(node_id, ids, fn, setup=kernel_setup, recipe=kernel_recipe)
 
         self._call(run)
-        self._callbacks[node_id] = (callback, setup)
 
     # ---- reads -----------------------------------------------------------------------
 
@@ -1817,12 +1802,13 @@ class Graph:
         self._check_thread()
         node_id = self._node_id(node)
         definition = self._kernel.definition(node_id)
-        callback, setup = self._callbacks.get(node_id, (None, None))
         recipe = definition.recipe
         return NodeDefinition(
             tuple(self._nodes[dep] for dep in definition.deps),
-            callback,
-            setup,
+            # The user's callback and setup ride on the instance the kernel holds, so a
+            # replace a batch body dropped or the kernel refused leaves them as they are.
+            getattr(definition.fn, _AUTHORED, None),
+            getattr(definition.setup, _AUTHORED, None),
             None if not isinstance(recipe, dict) else Recipe(recipe["ref"], recipe.get("config")),
             definition.complete,
             definition.error,
@@ -1862,35 +1848,27 @@ class Graph:
             nodes.append(entry)
         return {"name": self._name, "nodes": nodes}
 
-    def observe(
-        self,
-        callback: Callable[[GraphEvent], object],
-        *,
-        on_error: ObserverErrorHandler | None = None,
-    ) -> Subscription:
-        """Observe every array any node publishes, without activating anything."""
+    def observe(self, callback: Callable[[GraphEvent], object]) -> Subscription:
+        """Observe every array any node publishes, without activating anything.
+
+        A callback that raises goes to the graph's reporter as a
+        ``SubscriberCallbackError``, as a subscriber's does.
+        """
 
         self._check_thread()
         _reject_async_callable(callback)
-        if on_error is not None:
-            _reject_async_callable(on_error)
-        callback_errors: list[SubscriberCallbackError] = []
         seq = [0]
 
         def observer(node_id: str, array: tuple[_k.Message, ...]) -> None:
             seq[0] += 1
             event = GraphEvent(node_id, tuple(_message(m) for m in array), seq[0])
-            try:
-                _reject_awaitable(callback(event))
-            except Exception as error:
-                _record_observer_error(error, callback_errors, on_error)
+            _observed(lambda: callback(event))
 
         remove = self._kernel.observe(observer)
         subscription = Subscription(
             remove,
             owner_thread=self._owner_thread,
             lifetime=self._lifetime,
-            callback_errors=callback_errors,
         )
         self._lifetime.register(subscription)
         return subscription
@@ -1986,8 +1964,8 @@ class Graph:
         ids = [self._node_id(dep) for dep in deps]
         node_id = self._new_id(name)
         kernel_recipe = None if recipe is None else {"ref": recipe.ref, "config": recipe.config}
-        guarded = _guard_fn(fn)
-        guarded_setup = _guard_setup(kernel_setup)
+        guarded = _guard_fn(fn, callback)
+        guarded_setup = _guard_setup(kernel_setup, setup)
 
         def add() -> None:
             self._kernel.node(
@@ -2003,7 +1981,7 @@ class Graph:
             )
 
         self._call(add)
-        return self._register(Node(self, node_id), callback, setup)
+        return self._register(Node(self, node_id))
 
     def _source(
         self,
@@ -2018,14 +1996,8 @@ class Graph:
 
         return self._add_node(name, [], run, None, None, kernel_setup=start)
 
-    def _register(
-        self,
-        node: Node[Any],
-        callback: Callable[..., object] | None,
-        setup: SetupCallback | None,
-    ) -> Node[Any]:
+    def _register(self, node: Node[Any]) -> Node[Any]:
         self._nodes[node.name] = node
-        self._callbacks[node.name] = (callback, setup)
         return node
 
     def _new_id(self, name: str | None) -> str:
@@ -2498,8 +2470,8 @@ def restore_graph(
     """Build a new graph from ``checkpoint`` (R-checkpoint); no callback runs.
 
     ``registry`` maps each recipe's ``ref`` to a factory called as
-    ``factory(config, RecipeContext(graph, name))``, returning the node callback or a
-    ``(callback, setup)`` pair. State nodes need no recipe. A node built without a
+    ``factory(config, RecipeContext(graph, name, make))``, returning the node callback or
+    a ``(callback, setup)`` pair; ``make`` builds another registered recipe. State nodes need no recipe. A node built without a
     recipe is local-only, and restoring it fails, as do a missing recipe and a
     checkpoint in another format.
     """
@@ -2508,23 +2480,31 @@ def restore_graph(
         msg = "registry must map recipe refs to factories"
         raise GraphReflyValueError(msg)
     graph = Graph(name, report=report)
-    built: dict[str, tuple[NodeCallback, SetupCallback | None]] = {}
 
-    def adapt(ref: str, factory: RecipeFactory) -> _checkpoint.Factory:
+    def build(
+        ref: str, config: object, node_name: str
+    ) -> tuple[NodeCallback, SetupCallback | None]:
+        factory = registry.get(ref)
+        if factory is None:
+            raise GraphReflyRestoreError(f"restore: no recipe {ref}")
+        made = factory(config, RecipeContext(graph, node_name, build))
+        callback, setup = made if isinstance(made, tuple) else (made, None)
+        if not callable(callback) or (setup is not None and not callable(setup)):
+            msg = f"recipe {ref} must give a callback, or a (callback, setup) pair"
+            raise GraphReflyRestoreError(msg)
+        return callback, setup
+
+    def adapt(ref: str) -> _checkpoint.Factory:
         def make(config: object, at: _checkpoint.RecipeContext) -> _checkpoint.Built:
-            made = factory(config, RecipeContext(graph, at.id))
-            callback, setup = made if isinstance(made, tuple) else (made, None)
-            if not callable(callback) or (setup is not None and not callable(setup)):
-                msg = f"recipe {ref} must give a callback, or a (callback, setup) pair"
-                raise GraphReflyRestoreError(msg)
-            built[at.id] = (callback, setup)
+            callback, setup = build(ref, config, at.id)
             return _checkpoint.Built(
-                _guard_fn(graph._ctx_callback(callback)), _guard_setup(graph._ctx_setup(setup))
+                _guard_fn(graph._ctx_callback(callback), callback),
+                _guard_setup(graph._ctx_setup(setup), setup),
             )
 
         return make
 
-    adapted = {ref: adapt(ref, factory) for ref, factory in registry.items()}
+    adapted = {ref: adapt(ref) for ref in registry}
     try:
         _checkpoint.restore(checkpoint, adapted, into=graph._kernel)
     except _checkpoint.CheckpointError as error:
@@ -2533,8 +2513,7 @@ def restore_graph(
         handle: Node[Any] = (
             State(graph, described.id) if described.kind == "state" else Node(graph, described.id)
         )
-        callback, setup = built.get(described.id, (None, None))
-        graph._register(handle, callback, setup)
+        graph._register(handle)
     return graph
 
 
@@ -2942,8 +2921,13 @@ def _callback_error(error: BaseException) -> GraphCallbackError:
     return GraphCallbackError(type(error).__name__, str(error), raw=error)
 
 
-def _guard_fn(fn: Callable[[_k.Ctx], None]) -> Callable[[_k.Ctx], None]:
-    """A node function whose Exception becomes a GraphCallbackError, the node's ERROR."""
+def _guard_fn(
+    fn: Callable[[_k.Ctx], None], authored: Callable[..., object] | None = None
+) -> Callable[[_k.Ctx], None]:
+    """A node function whose Exception becomes a GraphCallbackError, the node's ERROR.
+
+    It carries the user's callback, which ``Graph.definition`` reads from the kernel.
+    """
 
     def run(ctx: _k.Ctx) -> None:
         try:
@@ -2953,11 +2937,12 @@ def _guard_fn(fn: Callable[[_k.Ctx], None]) -> Callable[[_k.Ctx], None]:
         except Exception as error:
             raise _callback_error(error) from error
 
+    setattr(run, _AUTHORED, authored)
     return run
 
 
 def _guard_setup(
-    setup: Callable[[_k.Ctx], object] | None,
+    setup: Callable[[_k.Ctx], object] | None, authored: SetupCallback | None = None
 ) -> Callable[[_k.Ctx], object] | None:
     if setup is None:
         return None
@@ -2971,45 +2956,20 @@ def _guard_setup(
         except Exception as error:
             raise _callback_error(error) from error
 
+    setattr(run, _AUTHORED, authored)
     return run
 
 
-def _record_observer_error(
-    error: Exception,
-    callback_errors: list[SubscriberCallbackError],
-    on_error: ObserverErrorHandler | None,
-) -> None:
-    wrapped = (
-        error
-        if isinstance(error, SubscriberCallbackError)
-        else SubscriberCallbackError(_scrub_exception(error))
-    )
-    _remember_callback_error(callback_errors, wrapped)
-    if on_error is not None:
-        try:
-            result = on_error(wrapped)
-            _reject_awaitable(result)
-        except Exception as handler_error:
-            _remember_callback_error(
-                callback_errors,
-                SubscriberCallbackError(_scrub_exception(handler_error)),
-            )
+def _observed(call: Callable[[], object]) -> None:
+    """Run a subscribe or observe callback; its Exception goes on to the kernel, which
+    reports it, as a SubscriberCallbackError (graphrefly:D428). Nothing keeps it."""
 
-
-def _remember_callback_error(
-    callback_errors: list[SubscriberCallbackError],
-    error: SubscriberCallbackError,
-) -> None:
-    callback_errors.append(error)
-    if len(callback_errors) > _MAX_CALLBACK_ERRORS:
-        del callback_errors[: len(callback_errors) - _MAX_CALLBACK_ERRORS]
-
-
-def _scrub_exception(error: Exception) -> Exception:
-    error.__traceback__ = None
-    error.__context__ = None
-    error.__cause__ = None
-    return error
+    try:
+        _reject_awaitable(call())
+    except (SubscriberCallbackError, *_k.FATAL):
+        raise
+    except Exception as error:
+        raise SubscriberCallbackError(error) from error
 
 
 def _source_tree_version() -> str | None:

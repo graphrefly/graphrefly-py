@@ -9,7 +9,7 @@ description: "Create a source from a fresh awaitable produced on each activation
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_facade.py:2154`
+**Source:** `src/graphrefly/_facade.py:2133`
 
 ## Signature
 

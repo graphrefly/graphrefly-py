@@ -9,7 +9,7 @@ description: "What an advanced node callback receives for one invocation."
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:1203`
+**Source:** `src/graphrefly/_facade.py:1202`
 
 ## Signature
 
@@ -45,7 +45,7 @@ has_data(index: int) -> bool
 
 Return whether dependency ``index`` holds a value.
 
-Source: `src/graphrefly/_facade.py:1222`
+Source: `src/graphrefly/_facade.py:1221`
 
 ### `data`
 
@@ -55,7 +55,7 @@ data(index: int, default: object = _NO_DEFAULT) -> object
 
 Return dependency ``index``'s latest value, or ``default`` when it holds none.
 
-Source: `src/graphrefly/_facade.py:1233`
+Source: `src/graphrefly/_facade.py:1232`
 
 ### `terminal`
 
@@ -65,7 +65,7 @@ terminal(index: int) -> ControlMessage | ErrorMessage | None
 
 Return dependency ``index``'s COMPLETE or ERROR in this invocation, if any.
 
-Source: `src/graphrefly/_facade.py:1251`
+Source: `src/graphrefly/_facade.py:1250`
 
 ### `invalidated`
 
@@ -75,7 +75,7 @@ invalidated(index: int) -> bool
 
 Return whether an INVALIDATE arrived on ``index`` (manual INVALIDATE policy).
 
-Source: `src/graphrefly/_facade.py:1261`
+Source: `src/graphrefly/_facade.py:1260`
 
 ### `emit`
 
@@ -85,7 +85,7 @@ emit(*values: object) -> None
 
 Send one array of DATA, one message per value.
 
-Source: `src/graphrefly/_facade.py:1266`
+Source: `src/graphrefly/_facade.py:1265`
 
 ### `down`
 
@@ -98,7 +98,7 @@ Send one array of messages: DATA, ERROR, INVALIDATE or COMPLETE.
 START, PENDING and RESOLVED are the kernel's alone and are rejected, as is a
 terminal that is not last.
 
-Source: `src/graphrefly/_facade.py:1278`
+Source: `src/graphrefly/_facade.py:1277`
 
 ### `rewire`
 
@@ -110,4 +110,4 @@ Change this node's own dependencies for its current lifetime.
 
 It runs after the current wave and is undone when the lifetime closes.
 
-Source: `src/graphrefly/_facade.py:1328`
+Source: `src/graphrefly/_facade.py:1327`

@@ -71,7 +71,7 @@ def _prefix(graph: Graph, name: str | None, kind: str) -> str:
 
 def _adopt(graph: Graph, node_id: str, *, state: bool = False) -> Node[Any]:
     handle: Node[Any] = State(graph, node_id) if state else Node(graph, node_id)
-    graph._register(handle, None, None)
+    graph._register(handle)
     return handle
 
 

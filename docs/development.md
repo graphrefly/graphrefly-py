@@ -66,8 +66,9 @@ reference kernel on random graphs (needs `node`; reads the root checkout only).
   node's `setup` runs once per lifetime and may return its cleanup. `derived`,
   `effect` and `producer` keep a first-run gate: Python sugar, not protocol.
 - A callback `Exception` becomes the node's ERROR as `GraphCallbackError`. A
-  subscribe/observe callback `Exception` is a `SubscriberCallbackError` on the
-  subscription. A fatal `BaseException` (KeyboardInterrupt, SystemExit, ...), a
+  subscribe/observe callback `Exception` goes to `Graph(report=...)` as a
+  `SubscriberCallbackError` (logged on the `graphrefly` logger without a reporter);
+  nothing keeps it (graphrefly-py:D11). A fatal `BaseException` (KeyboardInterrupt, SystemExit, ...), a
   `RecursionError` or a `MemoryError` propagates to the caller and poisons the graph
   facade (graphrefly-py:D2, D10).
 - `Graph.close()` / context managers release facade subscriptions, retains and

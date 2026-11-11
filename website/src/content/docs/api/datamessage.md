@@ -9,7 +9,7 @@ description: "DATA observation with a domain payload."
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:44`
+**Source:** `src/graphrefly/_facade.py:45`
 
 ## Signature
 

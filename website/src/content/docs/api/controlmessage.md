@@ -9,7 +9,7 @@ description: "A message that carries no payload: START, PENDING, RESOLVED, INVAL
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:68`
+**Source:** `src/graphrefly/_facade.py:69`
 
 ## Signature
 

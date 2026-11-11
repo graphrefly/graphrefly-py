@@ -9,7 +9,7 @@ description: "A typed handle to one node of a graph."
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:1361`
+**Source:** `src/graphrefly/_facade.py:1362`
 
 ## Signature
 
@@ -39,17 +39,18 @@ cache(default: object = _NO_DEFAULT) -> object
 
 Return the latest retained DATA value, or ``default`` when it holds none.
 
-Source: `src/graphrefly/_facade.py:1380`
+Source: `src/graphrefly/_facade.py:1381`
 
 ### `subscribe`
 
 ```python
-subscribe(callback: Callable[[Array[T]], object], *, on_error: ObserverErrorHandler | None = None) -> Subscription
+subscribe(callback: Callable[[Array[T]], object]) -> Subscription
 ```
 
 Subscribe to this node: ``callback`` gets each array as a tuple of messages.
 
 The first array is START followed by the node's snapshot. A callback that
-raises is recorded as a ``SubscriberCallbackError``; it is not the node's ERROR.
+raises goes to the graph's reporter as a ``SubscriberCallbackError``; it is not
+the node's ERROR, and nothing keeps it.
 
-Source: `src/graphrefly/_facade.py:1407`
+Source: `src/graphrefly/_facade.py:1408`

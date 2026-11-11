@@ -9,7 +9,7 @@ description: "A state node: the only place host input enters a graph."
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:1449`
+**Source:** `src/graphrefly/_facade.py:1438`
 
 ## Description
 
@@ -23,16 +23,19 @@ A state node: the only place host input enters a graph.
 set(value: T | Callable[[T], T]) -> None
 ```
 
-Write a value; given a callable, compute it from the state's value when the
+Write a value; given an updater, compute it from the state's value when the
 write runs in request order.
 
-The callable gets ``graphrefly.SENTINEL`` when the state holds no value (not
-``None``, which is valid DATA in Python; TS passes ``undefined`` and Rust
-``None`` for the same absence), and a callable that returns its argument
-writes nothing. To store a callable as
-the value, wrap it: ``set(lambda _: fn)``.
+An updater is a function, a method or a ``functools.partial``; a class or an
+object with ``__call__`` is written as a value. The updater gets
+``graphrefly.SENTINEL`` when the state holds no value (not ``None``, which is
+valid DATA in Python; TS passes ``undefined`` and Rust ``None`` for the same
+absence). An updater that returns the value it was given writes nothing: the
+same object, or an equal ``bool``, ``int``, ``float``, ``str`` or ``bytes``
+(NaN counts as itself, ``-0.0`` differs from ``0.0``). To store a function as
+the value, wrap it: ``set(lambda _: fn)`` (graphrefly-py:D11).
 
-Source: `src/graphrefly/_facade.py:1452`
+Source: `src/graphrefly/_facade.py:1441`
 
 ### `invalidate`
 
@@ -42,7 +45,7 @@ invalidate() -> None
 
 Remove the state's value and invalidate its dependents.
 
-Source: `src/graphrefly/_facade.py:1480`
+Source: `src/graphrefly/_facade.py:1472`
 
 ### `complete`
 
@@ -52,7 +55,7 @@ complete() -> None
 
 End the state with COMPLETE; later host input is refused.
 
-Source: `src/graphrefly/_facade.py:1487`
+Source: `src/graphrefly/_facade.py:1479`
 
 ### `error`
 
@@ -62,4 +65,4 @@ error(error: object) -> None
 
 End the state with ERROR carrying ``error``; later host input is refused.
 
-Source: `src/graphrefly/_facade.py:1494`
+Source: `src/graphrefly/_facade.py:1486`

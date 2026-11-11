@@ -9,7 +9,7 @@ description: "ERROR with its diagnostic."
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:56`
+**Source:** `src/graphrefly/_facade.py:57`
 
 ## Signature
 

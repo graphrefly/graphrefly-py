@@ -17,6 +17,8 @@ from graphrefly._kernel.graph import (
     Seed,
     Setup,
     TraceEntry,
+    is_updater,
+    same_value,
 )
 from graphrefly._kernel.messages import (
     COMPLETE,
@@ -60,4 +62,6 @@ __all__ = [
     "Setup",
     "Signal",
     "TraceEntry",
+    "is_updater",
+    "same_value",
 ]

@@ -6,8 +6,12 @@ its API shape, value boundary, exception taxonomy, host lifetime and checkpoint.
 
 from __future__ import annotations
 
+import functools
 import gc
+import logging
+import operator
 import threading
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -512,50 +516,59 @@ def test_observe_sees_every_published_array_without_activating() -> None:
         assert [e.seq for e in events] == [1, 2, 3, 4]
 
 
-def test_observe_callback_errors_are_captured() -> None:
-    with Graph("observe-errors") as g:
+def test_an_observer_failure_goes_to_the_reporter() -> None:
+    reports: list[HostReport] = []
+    with Graph("observe-errors", report=reports.append) as g:
         a = g.state(1)
 
         def failing(event: GraphEvent) -> None:
             raise RuntimeError("observer failed")
 
-        sub = g.observe(failing)
+        g.observe(failing)
         a.set(2)
-        assert [type(e) for e in sub.callback_errors] == [SubscriberCallbackError]
+        assert [(r.source, type(r.error), str(r.error)) for r in reports] == [
+            ("observer", SubscriberCallbackError, "observer failed")
+        ]
 
 
 # ---- subscriber boundary -----------------------------------------------------------------
 
 
-def test_subscriber_errors_are_captured_bounded_and_not_node_errors() -> None:
-    with Graph("subscriber") as g:
+def test_a_subscriber_failure_goes_to_the_reporter_and_nothing_keeps_it() -> None:
+    reports: list[HostReport] = []
+    with Graph("subscriber", report=reports.append) as g:
         a = g.state(0)
-        handled: list[SubscriberCallbackError] = []
+        later: Arrays = []
 
         def failing(_: object) -> None:
             raise ValueError("sink failed")
 
-        sub = a.subscribe(failing, on_error=handled.append)
+        sub = a.subscribe(failing)
+        a.subscribe(later.append)
         for v in range(40):
             a.set(v + 1)
-        assert len(sub.callback_errors) == 32
-        assert isinstance(sub.callback_errors[0], SubscriberCallbackError)
-        assert len(handled) == 41
-        assert a.status.output == "open"
+        assert len(reports) == 41  # START and 40 waves; R-failure: no history is kept
+        assert all(isinstance(r.error, SubscriberCallbackError) for r in reports)
+        assert isinstance(reports[0].error.original, ValueError)  # type: ignore[attr-defined]
+        assert reports[0].source.startswith("sink ")
+        assert not hasattr(sub, "callback_errors")
+        assert a.status.output == "open" and later[-1][-1] == DataMessage(40)
 
 
-def test_subscriber_on_error_failures_are_captured() -> None:
-    with Graph("on-error") as g:
+def test_without_a_reporter_a_subscriber_failure_is_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with Graph("logged") as g:
         a = g.state(0)
 
         def failing(_: object) -> None:
             raise ValueError("sink failed")
 
-        def handler(_: SubscriberCallbackError) -> None:
-            raise RuntimeError("handler failed")
-
-        sub = a.subscribe(failing, on_error=handler)
-        assert [str(e) for e in sub.callback_errors] == ["sink failed", "handler failed"]
+        with caplog.at_level(logging.ERROR, logger="graphrefly"):
+            a.subscribe(failing)
+        assert [r.getMessage() for r in caplog.records] == [
+            "graphrefly sink sink#1 failed: SubscriberCallbackError('sink failed')"
+        ]
 
 
 @pytest.mark.parametrize("fatal", [KeyboardInterrupt, SystemExit])
@@ -573,7 +586,6 @@ def test_a_fatal_in_a_subscriber_propagates_and_poisons_the_facade(
     with pytest.raises(fatal):
         a.set(1)
     assert g.closed and sub.closed
-    assert sub.callback_errors == ()
     with pytest.raises(GraphReflyRuntimeError, match="fatal"):
         a.cache()
 
@@ -749,11 +761,15 @@ def _registry() -> dict[str, Any]:
     return {"total": total}
 
 
+def _no_make(ref: str, config: object, name: str) -> Any:
+    raise AssertionError("not restoring")
+
+
 def test_checkpoint_and_restore_graph_round_trip() -> None:
     reg = _registry()
     g = Graph("cp")
     a = g.state(1, name="a")
-    built = reg["total"](100, RecipeContext(g, "t"))
+    built = reg["total"](100, RecipeContext(g, "t", _no_make))
     t = g.node([a], built, name="t", recipe=Recipe("total", 100))
     t.subscribe(lambda _: None)
     a.set(2)
@@ -792,3 +808,142 @@ def test_callback_error_is_public_taxonomy() -> None:
     assert issubclass(CallbackError, graphrefly.GraphReflyError)
     assert issubclass(GraphCallbackError, CallbackError)
     assert issubclass(SubscriberCallbackError, CallbackError)
+
+
+# ---- review fixes: close, definition, recipes and set(fn) -----------------------------
+
+
+def test_a_cleanup_that_graph_close_runs_can_still_use_its_ctx() -> None:
+    reports: list[HostReport] = []
+    g = Graph("close", report=reports.append)
+    a = g.state(1)
+    read: list[object] = []
+
+    def setup(ctx: Ctx) -> Any:
+        ctx.state = "kept"
+        return lambda: read.append(ctx.state)
+
+    g.node([a], lambda ctx: None, setup=setup).subscribe(lambda _: None)
+    g.close()
+    assert read == ["kept"] and reports == []  # R-lifetime: the cleanup reads its state
+
+
+def test_definition_follows_the_instance_the_kernel_runs() -> None:
+    reports: list[HostReport] = []
+    g = Graph("definition", report=reports.append)
+    a = g.state(1, name="a")
+    b = g.state(2, name="b")
+
+    def old(ctx: Ctx) -> None:
+        ctx.emit("old")
+
+    def new(ctx: Ctx) -> None:
+        ctx.emit("new")
+
+    n = g.node([a], old, name="n")
+    m = g.node([a], old, name="m")
+    n.subscribe(lambda _: None)
+
+    def body() -> None:
+        g.replace(n, [b], new)
+        raise RuntimeError("abort")
+
+    with pytest.raises(RuntimeError):
+        g.batch(body)  # a body that throws drops its replace (R-request-order)
+    assert g.definition(n).callback is old and n.cache() == "old"
+
+    def cycle() -> None:
+        g.replace(n, [m], new)
+        g.replace(m, [n], new)  # valid when asked for, refused when it runs
+
+    g.batch(cycle)
+    assert g.definition(n).callback is new and g.definition(n).deps == (m,)
+    assert g.definition(m).callback is old and g.definition(m).deps == (a,)
+    assert [r.source for r in reports] == ["queued request"]
+
+
+def test_a_recipe_factory_can_make_another_registered_recipe() -> None:
+    def plus(config: Any, at: RecipeContext) -> Any:
+        return lambda ctx: ctx.emit(ctx.data(0) + config)
+
+    def twice(config: Any, at: RecipeContext) -> Any:
+        inner, _setup = at.make("plus", config, at.name)
+        return inner
+
+    reg: dict[str, Any] = {"plus": plus, "twice": twice}
+    g = Graph("make")
+
+    def make(ref: str, config: object, name: str) -> Any:
+        return reg[ref](config, RecipeContext(g, name, make)), None
+
+    a = g.state(1, name="a")
+    t = g.node([a], twice(5, RecipeContext(g, "t", make)), name="t", recipe=Recipe("twice", 5))
+    t.subscribe(lambda _: None)
+    r = graphrefly.restore_graph(g.checkpoint(), registry=reg)
+    restored = r.find("t")
+    assert restored is not None
+    restored.subscribe(lambda _: None)
+    assert restored.cache() == 6
+    callback = r.definition(restored).callback
+    assert callback is not None and callable(callback)
+
+
+def test_set_takes_functions_methods_and_partials_as_updaters_others_as_values() -> None:
+    g = Graph("set")
+    s = g.state(0)
+    s.set(str)  # a class is a value, as Graph.state(str) takes it
+    assert s.cache() is str
+
+    class Callable_:
+        def __call__(self, value: object) -> object:
+            return "called"
+
+    instance = Callable_()
+    s.set(instance)
+    assert s.cache() is instance
+    s.set(lambda _: 2)
+    s.set(functools.partial(operator.add, 3))
+    assert s.cache() == 5
+    t = g.state("ab")
+    t.set(str.upper)  # a method
+    assert t.cache() == "AB"
+
+
+@pytest.mark.parametrize(
+    ("start", "updater"),
+    [
+        (5, lambda v: v + 0),
+        (1000, lambda v: v + 0),  # CPython caches small ints only: no difference
+        (1.5, lambda v: v + 0.0),
+        (float("nan"), lambda v: v * 1.0),
+        ("text", lambda v: "".join(list(v))),
+        (b"x", lambda v: bytes(bytearray(v))),
+        (True, lambda v: bool(v)),
+    ],
+)
+def test_an_updater_returning_an_equal_scalar_writes_nothing(
+    start: object, updater: Callable[[Any], object]
+) -> None:
+    g = Graph("same")
+    s = g.state(start)
+    seen: Arrays = []
+    s.subscribe(seen.append)
+    s.set(updater)
+    assert len(seen) == 1  # only START
+
+
+def test_an_updater_returning_minus_zero_for_zero_or_an_equal_list_writes() -> None:
+    g = Graph("differ")
+    s = g.state(0.0)
+    seen: Arrays = []
+    s.subscribe(seen.append)
+    s.set(lambda value: -value)
+    assert seen[-1][-1] == DataMessage(-0.0)
+    s.set(lambda value: 1)
+    s.set(lambda value: True)  # True is not the int 1
+    assert seen[-1][-1] == DataMessage(True)
+    lst = g.state([1])
+    seen.clear()
+    lst.subscribe(seen.append)
+    lst.set(lambda value: list(value))  # an equal list is a new value
+    assert len(seen) == 2

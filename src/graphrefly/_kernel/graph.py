@@ -11,11 +11,14 @@ no node's state to trust, so they are never a node's ERROR or a report.
 
 from __future__ import annotations
 
+import math
 from collections import deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from functools import partial
 from inspect import isasyncgenfunction, isawaitable, iscoroutinefunction
-from typing import Any, Final, Literal
+from types import BuiltinFunctionType, FunctionType, MethodDescriptorType, MethodType
+from typing import Any, Final, Literal, TypeGuard
 
 from graphrefly._kernel.ctx import Ctx
 from graphrefly._kernel.messages import (
@@ -355,6 +358,37 @@ def _settles(frame: Array) -> bool:
     return False
 
 
+#: What set(fn) takes for an updater: a function, a method or a partial. Anything else,
+#: a class or an object with __call__ included, is written as a value (graphrefly-py:D11).
+_UPDATERS: Final = (FunctionType, BuiltinFunctionType, MethodType, MethodDescriptorType, partial)
+_SCALARS: Final = frozenset({bool, int, float, str, bytes})
+
+
+def is_updater(value: object) -> TypeGuard[Callable[[Any], object]]:
+    """Whether ``set(value)`` computes the value with ``value`` (graphrefly-py:D11)."""
+
+    return isinstance(value, _UPDATERS)
+
+
+def same_value(a: object, b: object) -> bool:
+    """Python's reading of R-request-order's "the value it was given" (Object.is), for
+    graphrefly-py:D11: the same object, or two equal values of one scalar type (bool,
+    int, float, str, bytes), where NaN is the same as NaN and 0.0 is not -0.0."""
+
+    if a is b:
+        return True
+    kind = type(a)
+    if kind is not type(b) or kind not in _SCALARS:
+        return False
+    if kind is float:
+        x, y = a, b
+        assert isinstance(x, float) and isinstance(y, float)
+        if math.isnan(x):
+            return math.isnan(y)
+        return x == y and math.copysign(1.0, x) == math.copysign(1.0, y)
+    return a == b
+
+
 def _resolve(node: _Node, msgs: Array) -> Array:
     """Compute staged set functions in order, each from the value before it."""
 
@@ -373,7 +407,7 @@ def _resolve(node: _Node, msgs: Array) -> Array:
             out.append(message)
             continue
         value = payload.fn(current)
-        if value is current:
+        if same_value(value, current):
             continue  # it returned the value it was given: nothing is written
         out.append(check_message((DATA, value)))
         current = value
@@ -1215,16 +1249,17 @@ class Graph:
         self._request(op)
 
     def set(self, node_id: str, value: object) -> None:
-        """Write a value to a state node; given a callable, compute it when the write runs.
+        """Write a value to a state node; given an updater, compute it when the write runs.
 
-        The callable gets the state's value when the write takes its place in request
-        order (in a batch, from the writes staged before it; ``SENTINEL`` when there is
-        none) and returns the value to write; returning the very value it was given
-        writes nothing. A callable is written as a value only wrapped in another one
-        (R-request-order).
+        An updater is a function, a method or a partial (``is_updater``); a class or an
+        object with ``__call__`` is written as a value. The updater gets the state's value
+        when the write takes its place in request order (in a batch, from the writes
+        staged before it; ``SENTINEL`` when there is none) and returns the value to write;
+        returning the value it was given (``same_value``) writes nothing. An updater is
+        written as a value only wrapped in another one (R-request-order).
         """
 
-        if callable(value):
+        if is_updater(value):
             self._host_input(node_id, (DATA, _Deferred(value)))
         else:
             self._host_input(node_id, check_message((DATA, value)))

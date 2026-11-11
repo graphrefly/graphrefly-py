@@ -9,7 +9,7 @@ description: "Aborted when its lifetime closes; not by an INVALIDATE or a rerun.
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_kernel/signal.py:8`
+**Source:** `src/graphrefly/_kernel/signal.py:10`
 
 ## Signature
 
@@ -43,4 +43,4 @@ Call ``listener`` once when the lifetime closes; return a function that removes 
 
 On a signal already aborted the listener runs at once.
 
-Source: `src/graphrefly/_kernel/signal.py:28`
+Source: `src/graphrefly/_kernel/signal.py:30`

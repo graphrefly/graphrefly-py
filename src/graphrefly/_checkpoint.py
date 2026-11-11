@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import wraps
 from typing import Any, Final, cast
 
 from graphrefly._kernel import COMPLETE, Ctx, Dep, Graph, KernelError, Message
@@ -187,6 +188,7 @@ def _restorable(real: NodeFn) -> NodeFn:
     dependency with what the node had received and run ``real`` only on a change, with
     only the changed dependencies; on every other run it is ``real``."""
 
+    @wraps(real)  # what the host attached to its function stays readable (definition)
     def run(ctx: Ctx) -> object:
         note = ctx.seed
         if not isinstance(note, dict) or "inputs" not in note:

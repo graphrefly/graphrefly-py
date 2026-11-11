@@ -9,7 +9,7 @@ description: "Host-driver HTTP request material for Python network source adapte
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:139`
+**Source:** `src/graphrefly/_facade.py:141`
 
 ## Signature
 
