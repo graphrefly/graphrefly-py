@@ -35,9 +35,11 @@ from graphrefly._kernel.messages import (
     is_terminal,
     split,
 )
+from graphrefly._kernel.signal import Signal
 
 type Policy = Literal["auto", "manual"]
 type NodeFn = Callable[[Ctx], object]
+type Setup = Callable[[Ctx], object]
 type SinkCallback = Callable[[tuple[Message, ...]], object]
 type Reporter = Callable[[Report], object]
 
@@ -77,6 +79,15 @@ class TraceEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class NodeStatus:
+    """A node's status, derived from what it holds and never stored (R-node)."""
+
+    cache: Literal["empty", "stale", "ready"]
+    output: Literal["open", "completed", "errored"]
+    lifecycle: Literal["inactive", "active", "closing"]
+
+
+@dataclass(frozen=True, slots=True)
 class NodeState:
     """What a node holds right now; reading it changes nothing."""
 
@@ -108,12 +119,15 @@ class _Input:
 
 
 class _Lifetime:
-    """One activation of a computed node (R-lifetime)."""
+    """One activation of a computed node (R-lifetime): its signal, setup and cleanup."""
 
-    __slots__ = ("open",)
+    __slots__ = ("cleanup", "open", "setup_done", "signal")
 
     def __init__(self) -> None:
         self.open = True
+        self.signal: Signal | None = None  # created on first access
+        self.setup_done = False
+        self.cleanup: Callable[[], object] | None = None
 
 
 class _Sink:
@@ -154,6 +168,7 @@ class _Node:
         "pending_deps",
         "private_state",
         "quiet",
+        "setup",
         "subs",
         "values",
     )
@@ -168,6 +183,7 @@ class _Node:
         invalidate_policy: Policy,
         values: list[object],
         quiet: bool = False,
+        setup: Setup | None = None,
     ) -> None:
         self.id = node_id
         self.is_state = fn is None
@@ -180,6 +196,8 @@ class _Node:
         # A quiet node consumes its input waves without passing the pending mark on;
         # what it sends is a later wave of its own (R-wave).
         self.quiet = quiet
+        # Runs once per lifetime before the function's first run; belongs to the instance.
+        self.setup = setup
         self.subs: list[_Sink | _Edge] = []
         self.active = False
         self.lifetime: _Lifetime | None = None
@@ -271,6 +289,7 @@ class Graph:
         error: Policy = "auto",
         invalidate: Policy = "auto",
         quiet: bool = False,
+        setup: Setup | None = None,
     ) -> str:
         """Create a computed node over declared dependencies (R-node)."""
 
@@ -282,7 +301,7 @@ class Graph:
         for name, policy in (("complete", complete), ("error", error), ("invalidate", invalidate)):
             if policy not in ("auto", "manual"):
                 raise KernelError(f"{name} policy must be 'auto' or 'manual', not {policy!r}")
-        self._add(_Node(node_id, dep_ids, fn, complete, error, invalidate, [], bool(quiet)))
+        self._add(_Node(node_id, dep_ids, fn, complete, error, invalidate, [], bool(quiet), setup))
         return node_id
 
     def _add(self, node: _Node) -> None:
@@ -400,13 +419,24 @@ class Graph:
                     break
 
     def _close_lifetime(self, node: _Node) -> None:
+        """Close in the rule's order: abort the signal, release the dependencies, run the
+        cleanup (which may still read the private state), then drop the private state."""
+
         lifetime = node.lifetime
         if lifetime is None or not lifetime.open:
             return
         lifetime.open = False
+        if lifetime.signal is not None:
+            lifetime.signal._abort(lambda error: self._report(f"signal {node.id}", error))
         self._release_deps(node)
         node.deps = node.declared_deps
         node.inputs = [_Input() for _ in node.deps]
+        cleanup, lifetime.cleanup = lifetime.cleanup, None
+        if cleanup is not None:
+            try:
+                cleanup()
+            except Exception as error:
+                self._report(f"cleanup {node.id}", error)  # not the node's ERROR
         node.private_state = None
         node.lifetime = None
 
@@ -427,6 +457,14 @@ class Graph:
         assert lifetime is not None and node.fn is not None
         ctx = Ctx(self, node, lifetime)
         try:
+            if not lifetime.setup_done:
+                # The lifetime's setup runs first, once, in this invocation: what it sends
+                # is part of this run's output, and a throw ends the node (R-lifetime).
+                lifetime.setup_done = True
+                if node.setup is not None:
+                    cleanup = node.setup(ctx)
+                    if callable(cleanup):
+                        lifetime.cleanup = cleanup
             node.fn(ctx)
         except Exception as error:
             return [[(ERROR, error)]]  # what it sent before the throw is dropped
@@ -808,6 +846,22 @@ class Graph:
         return result
 
     # ---- Reads ---------------------------------------------------------------
+
+    def status(self, node_id: str) -> NodeStatus:
+        """The node's status, derived from what it holds (R-node); reading changes nothing."""
+
+        node = self._node_of(node_id)
+        ended = node.ended
+        lifetime = node.lifetime
+        return NodeStatus(
+            "empty" if not node.has else "stale" if node.pending else "ready",
+            "open" if ended is None else "completed" if ended[0] == COMPLETE else "errored",
+            "closing"
+            if lifetime is not None and not lifetime.open
+            else "active"
+            if node.active
+            else "inactive",
+        )
 
     def get(self, node_id: str) -> NodeState:
         """What the node retains as of now; reading never computes or activates."""

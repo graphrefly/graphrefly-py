@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from graphrefly._kernel.messages import DATA, Array, Message, is_terminal, is_value, prepare_output
+from graphrefly._kernel.signal import Signal
 
 if TYPE_CHECKING:
     from graphrefly._kernel.graph import Graph, _Input, _Lifetime, _Node
@@ -92,13 +93,31 @@ class Ctx:
 
     @property
     def state(self) -> object:
-        """This lifetime's private state (``None`` until set)."""
+        """This lifetime's private state (``None`` until set).
 
-        return self._node.private_state
+        Read through a ctx whose lifetime has gone, it is ``None``, and a write through
+        it is dropped, so an old ctx never reaches a later lifetime's state.
+        """
+
+        node = self._node
+        return node.private_state if node.lifetime is self._lifetime else None
 
     @state.setter
     def state(self, value: object) -> None:
-        self._node.private_state = value
+        node = self._node
+        if node.lifetime is self._lifetime:
+            node.private_state = value
+
+    @property
+    def signal(self) -> Signal:
+        """The lifetime's abort signal: aborted when this lifetime closes."""
+
+        lifetime = self._lifetime
+        if lifetime.signal is None:
+            lifetime.signal = Signal()
+            if not lifetime.open:
+                lifetime.signal._abort(lambda error: None)
+        return lifetime.signal
 
     def down(self, array: Sequence[Message]) -> None:
         """Send one array: this invocation's output, or a later wave once it returned.

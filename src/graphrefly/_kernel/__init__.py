@@ -6,7 +6,15 @@ only package user.
 """
 
 from graphrefly._kernel.ctx import Ctx, Dep
-from graphrefly._kernel.graph import Graph, NodeState, Policy, Report, TraceEntry
+from graphrefly._kernel.graph import (
+    Graph,
+    NodeState,
+    NodeStatus,
+    Policy,
+    Report,
+    Setup,
+    TraceEntry,
+)
 from graphrefly._kernel.messages import (
     COMPLETE,
     DATA,
@@ -20,6 +28,7 @@ from graphrefly._kernel.messages import (
     KernelError,
     Message,
 )
+from graphrefly._kernel.signal import Signal
 
 __all__ = [
     "COMPLETE",
@@ -37,7 +46,10 @@ __all__ = [
     "KernelError",
     "Message",
     "NodeState",
+    "NodeStatus",
     "Policy",
     "Report",
+    "Setup",
+    "Signal",
     "TraceEntry",
 ]
