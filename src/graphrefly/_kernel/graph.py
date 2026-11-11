@@ -20,7 +20,7 @@ from inspect import isasyncgenfunction, isawaitable, iscoroutinefunction
 from types import BuiltinFunctionType, FunctionType, MethodDescriptorType, MethodType
 from typing import Any, Final, Literal, TypeGuard
 
-from graphrefly._kernel.ctx import Ctx
+from graphrefly._kernel.ctx import SAW_DATA, Ctx
 from graphrefly._kernel.messages import (
     COMPLETE,
     COMPLETE_MESSAGE,
@@ -58,8 +58,9 @@ _SAW_VALUE: Final = 1
 _SAW_INVALIDATE: Final = 2
 _SAW_TERMINAL: Final = 4
 _SAW_ERROR: Final = 8
+_SAW_DATA: Final = SAW_DATA  # a DATA, not only a RESOLVED; read by Dep.sent_data
 _SAW: Final = {
-    DATA: _SAW_VALUE,
+    DATA: _SAW_VALUE | _SAW_DATA,
     RESOLVED: _SAW_VALUE,
     INVALIDATE: _SAW_INVALIDATE,
     COMPLETE: _SAW_TERMINAL,
@@ -1092,7 +1093,7 @@ class Graph:
                 if kind == DATA:
                     record.has = True
                     record.value = message[1]
-                    saw |= _SAW_VALUE
+                    saw |= _SAW_VALUE | _SAW_DATA
                 else:
                     bit = _SAW.get(kind, 0)
                     saw |= bit

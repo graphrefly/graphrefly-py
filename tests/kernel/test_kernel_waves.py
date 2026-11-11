@@ -7,12 +7,22 @@ of graphrefly spec/conformance.jsonl, qualified against graphrefly._kernel
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable
+from typing import Any, cast
 
 import pytest
 from conftest import Harness, Producer, during
 
-from graphrefly._kernel import COMPLETE, DATA, ERROR, INVALIDATE, Ctx, Graph, KernelError, Report
+from graphrefly._kernel import (
+    COMPLETE,
+    DATA,
+    ERROR,
+    INVALIDATE,
+    Ctx,
+    Graph,
+    KernelError,
+    Report,
+)
 
 
 def map_fn(f: Any) -> Any:
@@ -616,3 +626,51 @@ def test_c44_value_and_quiet_clauses(harness: Harness) -> None:
         "sq <- Q: [PENDING, INVALIDATE]",
         "sd <- D: [PENDING, INVALIDATE]",
     ]
+
+
+# ---- Dep.sent_data, the facade gate's fast read of ``any(dep.waves)`` ----
+
+
+@pytest.mark.parametrize("invalidate", ["auto", "manual"])
+def test_sent_data_is_any_wave_with_a_value(harness: Harness, invalidate: Any) -> None:
+    g = harness.graph
+    a, b = Producer(), Producer()
+    g.node("A", [], a)
+    g.node("B", [], b)
+
+    def odd(ctx: Ctx) -> None:  # an even value sends nothing, so W gets a RESOLVED
+        out = [(DATA, v) for wave in ctx.deps[0].waves for v in wave if cast(int, v) % 2]
+        if out:
+            ctx.down(out)
+
+    g.node("M", ["A"], odd)
+    seen: list[tuple[bool, bool]] = []
+
+    def watch(ctx: Ctx) -> None:
+        for dep in ctx.deps:
+            seen.append((dep.sent_data, any(dep.waves)))
+
+    g.node("W", ["M", "B"], watch, invalidate=invalidate, complete="manual")
+    harness.sink("W")
+
+    def invalidate_then_value() -> None:  # one wave: an INVALIDATE, then a value
+        b.down([(INVALIDATE,)])
+        b.down([(DATA, 6)])
+
+    steps: list[Callable[[], object]] = [
+        lambda: a.down([(DATA, 1)]),
+        lambda: b.down([(DATA, None)]),
+        lambda: a.down([(DATA, 2)]),  # RESOLVED from M
+        lambda: a.down([(DATA, 3), (DATA, 5)]),
+        lambda: b.down([(INVALIDATE,)]),
+        lambda: b.down([(DATA, 4)]),
+        lambda: g.batch(invalidate_then_value),
+        lambda: a.down([(COMPLETE,)]),
+    ]
+    every: set[tuple[bool, bool]] = set()
+    for step in steps:
+        seen.clear()
+        step()
+        assert all(fast == slow for fast, slow in seen), seen
+        every |= set(seen)
+    assert every == {(True, True), (False, False)}  # both answers were exercised

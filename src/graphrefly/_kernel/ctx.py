@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from graphrefly._kernel.messages import DATA, Array, Message, is_terminal, is_value, prepare_output
 from graphrefly._kernel.signal import Signal
 
 if TYPE_CHECKING:
     from graphrefly._kernel.graph import Graph, _Input, _Lifetime, _Node
+
+# The input record's "a DATA arrived" bit, one of graph.py's _SAW bits; it lives here
+# because graph.py imports this module.
+SAW_DATA: Final = 16
 
 
 class Dep:
@@ -35,6 +39,13 @@ class Dep:
             for frame in self._input.frames
             if any(is_value(message) for message in frame)
         ]
+
+    @property
+    def sent_data(self) -> bool:
+        """Whether this dependency sent a DATA to this invocation: ``any(self.waves)``,
+        read from the input record without building the arrays."""
+
+        return bool(self._input.saw & SAW_DATA)
 
     @property
     def terminal(self) -> Message | None:

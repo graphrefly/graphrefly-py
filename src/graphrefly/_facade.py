@@ -1339,8 +1339,7 @@ def _gate(ctx: _k.Ctx) -> list[object] | None:
     for dep in deps:
         if not dep.has:
             return None
-        if not fresh and any(dep.waves):
-            fresh = True
+        fresh = fresh or dep.sent_data
     if not fresh:
         return None
     return [dep.value for dep in deps]
