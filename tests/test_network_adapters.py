@@ -5,9 +5,6 @@ import pytest
 
 import graphrefly
 from graphrefly import (
-    ControlMessage,
-    DataMessage,
-    ErrorMessage,
     Graph,
     GraphReflyRuntimeError,
     GraphReflyValueError,
@@ -129,11 +126,11 @@ class OperationCancelled(Exception):
 
 
 def error_messages(seen: list[Message[object]]) -> list[str]:
-    return [msg.error.message for msg in seen if isinstance(msg, ErrorMessage)]
+    return [msg[1].message for msg in seen if msg[0] == "ERROR"]
 
 
 def data_values(seen: list[Message[object]]) -> list[object]:
-    return [msg.value for msg in seen if isinstance(msg, DataMessage)]
+    return [msg[1] for msg in seen if msg[0] == "DATA"]
 
 
 def test_network_adapter_public_surface_and_dataclasses():
@@ -201,7 +198,7 @@ def test_from_http_emits_response_data_then_complete():
             body=b'{"ok":true}',
         )
     ]
-    assert seen[-1] == ControlMessage("COMPLETE")
+    assert seen[-1] == ("COMPLETE",)
 
 
 def test_from_http_driver_error_becomes_graph_error():
@@ -241,7 +238,7 @@ def test_from_http_deactivation_cancels_job_before_driver_runs():
 
     assert runner.tasks[0].cancelled is True
     assert driver.requests == []
-    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
+    assert not any(msg[0] == "ERROR" for msg in seen)
     assert not node.has_value
 
 
@@ -277,7 +274,7 @@ def test_from_sse_http_stream_fallback_parses_split_events_and_complete():
         )
     ]
     assert data_values(seen) == [SseEvent(event="message", data="café", id="42", retry_ms=500)]
-    assert seen[-1] == ControlMessage("COMPLETE")
+    assert seen[-1] == ("COMPLETE",)
 
 
 def test_from_sse_rejects_bad_head_and_ignores_later_chunks():
@@ -406,9 +403,9 @@ def test_from_sse_complete_flushes_buffered_data_and_ignores_empty_tail():
         runner.run(1)
 
     assert data_values(seen) == [SseEvent(event="tail", data="final")]
-    assert seen[-1] == ControlMessage("COMPLETE")
+    assert seen[-1] == ("COMPLETE",)
     assert data_values(no_data_seen) == []
-    assert no_data_seen[-1] == ControlMessage("COMPLETE")
+    assert no_data_seen[-1] == ("COMPLETE",)
 
 
 def test_from_sse_invalid_utf8_and_parser_overflow_emit_error():
@@ -499,7 +496,7 @@ def test_from_sse_ignores_overlong_retry_without_parser_error():
         runner.run()
 
     assert data_values(seen) == [SseEvent(data="ok")]
-    assert seen[-1] == ControlMessage("COMPLETE")
+    assert seen[-1] == ("COMPLETE",)
 
 
 def test_from_sse_no_hidden_reconnect_retry_or_last_event_id():
@@ -546,4 +543,4 @@ def test_from_sse_synchronous_runner_completion_is_fenced():
 
     assert runner.tasks[0].cancelled is True
     assert data_values(seen) == [SseEvent(data="eager")]
-    assert seen[-1] == ControlMessage("COMPLETE")
+    assert seen[-1] == ("COMPLETE",)

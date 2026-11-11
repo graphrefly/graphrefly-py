@@ -9,7 +9,7 @@ description: "Return a convenience runner for a caller-owned AnyIO task group."
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_facade.py:2442`
+**Source:** `src/graphrefly/_facade.py:2437`
 
 ## Signature
 

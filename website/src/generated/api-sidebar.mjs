@@ -1,5 +1,66 @@
 export const apiSidebar = [
   {
+    "label": "Messages and Data",
+    "items": [
+      {
+        "label": "COMPLETE",
+        "link": "/api/complete"
+      },
+      {
+        "label": "DATA",
+        "link": "/api/data"
+      },
+      {
+        "label": "ERROR",
+        "link": "/api/error"
+      },
+      {
+        "label": "INVALIDATE",
+        "link": "/api/invalidate"
+      },
+      {
+        "label": "PENDING",
+        "link": "/api/pending"
+      },
+      {
+        "label": "RESOLVED",
+        "link": "/api/resolved"
+      },
+      {
+        "label": "START",
+        "link": "/api/start"
+      },
+      {
+        "label": "ControlMessage",
+        "link": "/api/controlmessage"
+      },
+      {
+        "label": "DataMessage",
+        "link": "/api/datamessage"
+      },
+      {
+        "label": "Dep",
+        "link": "/api/dep"
+      },
+      {
+        "label": "ErrorMessage",
+        "link": "/api/errormessage"
+      },
+      {
+        "label": "Message",
+        "link": "/api/message"
+      },
+      {
+        "label": "SENTINEL",
+        "link": "/api/sentinel-attribute"
+      },
+      {
+        "label": "Sentinel",
+        "link": "/api/sentinel-class"
+      }
+    ]
+  },
+  {
     "label": "Async and Network",
     "items": [
       {
@@ -126,35 +187,6 @@ export const apiSidebar = [
       {
         "label": "SubscriberCallbackError",
         "link": "/api/subscribercallbackerror"
-      }
-    ]
-  },
-  {
-    "label": "Messages and Data",
-    "items": [
-      {
-        "label": "ControlMessage",
-        "link": "/api/controlmessage"
-      },
-      {
-        "label": "DataMessage",
-        "link": "/api/datamessage"
-      },
-      {
-        "label": "ErrorMessage",
-        "link": "/api/errormessage"
-      },
-      {
-        "label": "Message",
-        "link": "/api/message"
-      },
-      {
-        "label": "SENTINEL",
-        "link": "/api/sentinel-attribute"
-      },
-      {
-        "label": "Sentinel",
-        "link": "/api/sentinel-class"
       }
     ]
   },

@@ -9,7 +9,7 @@ description: "Create a value-level async compute node over declared dependencies
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_facade.py:2354`
+**Source:** `src/graphrefly/_facade.py:2349`
 
 ## Signature
 

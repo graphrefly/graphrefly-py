@@ -9,7 +9,7 @@ description: "A failure with no caller to return to: a cleanup, a queued request
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:90`
+**Source:** `src/graphrefly/_facade.py:81`
 
 ## Signature
 

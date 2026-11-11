@@ -19,9 +19,9 @@ from dataclasses import dataclass
 from threading import get_ident
 from typing import Any
 
+from graphrefly import _kernel as _k
 from graphrefly._facade import (
     Array,
-    DataMessage,
     Graph,
     Node,
     State,
@@ -125,8 +125,8 @@ def frame_sink(send: Callable[[Any], object]) -> Callable[[Array[Any]], None]:
 
     def sink(array: Array[Any]) -> None:
         for message in array:
-            if isinstance(message, DataMessage):
-                send(message.value)
+            if message[0] == _k.DATA:
+                send(message[1])
 
     return sink
 

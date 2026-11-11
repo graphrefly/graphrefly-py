@@ -22,11 +22,21 @@ SOURCE_BY_IMPORT = {
 }
 
 ALIAS_OR_CONSTANT_EXPORTS = {
+    "COMPLETE",
+    "ControlMessage",
+    "DATA",
+    "DataMessage",
+    "ERROR",
+    "ErrorMessage",
     "GraphCheckpoint",
     "HttpStreamDriverEvent",
+    "INVALIDATE",
     "Message",
+    "PENDING",
+    "RESOLVED",
     "RecipeFactory",
     "SENTINEL",
+    "START",
     "__version__",
 }
 
@@ -48,9 +58,7 @@ def exported_names() -> tuple[list[str], dict[str, Path]]:
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id == "__all__":
                     names = [
-                        item.value
-                        for item in node.value.elts
-                        if isinstance(item, ast.Constant)
+                        item.value for item in node.value.elts if isinstance(item, ast.Constant)
                     ]
     if not names:
         raise SystemExit("graphrefly.__all__ is missing or not a literal string list")
@@ -66,8 +74,10 @@ def has_useful_docstring(node: ast.AST) -> bool:
 
 def is_overload(node: ast.FunctionDef) -> bool:
     return any(
-        isinstance(decorator, ast.Name) and decorator.id == "overload"
-        or isinstance(decorator, ast.Attribute) and decorator.attr == "overload"
+        isinstance(decorator, ast.Name)
+        and decorator.id == "overload"
+        or isinstance(decorator, ast.Attribute)
+        and decorator.attr == "overload"
         for decorator in node.decorator_list
     )
 

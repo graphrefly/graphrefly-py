@@ -17,8 +17,6 @@ import pytest
 
 import graphrefly
 from graphrefly import (
-    DataMessage,
-    ErrorMessage,
     Graph,
     GraphCallbackError,
     Message,
@@ -46,12 +44,12 @@ def vectors(name: str) -> list[dict[str, Any]]:
 
 
 def data_of(arrays: list[tuple[Message[Any], ...]]) -> list[Any]:
-    return [m.value for a in arrays for m in a if isinstance(m, DataMessage)]
+    return [m[1] for a in arrays for m in a if m[0] == "DATA"]
 
 
 def collect(node: graphrefly.Node[Any]) -> list[Any]:
     seen: list[Any] = []
-    node.subscribe(lambda array: seen.extend(m.value for m in array if isinstance(m, DataMessage)))
+    node.subscribe(lambda array: seen.extend(m[1] for m in array if m[0] == "DATA"))
     return seen
 
 
@@ -216,8 +214,8 @@ def test_c1b_a_value_that_is_not_bytes_is_the_outbound_nodes_error() -> None:
         seen: list[tuple[Message[Any], ...]] = []
         out.subscribe(seen.append)
         error = seen[0][-1]
-        assert isinstance(error, ErrorMessage) and isinstance(error.error, GraphCallbackError)
-        assert "not bytes" in error.error.message
+        assert error[0] == "ERROR" and isinstance(error[1], GraphCallbackError)
+        assert "not bytes" in error[1].message
 
 
 def test_c1b_frames_by_hand_through_the_public_receiver() -> None:

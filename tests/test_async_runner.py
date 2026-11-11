@@ -10,10 +10,7 @@ import graphrefly
 from graphrefly import (
     SENTINEL,
     CallbackError,
-    ControlMessage,
     Ctx,
-    DataMessage,
-    ErrorMessage,
     Graph,
     GraphReflyRuntimeError,
     GraphReflyValueError,
@@ -162,9 +159,9 @@ def test_from_awaitable_source_emits_data_then_complete():
         assert node.cache() == 42
 
     assert calls == 1
-    assert [msg.kind for msg in seen[-2:]] == ["DATA", "COMPLETE"]
-    assert DataMessage(42) in seen
-    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
+    assert [msg[0] for msg in seen[-2:]] == ["DATA", "COMPLETE"]
+    assert ("DATA", 42) in seen
+    assert not any(msg[0] == "ERROR" for msg in seen)
 
 
 def test_from_async_iter_source_emits_yields_then_complete():
@@ -181,8 +178,8 @@ def test_from_async_iter_source_emits_yields_then_complete():
         runner.run(0)
         assert node.cache() == "b"
 
-    assert [msg.value for msg in seen if isinstance(msg, DataMessage)] == ["a", "b"]
-    assert seen[-1] == ControlMessage("COMPLETE")
+    assert [msg[1] for msg in seen if msg[0] == "DATA"] == ["a", "b"]
+    assert seen[-1] == ("COMPLETE",)
 
 
 def test_asyncio_runner_uses_caller_owned_loop():
@@ -199,7 +196,7 @@ def test_asyncio_runner_uses_caller_owned_loop():
             await asyncio.sleep(0)
             assert node.cache() == 9
 
-        assert DataMessage(9) in seen
+        assert ("DATA", 9) in seen
 
     asyncio.run(main())
 
@@ -242,7 +239,7 @@ def test_anyio_runner_wraps_reentry_queue_without_owning_task_group(monkeypatch)
         assert queue.drain() == 1
         assert node.cache() == 11
 
-    assert DataMessage(11) in seen
+    assert ("DATA", 11) in seen
 
 
 def test_trio_runner_wraps_reentry_queue_without_owning_nursery(monkeypatch):
@@ -265,7 +262,7 @@ def test_trio_runner_wraps_reentry_queue_without_owning_nursery(monkeypatch):
         assert queue.drain() == 1
         assert node.cache() == 10
 
-    assert DataMessage(10) in seen
+    assert ("DATA", 10) in seen
 
 
 def test_trio_runner_deactivation_cancels_private_job_scope(monkeypatch):
@@ -285,7 +282,7 @@ def test_trio_runner_deactivation_cancels_private_job_scope(monkeypatch):
 
     assert FakeCancelScope.instances[-1].cancelled is True
     assert not node.has_value
-    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
+    assert not any(msg[0] == "ERROR" for msg in seen)
 
 
 def test_trio_runner_rejects_wrong_thread_spawn_and_cancel(monkeypatch):
@@ -350,7 +347,7 @@ def test_anyio_runner_graph_close_cancels_private_job_scope(monkeypatch):
     assert FakeCancelScope.instances[-1].cancelled is True
     with pytest.raises(GraphReflyRuntimeError, match="GraphReFly graph is closed"):
         _ = node.has_value
-    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
+    assert not any(msg[0] == "ERROR" for msg in seen)
 
 
 def test_anyio_runner_exception_typed_cancellation_is_cleanup_not_graph_error(monkeypatch):
@@ -371,7 +368,7 @@ def test_anyio_runner_exception_typed_cancellation_is_cleanup_not_graph_error(mo
         task_group.run()
 
     assert not node.has_value
-    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
+    assert not any(msg[0] == "ERROR" for msg in seen)
 
 
 def test_trio_anyio_adapters_are_public_without_importing_optional_dependencies():
@@ -399,8 +396,8 @@ def test_reentry_queue_enqueues_cross_thread_completion_and_owner_thread_drain_a
         assert queue.drain() == 1
         assert node.cache() == 42
 
-    assert [msg.kind for msg in seen[-2:]] == ["DATA", "COMPLETE"]
-    assert DataMessage(42) in seen
+    assert [msg[0] for msg in seen[-2:]] == ["DATA", "COMPLETE"]
+    assert ("DATA", 42) in seen
 
 
 def test_reentry_queue_drain_rejects_non_owner_thread():
@@ -472,7 +469,7 @@ def test_reentry_queue_closed_after_node_construction_does_not_spawn_on_activati
     assert runner.tasks == []
     assert queue.pending_count == 0
     assert not node.has_value
-    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
+    assert not any(msg[0] == "ERROR" for msg in seen)
 
 
 def test_reentry_queue_drain_respects_max_items_fifo():
@@ -490,11 +487,11 @@ def test_reentry_queue_drain_respects_max_items_fifo():
         runner.join()
         assert queue.pending_count == 3
         assert queue.drain(max_items=2) == 2
-        assert [msg.value for msg in seen if isinstance(msg, DataMessage)] == ["a", "b"]
+        assert [msg[1] for msg in seen if msg[0] == "DATA"] == ["a", "b"]
         assert queue.pending_count == 1
         assert queue.drain(max_items=1) == 1
 
-    assert seen[-1] == ControlMessage("COMPLETE")
+    assert seen[-1] == ("COMPLETE",)
 
 
 def test_reentry_queue_graph_close_drops_pending_completions_without_graph_error():
@@ -517,7 +514,7 @@ def test_reentry_queue_graph_close_drops_pending_completions_without_graph_error
     assert sub.closed is True
     assert queue.closed is True
     assert queue.pending_count == 0
-    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
+    assert not any(msg[0] == "ERROR" for msg in seen)
 
 
 def test_reentry_queue_fatal_completion_poison_closes_without_graph_error():
@@ -540,7 +537,7 @@ def test_reentry_queue_fatal_completion_poison_closes_without_graph_error():
     assert graph.closed is True
     assert sub.closed is True
     assert queue.closed is True
-    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
+    assert not any(msg[0] == "ERROR" for msg in seen)
 
 
 def test_reentry_queue_deactivation_drops_pending_completion_without_graph_error():
@@ -569,7 +566,7 @@ def test_reentry_queue_deactivation_drops_pending_completion_without_graph_error
     runner.join()
     assert queue.drain() == 0
     assert not node.has_value
-    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
+    assert not any(msg[0] == "ERROR" for msg in seen)
 
 
 def test_reentry_queue_close_cancels_active_queue_owned_job_without_graph_error():
@@ -596,7 +593,7 @@ def test_reentry_queue_close_cancels_active_queue_owned_job_without_graph_error(
         assert queue.pending_count == 0
         assert not node.has_value
 
-    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
+    assert not any(msg[0] == "ERROR" for msg in seen)
 
 
 def test_async_node_stale_generation_completion_is_ignored_after_queue_drain():
@@ -620,7 +617,7 @@ def test_async_node_stale_generation_completion_is_ignored_after_queue_drain():
         assert queue.drain() == 1
         assert node.cache() == 20
 
-    assert [msg.value for msg in seen if isinstance(msg, DataMessage)] == [20]
+    assert [msg[1] for msg in seen if msg[0] == "DATA"] == [20]
 
 
 def test_reentry_queue_stale_final_completion_unregisters_gate():
@@ -714,7 +711,7 @@ def test_async_node_stale_generation_completion_is_ignored():
         runner.run(0)
         assert node.cache() == 20
 
-    assert [msg.value for msg in seen if isinstance(msg, DataMessage)] == [20]
+    assert [msg[1] for msg in seen if msg[0] == "DATA"] == [20]
 
 
 def test_async_node_deactivation_cleans_up_pending_task_without_graph_error():
@@ -734,7 +731,7 @@ def test_async_node_deactivation_cleans_up_pending_task_without_graph_error():
     assert runner.tasks[0].cancelled is True
     runner.run(0)
     assert not node.has_value
-    assert not any(isinstance(msg, ErrorMessage) for msg in seen)
+    assert not any(msg[0] == "ERROR" for msg in seen)
 
 
 def test_async_inputs_must_be_factory_shaped():
@@ -811,7 +808,7 @@ def test_sync_data_ingress_rejects_awaitables_without_leaking_warning(recwarn):
     assert leaked == []
 
 
-def test_ctx_state_and_pull_params_reject_async_material_without_leaking_warning(recwarn):
+def test_ctx_state_emit_and_down_reject_async_material_without_leaking_warning(recwarn):
     graph = Graph("py-ctx-async-material-rejects-smoke")
     source = graph.state(1, name="source")
 
@@ -821,27 +818,28 @@ def test_ctx_state_and_pull_params_reject_async_material_without_leaking_warning
     def state_body(ctx: Ctx) -> None:
         ctx.state = work()
 
-    def pull_body(ctx: Ctx) -> None:
-        ctx.request_pull("pull", work())
+    def emit_body(ctx: Ctx) -> None:
+        ctx.emit(work())
+
+    def down_body(ctx: Ctx) -> None:
+        ctx.down([("DATA", work())])
 
     def sentinel_body(ctx: Ctx) -> None:
         ctx.state = SENTINEL
 
-    state_node = graph.node([source], state_body, name="bad_state")
-    pull_node = graph.node([source], pull_body, name="bad_pull")
-    sentinel_node = graph.node([source], sentinel_body, name="bad_sentinel")
+    bodies = {"state": state_body, "emit": emit_body, "down": down_body}
+    bodies["sentinel"] = sentinel_body
+    errors: dict[str, str] = {}
+    for label, body in bodies.items():
+        node = graph.node([source], body, name=f"bad_{label}")
+        seen: list[Message[object]] = []
+        with node.subscribe(seen.extend):
+            pass
+        (error,) = [msg for msg in seen if msg[0] == "ERROR"]
+        errors[label] = error[1].message
 
-    seen: list[Message[object]] = []
-    with (
-        state_node.subscribe(seen.extend),
-        pull_node.subscribe(seen.extend),
-        sentinel_node.subscribe(seen.extend),
-    ):
-        pass
-
-    errors = [msg for msg in seen if isinstance(msg, ErrorMessage)]
-    assert any("async callbacks are deferred" in msg.error.message for msg in errors)
-    assert any("SENTINEL" in msg.error.message for msg in errors)
+    assert all("async callbacks are deferred" in errors[k] for k in ("state", "emit", "down"))
+    assert "SENTINEL" in errors["sentinel"]
     leaked = [
         warning
         for warning in recwarn

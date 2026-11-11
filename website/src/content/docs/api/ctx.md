@@ -9,7 +9,7 @@ description: "What an advanced node callback receives for one invocation."
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:1202`
+**Source:** `src/graphrefly/_facade.py:1250`
 
 ## Signature
 
@@ -21,61 +21,20 @@ Ctx(ctx: _k.Ctx, graph: Graph)
 
 What an advanced node callback receives for one invocation.
 
-It reads the invocation's inputs (each dependency's value arrays, terminal and
-latest value), keeps the lifetime's private state, and sends output with
-:meth:`emit` and :meth:`down`. It never sends anything upstream.
+``deps`` reads the invocation's inputs, ``state`` keeps the lifetime's private
+state, and :meth:`emit` and :meth:`down` send output. It never sends anything
+upstream.
 
 ## Attributes
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `dep_len` | `int` | Return the number of dependencies of this invocation. |
-| `wave_data` | `list[list[list[object]]]` | Return each dependency's value arrays of this invocation (``[]`` for RESOLVED). |
+| `deps` | `tuple[Dep, ...]` | Return each dependency of this lifetime, in order, as this invocation sees it. |
 | `has_state` | `bool` | Return whether this lifetime's private state is set (to anything but None). |
 | `state` | `object | None` | Return this lifetime's private state. |
 | `signal` | `_k.Signal` | Return the lifetime's abort signal, aborted when this lifetime closes. |
 
 ## Methods
-
-### `has_data`
-
-```python
-has_data(index: int) -> bool
-```
-
-Return whether dependency ``index`` holds a value.
-
-Source: `src/graphrefly/_facade.py:1221`
-
-### `data`
-
-```python
-data(index: int, default: object = _NO_DEFAULT) -> object
-```
-
-Return dependency ``index``'s latest value, or ``default`` when it holds none.
-
-Source: `src/graphrefly/_facade.py:1232`
-
-### `terminal`
-
-```python
-terminal(index: int) -> ControlMessage | ErrorMessage | None
-```
-
-Return dependency ``index``'s COMPLETE or ERROR in this invocation, if any.
-
-Source: `src/graphrefly/_facade.py:1250`
-
-### `invalidated`
-
-```python
-invalidated(index: int) -> bool
-```
-
-Return whether an INVALIDATE arrived on ``index`` (manual INVALIDATE policy).
-
-Source: `src/graphrefly/_facade.py:1260`
 
 ### `emit`
 
@@ -85,20 +44,21 @@ emit(*values: object) -> None
 
 Send one array of DATA, one message per value.
 
-Source: `src/graphrefly/_facade.py:1265`
+Source: `src/graphrefly/_facade.py:1275`
 
 ### `down`
 
 ```python
-down(*messages: Message[Any]) -> None
+down(array: Sequence[Message[Any]]) -> None
 ```
 
-Send one array of messages: DATA, ERROR, INVALIDATE or COMPLETE.
+Send one array, a list of messages: ``(DATA, v)``, ``(ERROR, e)``,
+``(INVALIDATE,)`` or ``(COMPLETE,)``.
 
 START, PENDING and RESOLVED are the kernel's alone and are rejected, as is a
-terminal that is not last.
+terminal that is not last; the kernel checks the array before anything is sent.
 
-Source: `src/graphrefly/_facade.py:1277`
+Source: `src/graphrefly/_facade.py:1287`
 
 ### `rewire`
 
@@ -110,4 +70,4 @@ Change this node's own dependencies for its current lifetime.
 
 It runs after the current wave and is undone when the lifetime closes.
 
-Source: `src/graphrefly/_facade.py:1327`
+Source: `src/graphrefly/_facade.py:1332`

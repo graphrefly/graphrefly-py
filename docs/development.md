@@ -54,15 +54,15 @@ reference kernel on random graphs (needs `node`; reads the root checkout only).
   `graphrefly.SENTINEL` is never legal DATA or an ERROR diagnostic.
 - `Node.cache()` raises `GraphReflyNoDataError` when no DATA is held;
   `cache(default=...)` is the explicit fallback.
-- `subscribe` and `observe` call back once per array, with a tuple of
-  `DataMessage`, `ErrorMessage` and `ControlMessage` values; the first array is START
-  and the snapshot.
+- `subscribe` and `observe` call back once per array, with a tuple of message
+  tuples, `(DATA, v)`, `(ERROR, e)` or `(TYPE,)` (graphrefly-py:D12); the first array
+  is START and the snapshot.
 - Host input lives only on `State` (`set`, `invalidate`, `complete`, `error`);
   `set(callable)` computes from the current value in request order. A plain `Node`
   has no write and no public `down`.
-- `Graph.node(deps, callback, ...)` gives the callback a `Ctx`: per-dependency reads
-  (`data`, `has_data`, `wave_data`, `terminal`, `invalidated`), private `state`,
-  `emit`, `down` (checked by the kernel), the lifetime `signal` and `rewire`. A
+- `Graph.node(deps, callback, ...)` gives the callback a `Ctx`: `ctx.deps[i]` (`id`,
+  `waves`, `terminal`, `has`, `value`, `invalidated`), private `state`, `emit`,
+  `down(list)` (checked by the kernel), the lifetime `signal` and `rewire`. A
   node's `setup` runs once per lifetime and may return its cleanup. `derived`,
   `effect` and `producer` keep a first-run gate: Python sugar, not protocol.
 - A callback `Exception` becomes the node's ERROR as `GraphCallbackError`. A

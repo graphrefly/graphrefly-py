@@ -9,7 +9,7 @@ description: "Framework-neutral async job runner supplied explicitly by the host
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:231`
+**Source:** `src/graphrefly/_facade.py:222`
 
 ## Description
 
@@ -25,4 +25,4 @@ spawn(job: AsyncJobFactory) -> object
 
 Schedule one async job in the caller-owned runtime.
 
-Source: `src/graphrefly/_facade.py:234`
+Source: `src/graphrefly/_facade.py:225`

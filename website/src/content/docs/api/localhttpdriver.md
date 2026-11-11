@@ -9,7 +9,7 @@ description: "Host-owned one-shot HTTP driver used by `from_http`."
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:215`
+**Source:** `src/graphrefly/_facade.py:206`
 
 ## Description
 
@@ -25,4 +25,4 @@ request(request: HttpRequest) -> Awaitable[HttpResponse]
 
 Start one HTTP request and resolve to an `HttpResponse`.
 
-Source: `src/graphrefly/_facade.py:218`
+Source: `src/graphrefly/_facade.py:209`

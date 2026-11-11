@@ -126,6 +126,14 @@ def category_for(name: str, obj: Any) -> str:
     if name.endswith("Error") or name.endswith("CallbackError") or name == "DataIssue":
         return "Exceptions and Issues"
     if name in {
+        "COMPLETE",
+        "DATA",
+        "ERROR",
+        "INVALIDATE",
+        "PENDING",
+        "RESOLVED",
+        "START",
+        "Dep",
         "ControlMessage",
         "DataMessage",
         "ErrorMessage",

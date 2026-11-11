@@ -14,7 +14,7 @@ with Graph("hello") as graph:
     count = graph.state(1, name="count")
     doubled = graph.derived([count], lambda value: value * 2, name="doubled")
 
-    with doubled.subscribe(lambda array: print([m.kind for m in array])):
+    with doubled.subscribe(lambda array: print([m[0] for m in array])):
         count.set(2)
 ```
 

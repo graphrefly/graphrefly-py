@@ -18,12 +18,11 @@ import pytest
 
 import graphrefly
 from graphrefly import (
+    COMPLETE,
+    DATA,
     SENTINEL,
     CallbackError,
-    ControlMessage,
     Ctx,
-    DataMessage,
-    ErrorMessage,
     Graph,
     GraphCallbackError,
     GraphEvent,
@@ -49,11 +48,11 @@ Arrays = list[tuple[Message[Any], ...]]
 
 
 def kinds(arrays: Arrays) -> list[list[str]]:
-    return [[m.kind for m in array] for array in arrays]
+    return [[m[0] for m in array] for array in arrays]
 
 
 def data(arrays: Arrays) -> list[object]:
-    return [m.value for array in arrays for m in array if isinstance(m, DataMessage)]
+    return [m[1] for array in arrays for m in array if m[0] == "DATA"]
 
 
 # ---- package surface ------------------------------------------------------------
@@ -77,6 +76,14 @@ def test_package_surface_is_the_d4_api() -> None:
         "DataMessage",
         "ErrorMessage",
         "ControlMessage",
+        "Dep",
+        "START",
+        "PENDING",
+        "DATA",
+        "RESOLVED",
+        "INVALIDATE",
+        "COMPLETE",
+        "ERROR",
         "GraphEvent",
         "SENTINEL",
         "from_awaitable",
@@ -161,8 +168,8 @@ def test_subscribe_gets_one_tuple_per_array_starting_with_start() -> None:
         d.subscribe(seen.append)
         a.set(3)
         assert seen == [
-            (ControlMessage("START"), DataMessage(2)),
-            (ControlMessage("PENDING"), DataMessage(6)),
+            (("START",), ("DATA", 2)),
+            (("PENDING",), ("DATA", 6)),
         ]
 
 
@@ -233,7 +240,7 @@ def test_batch_returns_its_result_commits_once_and_a_raising_body_commits_nothin
             return "done"
 
         assert g.batch(body) == "done"
-        assert seen[-1] == (ControlMessage("PENDING"), DataMessage(1), DataMessage(2))
+        assert seen[-1] == (("PENDING",), ("DATA", 1), ("DATA", 2))
 
         class Boom(Exception):
             pass
@@ -264,14 +271,13 @@ def test_node_ctx_reads_inputs_and_emits_one_array_per_call() -> None:
 
         @g.node([a, b])
         def n(ctx: Ctx) -> None:
+            first, second = ctx.deps
             reads.append(
                 (
-                    ctx.dep_len,
-                    ctx.has_data(0),
-                    ctx.data(0),
-                    ctx.has_data(1),
-                    ctx.data(1, "none"),
-                    ctx.wave_data,
+                    len(ctx.deps),
+                    (first.id, first.has, first.value),
+                    (second.id, second.has, second.value),
+                    [dep.waves for dep in ctx.deps],
                 )
             )
             ctx.emit(None, 1)
@@ -280,30 +286,33 @@ def test_node_ctx_reads_inputs_and_emits_one_array_per_call() -> None:
         seen: Arrays = []
         n.subscribe(seen.append)
         assert n.name == "n"
-        assert reads == [(2, True, None, False, "none", [[[None]], []])]
-        assert seen == [(ControlMessage("START"), DataMessage(2))]  # the last array with DATA
+        # None is DATA; a dependency without a value reads as SENTINEL (graphrefly-py:D12).
+        assert reads == [(2, ("a", True, None), ("b", False, SENTINEL), [[[None]], []])]
+        assert seen == [(("START",), ("DATA", 2))]  # the last array with DATA
         b.set("x")
         assert seen[-2:] == [
-            (ControlMessage("PENDING"), DataMessage(None), DataMessage(1)),
-            (ControlMessage("PENDING"), DataMessage(2)),
+            (("PENDING",), ("DATA", None), ("DATA", 1)),
+            (("PENDING",), ("DATA", 2)),
         ]
 
 
-def test_ctx_index_errors_and_terminal_and_invalidated_reads() -> None:
+def test_ctx_deps_terminal_and_invalidated_reads() -> None:
     with Graph("ctx-reads") as g:
         a = g.state(1, name="a")
         seen: list[object] = []
 
         def n(ctx: Ctx) -> None:
-            seen.append((ctx.terminal(0), ctx.invalidated(0)))
+            (dep,) = ctx.deps
+            seen.append((dep.terminal, dep.invalidated))
             with pytest.raises(IndexError):
-                ctx.data(5)
+                ctx.deps[5]  # noqa: B018
+            assert not hasattr(ctx, "data") and not hasattr(ctx, "terminal")
 
         node = g.node([a], n, complete="manual", invalidate="manual")
         node.subscribe(lambda _: None)
         a.invalidate()
         a.complete()
-        assert seen == [(None, False), (None, True), (ControlMessage("COMPLETE"), False)]
+        assert seen == [(None, False), (None, True), (("COMPLETE",), False)]
 
 
 def test_ctx_down_sends_mixed_arrays_and_rejects_kernel_only_types() -> None:
@@ -312,22 +321,18 @@ def test_ctx_down_sends_mixed_arrays_and_rejects_kernel_only_types() -> None:
         rejected: list[str] = []
 
         def n(ctx: Ctx) -> None:
-            for bad in (
-                ControlMessage("START"),
-                ControlMessage("PENDING"),
-                ControlMessage("RESOLVED"),
-            ):
+            for bad in ([("START",)], [("PENDING",)], [("RESOLVED",)], ("DATA", 1)):
                 try:
-                    ctx.down(bad)
+                    ctx.down(bad)  # type: ignore[arg-type]
                 except GraphReflyValueError as error:
                     rejected.append(str(error))
-            ctx.down(DataMessage(ctx.data(0)), ControlMessage("COMPLETE"))
+            ctx.down([(DATA, ctx.deps[0].value), (COMPLETE,)])
 
         node = g.node([a], n)
         seen: Arrays = []
         node.subscribe(seen.append)
-        assert len(rejected) == 3
-        assert seen == [(ControlMessage("START"), DataMessage(1), ControlMessage("COMPLETE"))]
+        assert len(rejected) == 4  # three kernel-only types, and a message that is no list
+        assert seen == [(("START",), ("DATA", 1), ("COMPLETE",))]
 
 
 def test_a_callback_exception_is_the_nodes_error_as_graph_callback_error() -> None:
@@ -342,9 +347,9 @@ def test_a_callback_exception_is_the_nodes_error_as_graph_callback_error() -> No
         seen: Arrays = []
         node.subscribe(seen.append)
         (start, error) = seen[0]
-        assert start == ControlMessage("START")
-        assert isinstance(error, ErrorMessage) and isinstance(error.error, GraphCallbackError)
-        assert (error.error.type_name, error.error.message, error.error.raw) == (
+        assert start == ("START",)
+        assert error[0] == "ERROR" and isinstance(error[1], GraphCallbackError)
+        assert (error[1].type_name, error[1].message, error[1].raw) == (
             "ValueError",
             "boom",
             boom,
@@ -355,12 +360,12 @@ def test_a_callback_exception_is_the_nodes_error_as_graph_callback_error() -> No
 def test_an_uncaught_rejected_down_is_the_nodes_error() -> None:
     with Graph("reject") as g:
         a = g.state(1, name="a")
-        node = g.node([a], lambda ctx: ctx.down(ControlMessage("START")))
+        node = g.node([a], lambda ctx: ctx.down([("START",)]))
         seen: Arrays = []
         node.subscribe(seen.append)
         error = seen[0][1]
-        assert isinstance(error, ErrorMessage) and isinstance(error.error, GraphCallbackError)
-        assert error.error.type_name == "GraphReflyValueError"
+        assert error[0] == "ERROR" and isinstance(error[1], GraphCallbackError)
+        assert error[1].type_name == "GraphReflyValueError"
 
 
 def test_async_callbacks_are_rejected_at_registration() -> None:
@@ -387,8 +392,8 @@ def test_an_awaitable_returned_by_a_callback_is_an_error_without_leaking_it() ->
         seen: Arrays = []
         node.subscribe(seen.append)
         error = seen[0][1]
-        assert isinstance(error, ErrorMessage) and isinstance(error.error, GraphCallbackError)
-        assert error.error.type_name == "CallbackError"
+        assert error[0] == "ERROR" and isinstance(error[1], GraphCallbackError)
+        assert error[1].type_name == "CallbackError"
 
 
 def test_setup_runs_once_per_lifetime_and_its_cleanup_at_close() -> None:
@@ -403,7 +408,7 @@ def test_setup_runs_once_per_lifetime_and_its_cleanup_at_close() -> None:
             return lambda: log.append(f"cleanup state={ctx.state}")
 
         def n(ctx: Ctx) -> None:
-            ctx.state = ctx.data(0)
+            ctx.state = ctx.deps[0].value
 
         node = g.node([a], n, setup=setup)
         sub = node.subscribe(lambda _: None)
@@ -437,7 +442,7 @@ def test_policies_quiet_and_manual_invalidate() -> None:
         runs: list[list[bool]] = []
 
         def n(ctx: Ctx) -> None:
-            runs.append([ctx.invalidated(0)])
+            runs.append([ctx.deps[0].invalidated])
 
         node = g.node([a], n, invalidate="manual")
         node.subscribe(lambda _: None)
@@ -457,7 +462,7 @@ def test_ctx_rewire_replace_and_definition() -> None:
 
         def total(ctx: Ctx) -> None:
             kept.append(ctx)
-            ctx.emit(sum(ctx.data(i, 0) for i in range(ctx.dep_len)))
+            ctx.emit(sum(d.value if d.has else 0 for d in ctx.deps))
 
         n = g.node([a], total, name="n", recipe=Recipe("total"))
         n.subscribe(lambda _: None)
@@ -469,7 +474,7 @@ def test_ctx_rewire_replace_and_definition() -> None:
         assert [entry["deps"] for entry in g.describe()["nodes"] if entry["name"] == "n"] == [
             ["a", "b"]
         ]
-        g.replace(n, [b], lambda ctx: ctx.emit(ctx.data(0) * 2))
+        g.replace(n, [b], lambda ctx: ctx.emit(ctx.deps[0].value * 2))
         assert n.cache() == 20
         assert g.definition(n).recipe is None
         with pytest.raises(GraphReflyRuntimeError, match="not a computed node"):
@@ -507,9 +512,7 @@ def test_observe_sees_every_published_array_without_activating() -> None:
         g.observe(events.append)
         assert d.status.lifecycle == "inactive"
         a.set(2)
-        assert [(e.path, e.messages) for e in events] == [
-            ("a", (ControlMessage("PENDING"), DataMessage(2)))
-        ]
+        assert [(e.path, e.messages) for e in events] == [("a", (("PENDING",), ("DATA", 2)))]
         d.subscribe(lambda _: None)  # d's activation run publishes its first array
         a.set(3)
         assert [e.path for e in events[1:]] == ["d", "a", "d"]
@@ -552,7 +555,7 @@ def test_a_subscriber_failure_goes_to_the_reporter_and_nothing_keeps_it() -> Non
         assert isinstance(reports[0].error.original, ValueError)  # type: ignore[attr-defined]
         assert reports[0].source.startswith("sink ")
         assert not hasattr(sub, "callback_errors")
-        assert a.status.output == "open" and later[-1][-1] == DataMessage(40)
+        assert a.status.output == "open" and later[-1][-1] == ("DATA", 40)
 
 
 def test_without_a_reporter_a_subscriber_failure_is_logged(
@@ -579,7 +582,7 @@ def test_a_fatal_in_a_subscriber_propagates_and_poisons_the_facade(
     a = g.state(0)
 
     def sink(array: tuple[Message[int], ...]) -> None:
-        if array[0] == ControlMessage("PENDING"):
+        if array[0] == ("PENDING",):
             raise fatal
 
     sub = a.subscribe(sink)
@@ -612,7 +615,7 @@ def test_a_fatal_from_a_callback_propagates_without_a_graph_error(
     def n(ctx: Ctx) -> None:
         if where in ("callback", "batch-commit"):
             boom()
-        ctx.emit(ctx.data(0))
+        ctx.emit(ctx.deps[0].value)
 
     node = g.node([a], n, setup=setup)
     seen: Arrays = []
@@ -631,7 +634,7 @@ def test_a_fatal_from_a_callback_propagates_without_a_graph_error(
             else:
                 sub.unsubscribe()
     assert g.closed
-    assert not any(isinstance(m, ErrorMessage) for array in seen for m in array)
+    assert not any(m[0] == "ERROR" for array in seen for m in array)
 
 
 # ---- host lifetime -----------------------------------------------------------------------
@@ -754,7 +757,7 @@ def _registry() -> dict[str, Any]:
     def total(config: object, at: RecipeContext) -> Any:
         def run(ctx: Ctx) -> None:
             ctx.state = (ctx.state or 0) + 1
-            ctx.emit(sum(ctx.data(i, 0) for i in range(ctx.dep_len)) + (config or 0))
+            ctx.emit(sum(d.value if d.has else 0 for d in ctx.deps) + (config or 0))
 
         return run
 
@@ -780,7 +783,7 @@ def test_checkpoint_and_restore_graph_round_trip() -> None:
     assert restored is not None and not isinstance(restored, State)
     seen: Arrays = []
     restored.subscribe(seen.append)
-    assert seen == [(ControlMessage("START"), DataMessage(102))]
+    assert seen == [(("START",), ("DATA", 102))]
     state = r.find("a")
     assert isinstance(state, State)  # a restored state is writable through its State
     state.set(5)
@@ -864,7 +867,7 @@ def test_definition_follows_the_instance_the_kernel_runs() -> None:
 
 def test_a_recipe_factory_can_make_another_registered_recipe() -> None:
     def plus(config: Any, at: RecipeContext) -> Any:
-        return lambda ctx: ctx.emit(ctx.data(0) + config)
+        return lambda ctx: ctx.emit(ctx.deps[0].value + config)
 
     def twice(config: Any, at: RecipeContext) -> Any:
         inner, _setup = at.make("plus", config, at.name)
@@ -938,12 +941,41 @@ def test_an_updater_returning_minus_zero_for_zero_or_an_equal_list_writes() -> N
     seen: Arrays = []
     s.subscribe(seen.append)
     s.set(lambda value: -value)
-    assert seen[-1][-1] == DataMessage(-0.0)
+    assert seen[-1][-1] == ("DATA", -0.0)
     s.set(lambda value: 1)
     s.set(lambda value: True)  # True is not the int 1
-    assert seen[-1][-1] == DataMessage(True)
+    assert seen[-1][-1] == ("DATA", True)
     lst = g.state([1])
     seen.clear()
     lst.subscribe(seen.append)
     lst.set(lambda value: list(value))  # an equal list is a new value
     assert len(seen) == 2
+
+
+def test_derived_and_effect_keep_what_arrived_while_their_gate_was_closed() -> None:
+    # Q1 of the D797 review: the first-run gate lives in derived and effect, and
+    # inputs that arrive while it is closed are kept, not dropped.
+    g = Graph("gate")
+    a = g.state(0, name="a")
+    b = g.state(name="b")  # empty: the gate stays closed
+    runs: list[tuple[object, object]] = []
+    acted: list[tuple[object, object]] = []
+
+    def pair(x: object, y: object) -> tuple[object, object]:
+        runs.append((x, y))
+        return (x, y)
+
+    d = g.derived([a, b], pair)
+    e = g.effect([a, b], lambda x, y: acted.append((x, y)))
+    d.subscribe(lambda _: None)
+    e.subscribe(lambda _: None)
+    a.set(1)
+    a.set(2)  # arrives while gated
+    assert runs == [] and acted == []
+    b.set("x")  # only b sends in this wave; a's latest value is still there
+    assert runs == [(2, "x")] and acted == [(2, "x")]
+    assert d.cache() == (2, "x")
+    raw: list[list[list[object]]] = []
+    n = g.node([a, b], lambda ctx: raw.append([dep.waves for dep in ctx.deps]))
+    n.subscribe(lambda _: None)
+    assert raw == [[[[2]], [["x"]]]]  # Graph.node has no gate (graphrefly-py:D4)

@@ -5,13 +5,13 @@ from __future__ import annotations
 import codecs
 import logging
 from collections import deque
-from collections.abc import AsyncIterable, Awaitable, Callable, Iterable, Mapping
+from collections.abc import AsyncIterable, Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib import import_module, metadata
 from importlib.metadata import PackageNotFoundError
 from inspect import isawaitable, iscoroutine, iscoroutinefunction
 from threading import Lock, get_ident
-from typing import Any, Literal, NoReturn, Protocol, TypeVar, cast, overload
+from typing import Any, Final, Literal, NoReturn, Protocol, TypeVar, cast, overload
 from weakref import ReferenceType, ref
 
 from graphrefly import _checkpoint
@@ -42,37 +42,28 @@ _LOGGER = logging.getLogger("graphrefly")
 _AUTHORED = "_graphrefly_authored"
 
 
-@dataclass(frozen=True, slots=True)
-class DataMessage[T]:
-    """DATA observation with a domain payload.
+#: The seven message types (R-messages); a message is a tuple whose first element is its
+#: type: ``(DATA, value)``, ``(ERROR, error)``, or ``(TYPE,)`` for the others.
+START: Final = "START"
+PENDING: Final = "PENDING"
+DATA: Final = "DATA"
+RESOLVED: Final = "RESOLVED"
+INVALIDATE: Final = "INVALIDATE"
+COMPLETE: Final = "COMPLETE"
+ERROR: Final = "ERROR"
+assert (START, PENDING, DATA, RESOLVED, INVALIDATE, COMPLETE, ERROR) == (
+    _k.START,
+    _k.PENDING,
+    _k.DATA,
+    _k.RESOLVED,
+    _k.INVALIDATE,
+    _k.COMPLETE,
+    _k.ERROR,
+)
 
-    ``None`` is a valid domain payload; no-DATA is represented by message shape,
-    not by the payload value.
-    """
-
-    value: T
-    kind: Literal["DATA"] = "DATA"
-
-
-@dataclass(frozen=True, slots=True)
-class ErrorMessage:
-    """ERROR with its diagnostic.
-
-    ``error`` is a ``GraphCallbackError`` when a callback raised, and otherwise the
-    payload the node or host sent.
-    """
-
-    error: object
-    kind: Literal["ERROR"] = "ERROR"
-
-
-@dataclass(frozen=True, slots=True)
-class ControlMessage:
-    """A message that carries no payload: START, PENDING, RESOLVED, INVALIDATE or COMPLETE."""
-
-    kind: Literal["START", "PENDING", "RESOLVED", "INVALIDATE", "COMPLETE"]
-
-
+type DataMessage[T] = tuple[Literal["DATA"], T]
+type ErrorMessage = tuple[Literal["ERROR"], object]
+type ControlMessage = tuple[Literal["START", "PENDING", "RESOLVED", "INVALIDATE", "COMPLETE"]]
 type Message[T] = DataMessage[T] | ErrorMessage | ControlMessage
 type Array[T] = tuple[Message[T], ...]
 type NodeCallback = Callable[["Ctx"], object]
@@ -1199,68 +1190,87 @@ def _should_suppress_async_error(job: _AsyncJob, error: BaseException) -> bool:
     return job.cancel_requested or _is_cancellation_error(error)
 
 
+class Dep:
+    """One dependency as an invocation sees it, ``ctx.deps[i]`` (R-invocation).
+
+    ``id`` is the dependency's name. ``waves`` are the arrays it delivered to this
+    invocation, each as its DATA values in order (a RESOLVED array is ``[]``);
+    ``terminal`` is its COMPLETE or ERROR of this invocation, or ``None``; ``has`` says
+    whether a value was received and not invalidated, and ``value`` is the latest one,
+    or ``graphrefly.SENTINEL`` without one (``None`` is valid DATA); ``invalidated`` says
+    whether an INVALIDATE arrived on it, under the manual INVALIDATE policy.
+    """
+
+    __slots__ = ("_dep",)
+
+    def __init__(self, dep: _k.Dep) -> None:
+        self._dep = dep
+
+    @property
+    def id(self) -> str:
+        """Return the dependency's name."""
+
+        return self._dep.id
+
+    @property
+    def waves(self) -> list[list[object]]:
+        """Return this invocation's arrays from the dependency, as their DATA values."""
+
+        return self._dep.waves
+
+    @property
+    def terminal(self) -> ControlMessage | ErrorMessage | None:
+        """Return the dependency's COMPLETE or ERROR of this invocation, or ``None``."""
+
+        return cast("ControlMessage | ErrorMessage | None", self._dep.terminal)
+
+    @property
+    def has(self) -> bool:
+        """Return whether a value was received from the dependency and not invalidated."""
+
+        return self._dep.has
+
+    @property
+    def value(self) -> object:
+        """Return the latest value received, or ``graphrefly.SENTINEL`` without one."""
+
+        dep = self._dep
+        return dep.value if dep.has else SENTINEL
+
+    @property
+    def invalidated(self) -> bool:
+        """Return whether an INVALIDATE arrived on this input (manual policy only)."""
+
+        return self._dep.invalidated
+
+    def __repr__(self) -> str:
+        return f"Dep({self.id!r})"
+
+
 class Ctx:
     """What an advanced node callback receives for one invocation.
 
-    It reads the invocation's inputs (each dependency's value arrays, terminal and
-    latest value), keeps the lifetime's private state, and sends output with
-    :meth:`emit` and :meth:`down`. It never sends anything upstream.
+    ``deps`` reads the invocation's inputs, ``state`` keeps the lifetime's private
+    state, and :meth:`emit` and :meth:`down` send output. It never sends anything
+    upstream.
     """
+
+    __slots__ = ("_ctx", "_deps", "_graph")
 
     def __init__(self, ctx: _k.Ctx, graph: Graph) -> None:
         self._ctx = ctx
         self._graph = graph
+        self._deps: tuple[Dep, ...] | None = None
 
     @property
-    def dep_len(self) -> int:
-        """Return the number of dependencies of this invocation."""
+    def deps(self) -> tuple[Dep, ...]:
+        """Return each dependency of this lifetime, in order, as this invocation sees it."""
 
         self._check()
-        return len(self._ctx.deps)
-
-    def has_data(self, index: int) -> bool:
-        """Return whether dependency ``index`` holds a value."""
-
-        return self._dep(index).has
-
-    @overload
-    def data(self, index: int) -> object: ...
-
-    @overload
-    def data(self, index: int, default: U) -> object | U: ...
-
-    def data(self, index: int, default: object = _NO_DEFAULT) -> object:
-        """Return dependency ``index``'s latest value, or ``default`` when it holds none."""
-
-        dep = self._dep(index)
-        if not dep.has:
-            if default is _NO_DEFAULT:
-                msg = f"dependency {index} has no DATA value in this invocation"
-                raise GraphReflyNoDataError(msg)
-            return default
-        return dep.value
-
-    @property
-    def wave_data(self) -> list[list[list[object]]]:
-        """Return each dependency's value arrays of this invocation (``[]`` for RESOLVED)."""
-
-        self._check()
-        return [dep.waves for dep in self._ctx.deps]
-
-    def terminal(self, index: int) -> ControlMessage | ErrorMessage | None:
-        """Return dependency ``index``'s COMPLETE or ERROR in this invocation, if any."""
-
-        terminal = self._dep(index).terminal
-        if terminal is None:
-            return None
-        message = _message(terminal)
-        assert not isinstance(message, DataMessage)
-        return message
-
-    def invalidated(self, index: int) -> bool:
-        """Return whether an INVALIDATE arrived on ``index`` (manual INVALIDATE policy)."""
-
-        return self._dep(index).invalidated
+        deps = self._deps
+        if deps is None:
+            deps = self._deps = tuple(Dep(dep) for dep in self._ctx.deps)
+        return deps
 
     def emit(self, *values: object) -> None:
         """Send one array of DATA, one message per value."""
@@ -1274,27 +1284,22 @@ class Ctx:
             _reject_sentinel_data(value)
         self._send([(_k.DATA, value) for value in values])
 
-    def down(self, *messages: Message[Any]) -> None:
-        """Send one array of messages: DATA, ERROR, INVALIDATE or COMPLETE.
+    def down(self, array: Sequence[Message[Any]]) -> None:
+        """Send one array, a list of messages: ``(DATA, v)``, ``(ERROR, e)``,
+        ``(INVALIDATE,)`` or ``(COMPLETE,)``.
 
         START, PENDING and RESOLVED are the kernel's alone and are rejected, as is a
-        terminal that is not last.
+        terminal that is not last; the kernel checks the array before anything is sent.
         """
 
         self._check()
-        array: list[_k.Message] = []
-        for message in messages:
-            if isinstance(message, DataMessage):
-                _reject_awaitable(message.value)
-                array.append((_k.DATA, message.value))
-            elif isinstance(message, ErrorMessage):
-                array.append((_k.ERROR, message.error))
-            elif isinstance(message, ControlMessage):
-                array.append((message.kind,))
-            else:
-                msg = f"ctx.down takes graphrefly messages, not {message!r}"
-                raise GraphReflyValueError(msg)
-        self._send(array)
+        if not isinstance(array, list):
+            msg = f"ctx.down takes one array, a list of message tuples, not {array!r}"
+            raise GraphReflyValueError(msg)
+        for message in array:
+            if isinstance(message, tuple) and len(message) == 2 and message[0] == _k.DATA:
+                _reject_awaitable(message[1])
+        self._send(list(array))
 
     @property
     def has_state(self) -> bool:
@@ -1342,16 +1347,6 @@ class Ctx:
             self._ctx.down(array)
         except _k.KernelError as error:
             raise GraphReflyValueError(str(error)) from error
-
-    def _dep(self, index: int) -> _k.Dep:
-        self._check()
-        if isinstance(index, bool) or not isinstance(index, int):
-            msg = "dependency index must be an int"
-            raise GraphReflyValueError(msg)
-        deps = self._ctx.deps
-        if index < 0 or index >= len(deps):
-            raise IndexError(f"dependency index {index} out of range")
-        return deps[index]
 
     def _check(self) -> None:
         # A cleanup that Graph.close runs may still use its ctx (R-lifetime); a ctx whose
@@ -1418,7 +1413,7 @@ class Node[T]:
         _reject_async_callable(callback)
 
         def sink(array: tuple[_k.Message, ...]) -> None:
-            _observed(lambda: callback(cast("Array[T]", tuple(_message(m) for m in array))))
+            _observed(lambda: callback(cast("Array[T]", array)))
 
         sink_id = graph._new_sink_id()
         node_id = self._id
@@ -1861,7 +1856,7 @@ class Graph:
 
         def observer(node_id: str, array: tuple[_k.Message, ...]) -> None:
             seq[0] += 1
-            event = GraphEvent(node_id, tuple(_message(m) for m in array), seq[0])
+            event = GraphEvent(node_id, cast("Array[Any]", array), seq[0])
             _observed(lambda: callback(event))
 
         remove = self._kernel.observe(observer)
@@ -2904,15 +2899,6 @@ def _reject_async_callable(callback: Callable[..., object]) -> None:
     if iscoroutinefunction(callback):
         msg = "async callbacks are deferred to a later adapter slice"
         raise GraphReflyRuntimeError(msg)
-
-
-def _message(message: _k.Message) -> Message[Any]:
-    kind = message[0]
-    if kind == _k.DATA:
-        return DataMessage(message[1])
-    if kind == _k.ERROR:
-        return ErrorMessage(message[1])
-    return ControlMessage(kind)
 
 
 def _callback_error(error: BaseException) -> GraphCallbackError:

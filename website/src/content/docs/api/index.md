@@ -10,6 +10,23 @@ description: "Generated graphrefly Python API reference."
 These pages are generated from `graphrefly.__all__` and source docstrings through `griffe`.
 Update Python docstrings or exports, then rerun `pnpm --dir website docs:gen`.
 
+## Messages and Data
+
+- [`COMPLETE`](/api/complete/)
+- [`DATA`](/api/data/)
+- [`ERROR`](/api/error/)
+- [`INVALIDATE`](/api/invalidate/)
+- [`PENDING`](/api/pending/)
+- [`RESOLVED`](/api/resolved/)
+- [`START`](/api/start/)
+- [`ControlMessage`](/api/controlmessage/)
+- [`DataMessage`](/api/datamessage/)
+- [`Dep`](/api/dep/)
+- [`ErrorMessage`](/api/errormessage/)
+- [`Message`](/api/message/)
+- [`SENTINEL`](/api/sentinel-attribute/)
+- [`Sentinel`](/api/sentinel-class/)
+
 ## Async and Network
 
 - [`AsyncRunner`](/api/asyncrunner/)
@@ -45,15 +62,6 @@ Update Python docstrings or exports, then rerun `pnpm --dir website docs:gen`.
 - [`GraphReflyRuntimeError`](/api/graphreflyruntimeerror/)
 - [`GraphReflyValueError`](/api/graphreflyvalueerror/)
 - [`SubscriberCallbackError`](/api/subscribercallbackerror/)
-
-## Messages and Data
-
-- [`ControlMessage`](/api/controlmessage/)
-- [`DataMessage`](/api/datamessage/)
-- [`ErrorMessage`](/api/errormessage/)
-- [`Message`](/api/message/)
-- [`SENTINEL`](/api/sentinel-attribute/)
-- [`Sentinel`](/api/sentinel-class/)
 
 ## Core Facade
 

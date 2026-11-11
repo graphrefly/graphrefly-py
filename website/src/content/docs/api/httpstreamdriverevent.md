@@ -9,7 +9,7 @@ description: "Generated API reference for graphrefly.HttpStreamDriverEvent."
 
 **Kind:** type alias
 
-**Source:** `src/graphrefly/_facade.py:210`
+**Source:** `src/graphrefly/_facade.py:201`
 
 ## Type
 

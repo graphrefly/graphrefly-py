@@ -10,13 +10,13 @@ pip install graphrefly
 ```
 
 These examples use the public Python facade over the package's own Python kernel.
-A subscriber is called once per array, with a tuple of messages; the first array is
-START and the node's snapshot.
+A subscriber is called once per array, with a tuple of messages such as
+`("DATA", 1)` or `("COMPLETE",)`; the first array is START and the node's snapshot.
 
 Create a graph:
 
 ```python
-from graphrefly import DataMessage, Graph
+from graphrefly import DATA, Graph
 
 
 with Graph("counter") as graph:
@@ -26,7 +26,7 @@ with Graph("counter") as graph:
     seen: list[int] = []
 
     def on_array(array) -> None:
-        seen.extend(m.value for m in array if isinstance(m, DataMessage))
+        seen.extend(m[1] for m in array if m[0] == DATA)
 
     with doubled.subscribe(on_array):
         count.set(1)
@@ -51,7 +51,8 @@ with Graph("advanced") as graph:
     source = graph.state(1, name="source")
 
     def add_ten(ctx: Ctx) -> None:
-        ctx.emit(ctx.data(0) + 10)
+        (dep,) = ctx.deps  # dep.value, dep.has, dep.waves, dep.terminal
+        ctx.emit(dep.value + 10)
 
     def setup(ctx: Ctx):
         print("activated")
@@ -86,6 +87,6 @@ async def main() -> None:
     graph = Graph("async-demo")
     async with trio.open_nursery() as nursery:
         node = from_awaitable(graph, trio_runner(nursery), fetch_value, name="value")
-        with node.subscribe(lambda array: print([m.kind for m in array])):
+        with node.subscribe(lambda array: print([m[0] for m in array])):
             await trio.lowlevel.checkpoint()
 ```

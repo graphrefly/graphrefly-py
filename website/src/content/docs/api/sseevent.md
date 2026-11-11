@@ -9,7 +9,7 @@ description: "Parsed server-sent event DATA emitted by `from_sse`."
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:199`
+**Source:** `src/graphrefly/_facade.py:190`
 
 ## Signature
 

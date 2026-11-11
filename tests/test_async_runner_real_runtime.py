@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 
 from graphrefly import (
-    DataMessage,
     Graph,
     Message,
     anyio_runner,
@@ -38,7 +37,7 @@ def test_trio_runner_real_nursery_is_caller_owned_smoke() -> None:
                     await trio.lowlevel.checkpoint()
                 assert node.cache() == 31
 
-        assert DataMessage(31) in seen
+        assert ("DATA", 31) in seen
 
     trio.run(main)
 
@@ -65,11 +64,11 @@ def test_anyio_runner_real_task_group_is_caller_owned_smoke() -> None:
             )
             with node.subscribe(seen.extend):
                 for _ in range(10):
-                    if len([msg for msg in seen if isinstance(msg, DataMessage)]) >= 2:
+                    if len([msg for msg in seen if msg[0] == "DATA"]) >= 2:
                         break
                     await anyio.sleep(0)
                 assert node.cache() == "b"
 
-        assert [msg.value for msg in seen if isinstance(msg, DataMessage)] == ["a", "b"]
+        assert [msg[1] for msg in seen if msg[0] == "DATA"] == ["a", "b"]
 
     anyio.run(main)

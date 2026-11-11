@@ -9,7 +9,7 @@ description: "How a restorable node is built: a registered factory reference and
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:107`
+**Source:** `src/graphrefly/_facade.py:98`
 
 ## Signature
 
