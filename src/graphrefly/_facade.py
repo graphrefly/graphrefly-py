@@ -1327,7 +1327,7 @@ class Graph:
         if get_ident() != self._owner_thread:
             msg = "GraphReFly Python graphs are bound to their creating thread"
             raise GraphReflyRuntimeError(msg)
-        if self._lifetime.is_closed() and not allow_closed:
+        if not allow_closed and self._lifetime.is_closed():
             raise GraphReflyRuntimeError(self._lifetime.closed_message)
 
 
@@ -1426,7 +1426,15 @@ def _reject_sentinel_data(value: object) -> None:
         raise GraphReflyValueError(msg)
 
 
+# Exact types that are never awaitable; a subclass still goes through isawaitable.
+_NOT_AWAITABLE: Final = frozenset(
+    {type(None), bool, int, float, complex, str, bytes, tuple, list, dict, set, frozenset}
+)
+
+
 def _reject_awaitable(value: object) -> None:
+    if type(value) in _NOT_AWAITABLE:
+        return
     if isawaitable(value):
         close = getattr(value, "close", None)
         if callable(close):
