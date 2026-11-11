@@ -75,7 +75,6 @@ Update Python docstrings or exports, then rerun `pnpm --dir website docs:gen`.
 - [`Recipe`](/api/recipe/)
 - [`RecipeContext`](/api/recipecontext/)
 - [`RecipeFactory`](/api/recipefactory/)
-- [`Retain`](/api/retain/)
 - [`Signal`](/api/signal/)
 - [`State`](/api/state/)
 - [`Subscription`](/api/subscription/)

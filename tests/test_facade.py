@@ -37,7 +37,6 @@ from graphrefly import (
     NodeStatus,
     Recipe,
     RecipeContext,
-    Retain,
     Signal,
     State,
     SubscriberCallbackError,
@@ -68,7 +67,6 @@ def test_package_surface_is_the_d4_api() -> None:
         "Ctx",
         "Dep",
         "Subscription",
-        "Retain",
         "Signal",
         "NodeStatus",
         "NodeDefinition",
@@ -704,30 +702,31 @@ def test_a_dropped_subscription_handle_stays_subscribed_until_close() -> None:
     assert g.closed
 
 
-def test_retain_keeps_a_node_active_and_release_is_idempotent() -> None:
+def test_retain_is_a_subscription_that_ignores_what_it_receives() -> None:
     with Graph("retain") as g:
         a = g.state(1)
         runs: list[int] = []
         d = g.derived([a], lambda v: runs.append(v) or v)
-        keepalive = g.retain(d, reason="test")
+        keepalive = g.retain(d)
         gc.collect()
         a.set(2)
         assert runs == [1, 2] and d.cache() == 2
-        assert isinstance(keepalive, Retain) and not isinstance(keepalive, Subscription)
-        assert not hasattr(keepalive, "unsubscribe")
-        keepalive.release()
-        keepalive.release()
+        assert isinstance(keepalive, Subscription)
+        keepalive.unsubscribe()
+        keepalive.unsubscribe()  # idempotent
         a.set(3)
         assert runs == [1, 2] and keepalive.closed
+        assert d.status.lifecycle == "inactive"
         with g.retain(d) as scoped:
-            assert not scoped.closed
-        assert scoped.closed
-        with pytest.raises(GraphReflyValueError, match="retain reason"):
-            g.retain(d, reason=object())  # type: ignore[arg-type]
-        other = Graph("other")
-        with pytest.raises(GraphReflyRuntimeError, match="node must belong"):
-            other.retain(d)
-        other.close()
+            assert not scoped.closed and d.status.lifecycle == "active"
+        assert scoped.closed and d.status.lifecycle == "inactive"
+        held = g.retain(d)
+        g.close()  # a retain is closed with the graph's other subscriptions
+        assert held.closed
+    other = Graph("other")
+    with pytest.raises(GraphReflyRuntimeError, match="node must belong"):
+        other.retain(d)
+    other.close()
 
 
 def test_close_uses_the_reverse_resource_stack_and_continues_after_an_error() -> None:

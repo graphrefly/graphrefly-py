@@ -234,10 +234,6 @@ export const apiSidebar = [
         "link": "/api/recipefactory"
       },
       {
-        "label": "Retain",
-        "link": "/api/retain"
-      },
-      {
         "label": "Signal",
         "link": "/api/signal"
       },

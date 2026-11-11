@@ -58,7 +58,14 @@ reference kernel on random graphs (needs `node`; reads the root checkout only).
   `cache(default=...)` is the explicit fallback.
 - `subscribe` and `observe` call back once per array, with a tuple of message
   tuples, `(DATA, v)`, `(ERROR, e)` or `(TYPE,)` (graphrefly-py:D12); the first array
-  is START and the snapshot.
+  is START and the snapshot. `observe(nodes, callback)` is an ordinary subscriber to
+  each node, so it activates them, and hands on `GraphEvent(id, msgs)`
+  (R-graph-surface, graphrefly-py:D15).
+- The graph layer (R-graph-surface, graphrefly-py:D15): `find(id)` gives the node
+  (a state as its `State`) or `None`; `describe()` gives `{id, kind, deps, quiet}`
+  per node, deps current; `retain(node)` is a subscriber that ignores what it gets.
+  None of `find` and `describe` activates anything; `observe` and `retain` return a
+  `Subscription` whose `unsubscribe()` stops or releases them.
 - Host input lives only on `State` (`set`, `invalidate`, `complete`, `error`);
   `set(callable)` computes from the current value in request order. A plain `Node`
   has no write and no public `down`.
@@ -73,8 +80,8 @@ reference kernel on random graphs (needs `node`; reads the root checkout only).
   nothing keeps it (graphrefly-py:D11). A fatal `BaseException` (KeyboardInterrupt, SystemExit, ...), a
   `RecursionError` or a `MemoryError` propagates to the caller and poisons the graph
   facade (graphrefly-py:D2, D10).
-- `Graph.close()` / context managers release facade subscriptions, retains and
-  async work; they send no protocol message.
+- `Graph.close()` / context managers release facade subscriptions (observers and
+  retains included) and async work; they send no protocol message.
 - Async enters only through runners, sources and adapters; their results are later
   waves on the graph owner thread (graphrefly:D477, D480).
 

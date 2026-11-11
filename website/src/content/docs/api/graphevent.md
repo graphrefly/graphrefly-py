@@ -9,7 +9,7 @@ description: "One array a node delivered, as ``Graph.observe`` hands it on: the 
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:348`
+**Source:** `src/graphrefly/_facade.py:290`
 
 ## Signature
 
