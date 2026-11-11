@@ -578,8 +578,11 @@ def test_a_fatal_in_a_subscriber_propagates_and_poisons_the_facade(
         a.cache()
 
 
+@pytest.mark.parametrize("fatal", [KeyboardInterrupt, RecursionError, MemoryError])
 @pytest.mark.parametrize("where", ["callback", "setup", "batch-commit", "cleanup"])
-def test_a_fatal_from_a_callback_propagates_without_a_graph_error(where: str) -> None:
+def test_a_fatal_from_a_callback_propagates_without_a_graph_error(
+    where: str, fatal: type[BaseException]
+) -> None:
     g = Graph("fatal")
     a = g.state(0, name="a")
     armed = [False]
@@ -587,7 +590,7 @@ def test_a_fatal_from_a_callback_propagates_without_a_graph_error(where: str) ->
     def boom() -> None:
         if armed[0]:
             armed[0] = False
-            raise KeyboardInterrupt
+            raise fatal
 
     def setup(ctx: Ctx) -> Any:
         if where == "setup":
@@ -603,12 +606,12 @@ def test_a_fatal_from_a_callback_propagates_without_a_graph_error(where: str) ->
     seen: Arrays = []
     armed[0] = where == "setup"
     if where == "setup":
-        with pytest.raises(KeyboardInterrupt):
+        with pytest.raises(fatal):
             node.subscribe(seen.append)
     else:
         sub = node.subscribe(seen.append)
         armed[0] = True
-        with pytest.raises(KeyboardInterrupt):
+        with pytest.raises(fatal):
             if where == "callback":
                 a.set(1)
             elif where == "batch-commit":

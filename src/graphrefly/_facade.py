@@ -731,6 +731,11 @@ class Subscription:
             self._detach()
         except _k.KernelError as error:
             raise GraphReflyRuntimeError(str(error)) from error
+        except _k.FATAL as error:
+            self._closed = True
+            if self._lifetime is not None:
+                _poison_on_fatal(self._lifetime, error)
+            raise
         except Exception:
             self._closed = True
             raise
@@ -2058,6 +2063,8 @@ class Graph:
             return op()
         except _k.KernelError as error:
             raise GraphReflyRuntimeError(str(error)) from error
+        except _k.FATAL as error:
+            _poison_on_fatal(self._lifetime, error)
         except Exception:
             raise
         except BaseException as error:
@@ -2098,7 +2105,7 @@ def _guarded[V](call: Callable[[], V]) -> V:
 
     try:
         return call()
-    except GraphCallbackError:
+    except (GraphCallbackError, *_k.FATAL):
         raise
     except Exception as error:
         raise _callback_error(error) from error
@@ -2888,7 +2895,7 @@ def _format_async_error(error: BaseException) -> str:
 
 
 def _poison_on_fatal(lifetime: _GraphLifetime, error: BaseException) -> NoReturn:
-    if not isinstance(error, Exception):
+    if not isinstance(error, Exception) or isinstance(error, _k.FATAL):
         lifetime.poison()
     raise error
 
@@ -2941,7 +2948,7 @@ def _guard_fn(fn: Callable[[_k.Ctx], None]) -> Callable[[_k.Ctx], None]:
     def run(ctx: _k.Ctx) -> None:
         try:
             fn(ctx)
-        except GraphCallbackError:
+        except (GraphCallbackError, *_k.FATAL):
             raise
         except Exception as error:
             raise _callback_error(error) from error
@@ -2959,7 +2966,7 @@ def _guard_setup(
     def run(ctx: _k.Ctx) -> object:
         try:
             return start(ctx)
-        except GraphCallbackError:
+        except (GraphCallbackError, *_k.FATAL):
             raise
         except Exception as error:
             raise _callback_error(error) from error

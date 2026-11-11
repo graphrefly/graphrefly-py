@@ -33,7 +33,8 @@ reference kernel on random graphs (needs `node`; reads the root checkout only).
 
 - `graphrefly._kernel` is the private pure-Python kernel for the rules active by
   graphrefly:D798, D799, D801 and D802 (graphrefly-py:D2). It is single-threaded,
-  catches `Exception` only, and has no awaitables.
+  catches `Exception` only (but not `RecursionError` or `MemoryError`, which are
+  fatal, graphrefly-py:D10), and has no awaitables.
 - `graphrefly._checkpoint` is capture and restore over the kernel (R-checkpoint).
 - `graphrefly._wire` is the bridge module over the kernel (R-bridge): `bridge` (wire
   edge groups, gate, frame source and sink), `envelope` (numbered envelopes, acks,
@@ -64,8 +65,9 @@ reference kernel on random graphs (needs `node`; reads the root checkout only).
   `effect` and `producer` keep a first-run gate: Python sugar, not protocol.
 - A callback `Exception` becomes the node's ERROR as `GraphCallbackError`. A
   subscribe/observe callback `Exception` is a `SubscriberCallbackError` on the
-  subscription. A fatal `BaseException` (KeyboardInterrupt, SystemExit, ...)
-  propagates to the caller and poisons the graph facade (graphrefly-py:D2).
+  subscription. A fatal `BaseException` (KeyboardInterrupt, SystemExit, ...), a
+  `RecursionError` or a `MemoryError` propagates to the caller and poisons the graph
+  facade (graphrefly-py:D2, D10).
 - `Graph.close()` / context managers release facade subscriptions, retains and
   async work; they send no protocol message.
 - Async enters only through runners, sources and adapters; their results are later

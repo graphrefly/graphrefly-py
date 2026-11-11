@@ -313,7 +313,9 @@ def test_a_sink_exception_goes_to_the_reporter_and_is_not_a_node_error(
     assert later.arrays[-1] == ((PENDING,), (DATA, 2))
 
 
-@pytest.mark.parametrize("fatal", [KeyboardInterrupt, SystemExit, GeneratorExit])
+@pytest.mark.parametrize(
+    "fatal", [KeyboardInterrupt, SystemExit, GeneratorExit, RecursionError, MemoryError]
+)
 def test_a_fatal_from_a_function_propagates_and_the_kernel_stays_usable(
     fatal: type[BaseException],
 ) -> None:
@@ -352,16 +354,19 @@ def test_a_fatal_from_a_function_propagates_and_the_kernel_stays_usable(
     assert m_inputs[-1] == [[2]]  # nothing left over from the interrupted wave
 
 
-def test_a_fatal_from_a_sink_propagates_and_is_not_reported(harness: Harness) -> None:
+@pytest.mark.parametrize("fatal", [KeyboardInterrupt, RecursionError])
+def test_a_fatal_from_a_sink_propagates_and_is_not_reported(
+    harness: Harness, fatal: type[BaseException]
+) -> None:
     g = harness.graph
     g.state("A", 0)
 
     def fatal_sink(array: tuple[Any, ...]) -> None:
         if array[0] != (START,):
-            raise KeyboardInterrupt
+            raise fatal()
 
     g.subscribe("s", "A", fatal_sink)
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(fatal):
         g.set("A", 1)
     assert harness.reports == []
     g.unsubscribe("s", "A")

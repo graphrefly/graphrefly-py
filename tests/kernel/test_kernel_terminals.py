@@ -16,8 +16,11 @@ from graphrefly._kernel import COMPLETE, DATA, ERROR, INVALIDATE, Ctx, KernelErr
 
 
 def echo(ctx: Ctx) -> None:
-    if ctx.deps[0].has:
-        ctx.down([(DATA, ctx.deps[0].value)])
+    # Sends the values that arrived: a run may bring none, as the run that sees a last
+    # terminal alone (R-invocation, R-terminals).
+    for wave in ctx.deps[0].waves:
+        if wave:
+            ctx.down([(DATA, wave[-1])])
 
 
 def terminal_kinds(ctx: Ctx) -> list[str]:
@@ -190,6 +193,21 @@ def test_c17_auto_complete_after_every_dependency_ended_in_any_order(
     assert g.get("D").ended == (COMPLETE,)
     assert sum(1 for a in sd.arrays if a[-1] == (COMPLETE,)) == 1
     assert g.get("Dctrl").ended == (ERROR, "e")
+
+
+def test_c17_the_run_that_sees_the_last_terminal_alone_runs_once_then_completes(
+    harness: Harness,
+) -> None:
+    g = harness.graph
+    g.state("S", 1)
+    runs: list[list[str]] = []
+    g.node("N", ["S"], lambda ctx: runs.append(terminal_kinds(ctx)))
+    sink = harness.sink("N")
+    assert runs == [["-"]]
+    g.complete("S")  # the last terminal arrives alone: the function still sees it
+    assert runs == [["-"], ["COMPLETE"]]
+    assert sink.arrays[-1] == (("PENDING",), (COMPLETE,))
+    assert g.get("N").ended == (COMPLETE,)
 
 
 # ---- C-34: terminal fanout and the ended node's lifetime closing --------------
@@ -441,3 +459,43 @@ def test_host_input_to_an_ended_state_is_refused_also_when_queued(harness: Harne
     assert g.get("A").values == (0,) and g.get("A").ended == (COMPLETE,)
     assert [r.source for r in harness.reports] == ["queued request"]
     assert "has ended" in str(harness.reports[0].error)
+
+
+def test_a_queued_batch_commit_to_a_state_that_ended_first_is_refused_whole(
+    harness: Harness,
+) -> None:
+    g = harness.graph
+    g.state("S", 1)
+    g.state("U", 1)
+    g.state("T", 0)
+    g.node("N", ["S"], echo)
+    ran: list[object] = []
+
+    def ends_s(array: tuple[Any, ...]) -> None:
+        if (DATA, 1) in array:
+            g.complete("S")
+
+    def batches(array: tuple[Any, ...]) -> None:
+        if (DATA, 1) in array:
+
+            def body() -> None:
+                g.set("U", 2)
+
+                def updater(value: object) -> object:
+                    ran.append(value)
+                    return 5
+
+                g.set("S", updater)
+                g.replace("N", ["U"], echo)
+
+            g.batch(body)
+
+    g.subscribe("first", "T", ends_s)
+    g.subscribe("second", "T", batches)
+    g.set("T", 1)
+    assert ran == []  # the updater never ran on the ended state
+    assert g.get("S").ended == (COMPLETE,) and g.get("U").value == 1  # nothing committed
+    assert [(r.source, str(r.error)) for r in harness.reports] == [
+        ("queued request", "S has ended (batch)")
+    ]
+    assert g.definition("N").deps == ("U",)  # the body's topology request still ran

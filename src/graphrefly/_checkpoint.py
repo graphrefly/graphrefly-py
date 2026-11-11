@@ -66,14 +66,18 @@ def recipe(ref: str, config: object = None) -> dict[str, object]:
 # ---- capture -------------------------------------------------------------------
 
 
-def _json(value: object, where: str) -> Any:
+def _json(value: object, where: str, op: str = "capture") -> Any:
+    """A JSON copy of ``value``: the checkpoint is a snapshot at the wave boundary, so it
+    shares no object with the live graph, nor a restored graph with its checkpoint."""
+
     try:
         text = json.dumps(value, allow_nan=False)
     except (TypeError, ValueError):
-        raise CheckpointError(f"capture: {where} is not JSON") from None
-    if json.loads(text) != value:
-        raise CheckpointError(f"capture: {where} is not JSON")
-    return value
+        raise CheckpointError(f"{op}: {where} is not JSON") from None
+    copy = json.loads(text)
+    if copy != value:
+        raise CheckpointError(f"{op}: {where} is not JSON")
+    return copy
 
 
 def _ended(message: Message | None) -> list[object] | None:
@@ -255,6 +259,7 @@ def restore(
 
     if not isinstance(checkpoint, dict) or checkpoint.get("format") != FORMAT:
         raise CheckpointError(f"restore: not a {FORMAT} checkpoint")
+    checkpoint = _json(checkpoint, "the checkpoint", "restore")
     nodes = cast("list[dict[str, Any]]", checkpoint.get("nodes"))
     if not isinstance(nodes, list):
         raise CheckpointError("restore: the checkpoint has no nodes")

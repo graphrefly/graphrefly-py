@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from graphrefly._kernel.messages import FATAL
+
 
 class Signal:
     """Aborted when its lifetime closes; not by an INVALIDATE or a rerun.
@@ -51,6 +53,8 @@ class Signal:
         for listener in listeners:
             try:
                 listener()
+            except FATAL:
+                raise
             except Exception as error:
                 report(error)
 

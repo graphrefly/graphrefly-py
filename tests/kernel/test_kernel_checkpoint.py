@@ -629,3 +629,36 @@ def test_every_value_of_the_last_array_is_saved_and_comes_back() -> None:
     r = traced(round_trip(capture(g)), reg)
     assert r.get("a").values == (1, 2)
     assert during(r, lambda: r.subscribe("k", "p")) == ["k <- p: [START, DATA(2), DATA(-2)]"]
+
+
+def test_a_checkpoint_shares_no_object_with_the_live_graph_either_way() -> None:
+    def counter(config: object, at: RecipeContext) -> Callable[[Ctx], None]:
+        def fn(ctx: Ctx) -> None:
+            if not isinstance(ctx.state, dict):
+                ctx.state = {"count": 0}
+            ctx.state["count"] += 1  # mutated in place, as a host is free to
+            ctx.down([(DATA, [ctx.state["count"]])])
+
+        return fn
+
+    reg: dict[str, Factory] = {"counter": counter}
+    g = Graph()
+    g.state("a", 0)
+    build(g, reg, "n", ["a"], "counter", {"keys": ["x"]})
+    g.subscribe("k", "n")
+    cp = capture(g)
+    saved = entry(cp, "n")["saved"]
+    assert (saved["values"], saved["state"]) == ([[1]], {"count": 1})
+    g.set("a", 1)  # the live private state goes on to 2
+    assert (saved["values"], saved["state"]) == ([[1]], {"count": 1})  # one wave boundary
+    g.get("n").value.append("live")  # type: ignore[attr-defined]
+    entry(cp, "n")["recipe"]["config"]["keys"].append("y")
+    assert saved["values"] == [[1]] and g.definition("n").recipe["config"] == {"keys": ["x"]}  # type: ignore[index]
+
+    r = restore(cp, reg)
+    saved["state"]["count"] = 100  # editing the checkpoint after restore changes nothing
+    saved["values"][0].append("edited")
+    r.subscribe("k", "n")
+    assert r.get("n").value == [1]
+    r.set("a", 5)
+    assert r.get("n").value == [2]

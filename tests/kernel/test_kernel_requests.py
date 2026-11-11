@@ -871,3 +871,45 @@ def test_a_queued_rewire_is_dropped_when_its_lifetime_closes_before_it_runs(
     assert g.get("x").ended == (COMPLETE,)
     assert deps_of(g, "x") == (("a",), ("a",))
     assert g.get("b").active is False
+
+
+def test_a_replace_is_checked_again_when_it_runs_so_a_batch_cannot_close_a_cycle(
+    harness: Harness,
+) -> None:
+    g = harness.graph
+    g.state("S", 1)
+    g.node("A", ["S"], echo)
+    g.node("B", ["S"], echo)
+
+    def body() -> None:
+        g.replace("A", ["B"], echo)  # each is valid when asked for
+        g.replace("B", ["A"], echo)  # but not after the first one ran
+
+    g.batch(body)
+    assert g.definition("A").deps == ("B",) and g.definition("B").deps == ("S",)
+    assert [(r.source, str(r.error)) for r in harness.reports] == [
+        ("queued request", "replace: B would depend on itself through A")
+    ]
+
+
+def test_a_rewire_is_checked_again_when_it_runs_so_a_batch_cannot_close_a_cycle(
+    harness: Harness,
+) -> None:
+    g = harness.graph
+    g.state("S", 1)
+    a, b = Kept(echo), Kept(echo)
+    g.node("A", ["S"], a)
+    g.node("B", ["S"], b)
+    harness.sink("A")
+    harness.sink("B")
+
+    def body() -> None:
+        assert a.ctx is not None and b.ctx is not None
+        a.ctx.rewire(["B"])
+        b.ctx.rewire(["A"])
+
+    g.batch(body)
+    assert [d.deps for d in g.describe()] == [(), ("B",), ("S",)]
+    assert [(r.source, str(r.error)) for r in harness.reports] == [
+        ("queued request", "rewire: B would depend on itself through A")
+    ]

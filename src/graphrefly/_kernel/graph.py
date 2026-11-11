@@ -5,13 +5,14 @@ the facade binds it to its owner thread. The kernel catches ``Exception`` only:
 a node function's throw is that node's ERROR (R-failure), a sink's or cleanup's
 throw goes to the host reporter, and any other ``BaseException`` propagates to the
 caller of the running host call after the kernel resets its in-wave state.
+``RecursionError`` and ``MemoryError`` are fatal too (graphrefly-py:D2): they leave
+no node's state to trust, so they are never a node's ERROR or a report.
 """
 
 from __future__ import annotations
 
 from collections import deque
 from collections.abc import Callable, Iterable, Sequence
-from contextlib import suppress
 from dataclasses import dataclass
 from inspect import isasyncgenfunction, isawaitable, iscoroutinefunction
 from typing import Any, Final, Literal
@@ -22,6 +23,7 @@ from graphrefly._kernel.messages import (
     COMPLETE_MESSAGE,
     DATA,
     ERROR,
+    FATAL,
     INVALIDATE,
     INVALIDATE_MESSAGE,
     PENDING_MESSAGE,
@@ -442,12 +444,16 @@ class Graph:
         try:
             try:
                 op()
+            except FATAL:
+                raise
             except Exception as error:
                 failure = error
             while self._queue:
                 queued = self._queue.popleft()
                 try:
                     queued()
+                except FATAL:
+                    raise
                 except Exception as error:
                     self._report("queued request", error)
         except BaseException:
@@ -472,8 +478,12 @@ class Graph:
     def _report(self, source: str, error: Exception) -> None:
         if self._report_to is None:
             return
-        with suppress(Exception):  # the reporter's own failure has nowhere to go
+        try:
             self._report_to(Report(source, error))
+        except FATAL:
+            raise
+        except Exception:  # noqa: S110 - the reporter's own failure has nowhere to go
+            pass
 
     # ---- Lifetimes and activation (R-lifetime) ----------------------------
 
@@ -551,6 +561,8 @@ class Graph:
         if cleanup is not None:
             try:
                 cleanup()
+            except FATAL:
+                raise
             except Exception as error:
                 self._report(f"cleanup {node.id}", error)  # not the node's ERROR
         node.private_state = None
@@ -615,6 +627,9 @@ class Graph:
         setup: Setup | None,
         recipe: object,
     ) -> None:
+        # Checked again when it runs: a request before it may have changed the topology
+        # (two replaces in one batch body could otherwise close a cycle).
+        self._check_deps("replace", node, deps)
         old = node.lifetime  # None when inactive, or when the old instance has ended
         if old is not None:
             old.open = False
@@ -627,6 +642,8 @@ class Graph:
             cleanup, old.cleanup = old.cleanup, None
             try:
                 cleanup()
+            except FATAL:
+                raise
             except Exception as error:
                 self._report(f"cleanup {node.id}", error)
         node.fn = fn
@@ -683,6 +700,7 @@ class Graph:
 
         def op() -> None:
             if lifetime.open and node.lifetime is lifetime:
+                self._check_deps("rewire", node, deps)  # again: the topology may have changed
                 added = self._exchange(node, deps)
                 if any(node.inputs[index].frames for index in added):
                     self._settle(node)
@@ -763,6 +781,8 @@ class Graph:
                     if callable(cleanup):
                         lifetime.cleanup = cleanup
             node.fn(ctx)
+        except FATAL:
+            raise
         except Exception as error:
             return [[(ERROR, error)]]  # what it sent before the throw is dropped
         finally:
@@ -806,6 +826,8 @@ class Graph:
             return
         try:
             sink.callback(array)
+        except FATAL:
+            raise
         except Exception as error:
             self._report(f"sink {sink.id}", error)  # not the node's ERROR
 
@@ -866,6 +888,8 @@ class Graph:
                 for array in sent:
                     try:
                         observer(node.id, array)
+                    except FATAL:
+                        raise
                     except Exception as error:
                         self._report("observer", error)
         for sub in list(node.subs):
@@ -967,6 +991,9 @@ class Graph:
                 lead = self._apply(node, [[INVALIDATE_MESSAGE]])
 
         runs = bool(saw & _SAW_VALUE) or (invalidated and node.invalidate_policy == "manual")
+        all_ended = bool(saw & _SAW_TERMINAL) and all(record.ended is not None for record in inputs)
+        if not runs and all_ended and node.complete_policy == "auto":
+            runs = True  # auto COMPLETE follows the run that sees the last terminal
         if not runs and saw & _SAW_TERMINAL:
             runs = any(
                 is_terminal(message)
@@ -982,16 +1009,15 @@ class Graph:
         # Auto COMPLETE once every dependency has ended; dependencies only newly end in a
         # wave that carries a terminal.
         postlude = (
-            bool(saw & _SAW_TERMINAL)
+            all_ended
             and node.complete_policy == "auto"
-            and all(record.ended is not None for record in inputs)
             and not any(is_terminal(message) for frame in out for message in frame)
         )
         if node.quiet:
             # What a quiet node sends is a later wave; only an auto INVALIDATE goes on now.
+            node.pending = False  # so its INVALIDATE marks its own cone first (R-invalidation)
             if lead:
                 self._deliver(node, lead)
-            node.pending = False
             self._later_from(node, out)
             if postlude:
                 self._later_from(node, [[COMPLETE_MESSAGE]])
@@ -1142,6 +1168,11 @@ class Graph:
             # The body's requests run after this wave and before anything it requests;
             # they stay queued also when a set function below fails the commit.
             self._queue.extendleft(reversed(requests))
+            for node, entry in staged.items():
+                if entry.lifetime is None and node.ended is not None:
+                    # Ended by an earlier request: the host input is refused, and with it
+                    # every write of the commit (R-terminals, R-request-order).
+                    raise KernelError(f"{node.id} has ended (batch)")
             resolved = [(node, entry, _resolve(node, entry.msgs)) for node, entry in staged.items()]
             entries: list[tuple[_Node, list[Array]]] = []
             for node, entry, msgs in resolved:

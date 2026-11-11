@@ -138,6 +138,38 @@ def test_c16_a_quiet_node_forwards_an_auto_invalidate_at_once(harness: Harness) 
     assert during(g, lambda: g.invalidate("A")) == ["q <- Q: [PENDING, INVALIDATE]"]
 
 
+@pytest.mark.parametrize("policy", ["auto", "manual"])
+def test_c16_a_quiet_nodes_invalidate_marks_its_cone_so_a_diamond_settles_once(
+    harness: Harness, policy: str
+) -> None:
+    g = harness.graph
+    g.state("A", 1)
+
+    def passes(ctx: Ctx) -> None:
+        for wave in ctx.deps[0].waves:
+            if wave:
+                ctx.down([(DATA, wave[-1])])
+
+    g.node("Q", ["A"], passes, quiet=True)
+    g.node("B", ["Q"], passes)
+    g.node("C", ["Q"], passes)
+    runs: list[list[bool]] = []
+    g.node(
+        "D",
+        ["B", "C"],
+        lambda ctx: runs.append([dep.invalidated for dep in ctx.deps]),
+        invalidate=policy,  # type: ignore[arg-type]
+    )
+    g.subscribe("d", "D")
+    assert g.get("B").has and g.get("C").has
+    runs.clear()
+    lines = during(g, lambda: g.invalidate("A"))
+    if policy == "auto":
+        assert lines == ["d <- D: [PENDING, RESOLVED]"] and runs == []  # settled once
+    else:
+        assert runs == [[True, True]]  # one run, both legs invalidated
+
+
 # ---- C-23: ctx.deps is the function's only input ----------------------------
 
 

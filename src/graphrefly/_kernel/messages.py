@@ -39,6 +39,12 @@ COMPLETE_MESSAGE: Final[Message] = (COMPLETE,)
 START_MESSAGE: Final[Message] = (START,)
 
 
+#: Exceptions that are fatal although they are ``Exception``s (graphrefly-py:D2): the
+#: kernel resets its in-wave state and raises them to the caller of the running host
+#: call; they are never a node's ERROR or a report.
+FATAL: Final = (RecursionError, MemoryError)
+
+
 class KernelError(Exception):
     """A request or a node output that the kernel refuses."""
 
