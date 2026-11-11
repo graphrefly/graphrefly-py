@@ -854,7 +854,7 @@ class Graph:
         produce = callback
 
         def run(ctx: _k.Ctx) -> None:
-            value = _guarded(produce)
+            value = produce()
             _reject_awaitable(value)
             _reject_sentinel_data(value)
             ctx.down([(_k.DATA, value)])
@@ -894,7 +894,7 @@ class Graph:
             values = _gate(ctx)
             if values is None:
                 return
-            value = _guarded(lambda: compute(*values))
+            value = compute(*values)
             _reject_awaitable(value)
             _reject_sentinel_data(value)
             ctx.down([(_k.DATA, value)])
@@ -931,7 +931,7 @@ class Graph:
             values = _gate(ctx)
             if values is None:
                 return
-            _reject_awaitable(_guarded(lambda: act(*values)))
+            _reject_awaitable(act(*values))
 
         return self._add_node(name, dep_list, run, callback, None)
 
@@ -1195,7 +1195,7 @@ class Graph:
 
     def _ctx_callback(self, callback: NodeCallback) -> Callable[[_k.Ctx], None]:
         def run(ctx: _k.Ctx) -> None:
-            _reject_awaitable(_guarded(lambda: callback(Ctx(ctx, self))))
+            _reject_awaitable(callback(Ctx(ctx, self)))
 
         return run
 
@@ -1205,7 +1205,7 @@ class Graph:
         start = setup
 
         def run(ctx: _k.Ctx) -> object:
-            cleanup = _guarded(lambda: start(Ctx(ctx, self)))
+            cleanup = start(Ctx(ctx, self))
             _reject_awaitable(cleanup)
             if cleanup is None:
                 return None
@@ -1345,18 +1345,6 @@ def _gate(ctx: _k.Ctx) -> list[object] | None:
     return [dep.value for dep in deps]
 
 
-def _guarded[V](call: Callable[[], V]) -> V:
-    """Run a user callback; an Exception becomes a GraphCallbackError, which the kernel
-    turns into the node's ERROR. A BaseException passes through untouched."""
-
-    try:
-        return call()
-    except (GraphCallbackError, *_k.FATAL):
-        raise
-    except Exception as error:
-        raise _callback_error(error) from error
-
-
 def version() -> str:
     """Return the installed Python package version."""
 
@@ -1459,17 +1447,19 @@ def _callback_error(error: BaseException) -> GraphCallbackError:
     return GraphCallbackError(type(error).__name__, str(error), raw=error)
 
 
-def _guard_fn(
-    fn: Callable[[_k.Ctx], None], authored: Callable[..., object] | None = None
-) -> Callable[[_k.Ctx], None]:
-    """A node function whose Exception becomes a GraphCallbackError, the node's ERROR.
+def _guard[V](
+    fn: Callable[[_k.Ctx], V], authored: Callable[..., object] | None
+) -> Callable[[_k.Ctx], V]:
+    """The one place a user callback's Exception becomes a GraphCallbackError, which the
+    kernel turns into the node's ERROR; a fatal error or a BaseException passes through.
 
-    It carries the user's callback, which ``Graph.definition`` reads from the kernel.
+    Every node function and setup the facade gives the kernel goes through here. The
+    result carries the user's callback, which ``Graph.definition`` reads from the kernel.
     """
 
-    def run(ctx: _k.Ctx) -> None:
+    def run(ctx: _k.Ctx) -> V:
         try:
-            fn(ctx)
+            return fn(ctx)
         except (GraphCallbackError, *_k.FATAL):
             raise
         except Exception as error:
@@ -1477,25 +1467,18 @@ def _guard_fn(
 
     setattr(run, _AUTHORED, authored)
     return run
+
+
+def _guard_fn(
+    fn: Callable[[_k.Ctx], None], authored: Callable[..., object] | None = None
+) -> Callable[[_k.Ctx], None]:
+    return _guard(fn, authored)
 
 
 def _guard_setup(
     setup: Callable[[_k.Ctx], object] | None, authored: SetupCallback | None = None
 ) -> Callable[[_k.Ctx], object] | None:
-    if setup is None:
-        return None
-    start = setup
-
-    def run(ctx: _k.Ctx) -> object:
-        try:
-            return start(ctx)
-        except (GraphCallbackError, *_k.FATAL):
-            raise
-        except Exception as error:
-            raise _callback_error(error) from error
-
-    setattr(run, _AUTHORED, authored)
-    return run
+    return None if setup is None else _guard(setup, authored)
 
 
 def _observed(call: Callable[[], object]) -> None:
