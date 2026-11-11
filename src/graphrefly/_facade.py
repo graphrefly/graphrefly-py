@@ -1089,18 +1089,18 @@ class Graph:
             definition.quiet,
         )
 
-    def find(self, name: str) -> Node[Any] | None:
-        """Return the node named ``name``, or ``None``.
+    def find(self, node_id: str, /) -> Node[Any] | None:
+        """Return the node with this id, or ``None``; it activates nothing (R-graph-surface).
 
         A state node comes back as its ``State``, so it can be written after a lookup or
         a restore; narrow the result with ``isinstance(node, State)``.
         """
 
         self._check_thread()
-        if not isinstance(name, str):
-            msg = "a node name is a str"
+        if not isinstance(node_id, str):
+            msg = "a node id is a str"
             raise GraphReflyValueError(msg)
-        return self._nodes.get(name)
+        return self._nodes.get(node_id)
 
     def describe(self) -> dict[str, Any]:
         """Return the topology as JSON-ready data: each node with its current deps."""

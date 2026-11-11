@@ -757,6 +757,7 @@ def test_find_returns_the_nodes_own_handle_and_a_state_as_state() -> None:
         assert g.find("a") is a and isinstance(g.find("a"), State)
         assert g.find("d") is d and not isinstance(g.find("d"), State)
         assert g.find("missing") is None
+        assert d.status.lifecycle == "inactive"  # find activates nothing (R-graph-surface)
 
 
 def test_node_names_are_unique_and_auto_names_are_reserved() -> None:

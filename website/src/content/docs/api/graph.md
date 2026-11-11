@@ -138,10 +138,10 @@ Source: `src/graphrefly/_facade.py:1072`
 ### `find`
 
 ```python
-find(name: str) -> Node[Any] | None
+find(node_id: str, /) -> Node[Any] | None
 ```
 
-Return the node named ``name``, or ``None``.
+Return the node with this id, or ``None``; it activates nothing (R-graph-surface).
 
 A state node comes back as its ``State``, so it can be written after a lookup or
 a restore; narrow the result with ``isinstance(node, State)``.
