@@ -11,10 +11,11 @@ from importlib.metadata import PackageNotFoundError
 from inspect import isawaitable, iscoroutine, iscoroutinefunction
 from sys import modules
 from threading import Lock, get_ident
-from typing import Any, ClassVar, Final, Literal, NoReturn, Protocol, TypeVar, cast, overload
+from typing import Any, Literal, NoReturn, Protocol, TypeVar, cast, overload
 from weakref import ReferenceType, ref
 
 import graphrefly._native as _native
+from graphrefly._sentinel import SENTINEL
 from graphrefly.exceptions import (
     CallbackError,
     GraphCallbackError,
@@ -37,24 +38,6 @@ _GRAPH_REENTRY_QUEUE_TOKEN = object()
 
 if hasattr(modules["graphrefly"], "_native"):
     delattr(modules["graphrefly"], "_native")
-
-
-class Sentinel:
-    """Python representation of protocol SENTINEL in raw ctx wave data."""
-
-    __slots__ = ()
-    _instance: ClassVar[Sentinel | None] = None
-
-    def __new__(cls) -> Sentinel:
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
-    def __repr__(self) -> str:
-        return "graphrefly.SENTINEL"
-
-
-SENTINEL: Final = Sentinel()
 
 
 @dataclass(frozen=True, slots=True)

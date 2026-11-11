@@ -2,7 +2,6 @@
 
 from graphrefly._facade import (
     _VERSION,
-    SENTINEL,
     AsyncRunner,
     ControlMessage,
     Ctx,
@@ -31,7 +30,6 @@ from graphrefly._facade import (
     RestoreRegistry,
     Retain,
     RewireNext,
-    Sentinel,
     SseEvent,
     Subscription,
     WireBridge,
@@ -64,6 +62,7 @@ from graphrefly._facade import (
     wire_bridge_protobuf,
     wire_edge_group,
 )
+from graphrefly._sentinel import SENTINEL, Sentinel
 from graphrefly.exceptions import (
     CallbackError,
     GraphCallbackError,
