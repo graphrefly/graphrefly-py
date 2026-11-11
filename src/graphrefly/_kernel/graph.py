@@ -14,7 +14,7 @@ from collections.abc import Callable, Iterable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from inspect import isasyncgenfunction, isawaitable, iscoroutinefunction
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 from graphrefly._kernel.ctx import Ctx
 from graphrefly._kernel.messages import (
@@ -36,6 +36,7 @@ from graphrefly._kernel.messages import (
     split,
 )
 from graphrefly._kernel.signal import Signal
+from graphrefly._sentinel import SENTINEL
 
 type Policy = Literal["auto", "manual"]
 type NodeFn = Callable[[Ctx], object]
@@ -76,6 +77,48 @@ class TraceEntry:
     to: str
     sender: str
     msgs: tuple[Message, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class Seed:
+    """What a node holds as if it had produced it, given at construction (R-subscription).
+
+    ``values`` are the last array's DATA values, ``ended`` its terminal, ``state`` the
+    private state of its first lifetime, ``deps`` the dependencies that lifetime starts
+    on (back to the declared ones when it closes), and ``note`` an opaque value that only
+    the seeded instance's first run receives, as ``ctx.seed``.
+    """
+
+    values: Sequence[object] = ()
+    ended: Message | None = None
+    state: object = None
+    deps: Sequence[str] | None = None
+    note: object = None
+
+
+@dataclass(frozen=True, slots=True)
+class Definition:
+    """A node's current definition (R-node): declared dependencies, the current instance's
+    function, setup and recipe, and the node's policies. Reading it changes nothing."""
+
+    deps: tuple[str, ...]
+    fn: NodeFn | None
+    setup: Setup | None
+    recipe: object
+    complete: Policy
+    error: Policy
+    invalidate: Policy
+    quiet: bool
+
+
+@dataclass(frozen=True, slots=True)
+class Described:
+    """One node of the topology as data (R-node): its current dependencies."""
+
+    id: str
+    kind: Literal["state", "node"]
+    deps: tuple[str, ...]
+    quiet: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +211,9 @@ class _Node:
         "pending_deps",
         "private_state",
         "quiet",
+        "recipe",
+        "seed_deps",
+        "seed_note",
         "setup",
         "subs",
         "values",
@@ -184,6 +230,8 @@ class _Node:
         values: list[object],
         quiet: bool = False,
         setup: Setup | None = None,
+        recipe: object = None,
+        seed: Seed | None = None,
     ) -> None:
         self.id = node_id
         self.is_state = fn is None
@@ -198,6 +246,12 @@ class _Node:
         self.quiet = quiet
         # Runs once per lifetime before the function's first run; belongs to the instance.
         self.setup = setup
+        # An opaque description of how the instance was built; stored, never read (R-node).
+        self.recipe = recipe
+        self.seed_deps: list[str] | None = (
+            None if seed is None or seed.deps is None else list(seed.deps)
+        )
+        self.seed_note: object = _NO_VALUE if seed is None else seed.note
         self.subs: list[_Sink | _Edge] = []
         self.active = False
         self.lifetime: _Lifetime | None = None
@@ -205,11 +259,20 @@ class _Node:
         self.values = values
         self.has = bool(values)
         self.cache: object = values[-1] if values else None
-        self.ended: Message | None = None
-        self.private_state: object = None
+        self.ended: Message | None = None if seed is None else seed.ended
+        self.private_state: object = None if seed is None else seed.state
         self.pending = False
         self.pending_deps: set[int] = set()
         self.inputs = [_Input() for _ in deps]
+
+
+class _Deferred:
+    """A function given to set, computed when the write runs in request order."""
+
+    __slots__ = ("fn",)
+
+    def __init__(self, fn: Callable[[Any], object]) -> None:
+        self.fn = fn
 
 
 class _Staged:
@@ -246,6 +309,31 @@ def _settles(frame: Array) -> bool:
         if message[0] in _MARKING:
             return True
     return False
+
+
+def _resolve(node: _Node, msgs: Array) -> Array:
+    """Compute staged set functions in order, each from the value before it."""
+
+    current: object = node.cache if node.has else SENTINEL
+    out: Array = []
+    for message in msgs:
+        kind = message[0]
+        if kind == INVALIDATE:
+            current = SENTINEL
+        if kind != DATA:
+            out.append(message)
+            continue
+        payload = message[1]
+        if type(payload) is not _Deferred:
+            current = payload
+            out.append(message)
+            continue
+        value = payload.fn(current)
+        if value is current:
+            continue  # it returned the value it was given: nothing is written
+        out.append(check_message((DATA, value)))
+        current = value
+    return out
 
 
 def _clear(inputs: list[_Input]) -> None:
@@ -290,6 +378,8 @@ class Graph:
         invalidate: Policy = "auto",
         quiet: bool = False,
         setup: Setup | None = None,
+        recipe: object = None,
+        seed: Seed | None = None,
     ) -> str:
         """Create a computed node over declared dependencies (R-node)."""
 
@@ -301,7 +391,22 @@ class Graph:
         for name, policy in (("complete", complete), ("error", error), ("invalidate", invalidate)):
             if policy not in ("auto", "manual"):
                 raise KernelError(f"{name} policy must be 'auto' or 'manual', not {policy!r}")
-        self._add(_Node(node_id, dep_ids, fn, complete, error, invalidate, [], bool(quiet), setup))
+        values: list[object] = []
+        if seed is not None:
+            values = list(seed.values)
+            for value in values:
+                check_message((DATA, value))
+            if seed.ended is not None and not is_terminal(check_message(seed.ended)):
+                raise KernelError(f"{node_id}: a seed's ended must be COMPLETE or ERROR")
+        node = _Node(node_id, dep_ids, fn, complete, error, invalidate, values, bool(quiet))
+        node.setup = setup
+        node.recipe = recipe
+        if seed is not None:
+            node.ended = seed.ended
+            node.private_state = seed.state
+            node.seed_deps = None if seed.deps is None else list(seed.deps)
+            node.seed_note = seed.note
+        self._add(node)
         return node_id
 
     def _add(self, node: _Node) -> None:
@@ -373,6 +478,13 @@ class Graph:
         if node.is_state or node.ended is not None:
             return  # an ended node gives its snapshot but never runs again
         node.lifetime = _Lifetime()
+        if node.seed_deps is not None:
+            # A seeded first lifetime starts on the dependencies a rewire had given it.
+            for dep_id in node.seed_deps:
+                self._node_of(dep_id)
+            node.deps = node.seed_deps
+            node.inputs = [_Input() for _ in node.deps]
+            node.seed_deps = None
         for index in range(len(node.deps)):
             self._acquire(node, index)
         self._down(node, self._first_run(node))
@@ -440,6 +552,184 @@ class Graph:
         node.private_state = None
         node.lifetime = None
 
+    # ---- Topology: replace and rewire (R-request-order, R-node) -------------
+
+    def _check_deps(self, op: str, node: _Node, deps: list[str]) -> None:
+        for dep_id in deps:
+            self._node_of(dep_id)
+        if len(set(deps)) != len(deps):
+            raise KernelError(f"{op}: {node.id} needs distinct dependencies")
+        for dep_id in deps:
+            if dep_id == node.id or self._depends_on(self._node_of(dep_id), node.id):
+                raise KernelError(f"{op}: {node.id} would depend on itself through {dep_id}")
+
+    def _depends_on(self, start: _Node, target: str) -> bool:
+        """Whether ``start`` reaches ``target`` through current or declared dependencies:
+        a closing lifetime puts the declared ones back, so either could close a cycle."""
+
+        seen: set[str] = set()
+        stack = [start]
+        while stack:
+            node = stack.pop()
+            for dep_id in (*node.deps, *node.declared_deps):
+                if dep_id == target:
+                    return True
+                if dep_id not in seen:
+                    seen.add(dep_id)
+                    stack.append(self._node_of(dep_id))
+        return False
+
+    def replace(
+        self,
+        node_id: str,
+        deps: Sequence[str],
+        fn: NodeFn,
+        *,
+        setup: Setup | None = None,
+        recipe: object = None,
+    ) -> None:
+        """Give a computed node a new instance under the same id and subscribers.
+
+        The current instance closes; the new one starts as on a first activation with
+        these dependencies, function, setup and recipe; the node's policies stay. Its
+        sinks receive START and the new snapshot, its dependents the snapshot as input.
+        A request: during a wave it waits until the wave ends.
+        """
+
+        node = self._node_of(node_id)
+        if node.is_state:
+            raise KernelError(f"{node_id} is not a computed node")
+        dep_ids = list(deps)
+        self._check_deps("replace", node, dep_ids)
+        self._request(lambda: self._replace_node(node, dep_ids, fn, setup, recipe))
+
+    def _replace_node(
+        self,
+        node: _Node,
+        deps: list[str],
+        fn: NodeFn,
+        setup: Setup | None,
+        recipe: object,
+    ) -> None:
+        old = node.lifetime  # None when inactive, or when the old instance has ended
+        if old is not None:
+            old.open = False
+            if old.signal is not None:
+                old.signal._abort(lambda error: self._report(f"signal {node.id}", error))
+        else:
+            node.deps = []  # an ended instance has released its dependencies already
+        self._exchange(node, deps)
+        if old is not None and old.cleanup is not None:
+            cleanup, old.cleanup = old.cleanup, None
+            try:
+                cleanup()
+            except Exception as error:
+                self._report(f"cleanup {node.id}", error)
+        node.fn = fn
+        node.setup = setup
+        node.recipe = recipe
+        node.seed_note = _NO_VALUE
+        node.seed_deps = None
+        node.declared_deps = deps
+        node.lifetime = None
+        node.values = []
+        node.has = False
+        node.cache = None
+        node.ended = None
+        node.private_state = None
+        node.pending = False
+        node.pending_deps.clear()
+        if not node.active:
+            return  # the next subscription activates the new instance
+
+        node.lifetime = _Lifetime()
+        for index, dep_id in enumerate(deps):
+            dep = self._node_of(dep_id)
+            snapshot = _snapshot_of(dep)
+            node.inputs[index] = _Input(
+                dep.has, dep.cache, dep.ended, [snapshot] if snapshot else []
+            )
+        self._apply(node, self._first_run(node))  # the retained value only
+
+        snapshot = _snapshot_of(node)
+        edges: list[_Edge] = []
+        for sub in list(node.subs):
+            if type(sub) is _Edge:
+                sub.node.inputs[sub.index] = _Input()
+                edges.append(sub)
+            else:
+                assert isinstance(sub, _Sink)
+                self._deliver_to_sink(sub, node.id, (START_MESSAGE, *snapshot))
+        if snapshot:
+            # One wave from the node: its cone is marked first, then each dependent
+            # receives the snapshot as its input.
+            if _settles(snapshot):
+                node.pending = True
+                self._mark_pending(node)
+                node.pending = False
+            for edge in edges:
+                self._receive(edge.node, edge.index, [snapshot])
+        if node.ended is not None:
+            self._close_lifetime(node)
+
+    def _ask_rewire(self, node: _Node, lifetime: _Lifetime, deps: list[str]) -> None:
+        if len(set(node.deps)) != len(node.deps):
+            raise KernelError(f"rewire: {node.id} needs distinct dependencies")
+        self._check_deps("rewire", node, deps)
+
+        def op() -> None:
+            if lifetime.open and node.lifetime is lifetime:
+                added = self._exchange(node, deps)
+                if any(node.inputs[index].frames for index in added):
+                    self._settle(node)
+
+        self._request(op)
+
+    def _exchange(self, node: _Node, deps: list[str]) -> list[int]:
+        """Give ``node`` the dependency list ``deps``; return the added positions.
+
+        An inactive node only changes its list. For an active one a dependency in both
+        lists keeps its connection and record; an added one is acquired before any is
+        released, so a shared upstream stays active; then a removed one is released,
+        without a wave.
+        """
+
+        if not node.active:
+            node.deps = deps
+            node.inputs = [_Input() for _ in deps]
+            return []
+        held: dict[str, tuple[_Input, _Edge | None]] = {}
+        for index, dep_id in enumerate(node.deps):
+            edge = next(
+                (
+                    sub
+                    for sub in self._node_of(dep_id).subs
+                    if type(sub) is _Edge and sub.node is node and sub.index == index
+                ),
+                None,
+            )
+            held[dep_id] = (node.inputs[index], edge)
+        added: list[int] = []
+        inputs: list[_Input] = []
+        for index, dep_id in enumerate(deps):
+            kept = held.pop(dep_id, None)
+            if kept is None:
+                added.append(index)
+                inputs.append(_Input())
+                continue
+            record, edge = kept
+            if edge is not None:
+                edge.index = index
+            inputs.append(record)
+        node.inputs = inputs
+        node.deps = deps
+        for index in added:
+            self._acquire(node, index)
+        for dep_id, (_record, edge) in held.items():
+            if edge is not None:
+                self._release(self._node_of(dep_id), edge)
+        return added
+
     def _deactivate(self, node: _Node) -> None:
         node.active = False
         if node.is_state:
@@ -456,6 +746,9 @@ class Graph:
         lifetime = node.lifetime
         assert lifetime is not None and node.fn is not None
         ctx = Ctx(self, node, lifetime)
+        if node.seed_note is not _NO_VALUE:
+            ctx._seed = node.seed_note  # the seeded instance's first run only
+            node.seed_note = _NO_VALUE
         try:
             if not lifetime.setup_done:
                 # The lifetime's setup runs first, once, in this invocation: what it sends
@@ -742,9 +1035,19 @@ class Graph:
         self._request(op)
 
     def set(self, node_id: str, value: object) -> None:
-        """Write a value to a state node."""
+        """Write a value to a state node; given a callable, compute it when the write runs.
 
-        self._host_input(node_id, check_message((DATA, value)))
+        The callable gets the state's value when the write takes its place in request
+        order (in a batch, from the writes staged before it; ``SENTINEL`` when there is
+        none) and returns the value to write; returning the very value it was given
+        writes nothing. A callable is written as a value only wrapped in another one
+        (R-request-order).
+        """
+
+        if callable(value):
+            self._host_input(node_id, (DATA, _Deferred(value)))
+        else:
+            self._host_input(node_id, check_message((DATA, value)))
 
     def invalidate(self, node_id: str) -> None:
         """Invalidate a state node's value (R-invalidation)."""
@@ -774,7 +1077,9 @@ class Graph:
         def op() -> None:
             if node.ended is not None:
                 raise KernelError(f"{node_id} has ended")  # ended by an earlier request
-            self._run_wave([(node, split([message]))])
+            msgs = _resolve(node, [message])
+            if msgs:
+                self._run_wave([(node, split(msgs))])
 
         self._request(op)
 
@@ -822,13 +1127,17 @@ class Graph:
         self._report_awaitable(result)
 
         def commit() -> None:
+            # The body's requests run after this wave and before anything it requests;
+            # they stay queued also when a set function below fails the commit.
             self._queue.extendleft(reversed(requests))
+            resolved = [(node, entry, _resolve(node, entry.msgs)) for node, entry in staged.items()]
             entries: list[tuple[_Node, list[Array]]] = []
-            for node, entry in staged.items():
+            for node, entry, msgs in resolved:
                 lifetime = entry.lifetime
                 if lifetime is not None and not (lifetime.open and node.lifetime is lifetime):
                     continue  # staged by a lifetime that has closed
-                entries.append((node, split(entry.msgs)))
+                if msgs:
+                    entries.append((node, split(msgs)))
             self._run_wave(entries)
 
         self._request(commit)
@@ -862,6 +1171,29 @@ class Graph:
             if node.active
             else "inactive",
         )
+
+    def definition(self, node_id: str) -> Definition:
+        """The node's current definition (R-node); reading changes nothing."""
+
+        node = self._node_of(node_id)
+        return Definition(
+            tuple(node.declared_deps),
+            node.fn,
+            node.setup,
+            node.recipe,
+            node.complete_policy,
+            node.error_policy,
+            node.invalidate_policy,
+            node.quiet,
+        )
+
+    def describe(self) -> list[Described]:
+        """Every node in creation order with its current dependencies (R-node)."""
+
+        return [
+            Described(node.id, "state" if node.is_state else "node", tuple(node.deps), node.quiet)
+            for node in self._nodes.values()
+        ]
 
     def get(self, node_id: str) -> NodeState:
         """What the node retains as of now; reading never computes or activates."""

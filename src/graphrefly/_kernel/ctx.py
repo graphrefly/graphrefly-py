@@ -68,7 +68,7 @@ class Dep:
 class Ctx:
     """What a node function receives: its inputs, private state and output."""
 
-    __slots__ = ("_deps", "_graph", "_invoking", "_lifetime", "_node", "_out")
+    __slots__ = ("_deps", "_graph", "_invoking", "_lifetime", "_node", "_out", "_seed")
 
     def __init__(self, graph: Graph, node: _Node, lifetime: _Lifetime) -> None:
         self._graph = graph
@@ -77,6 +77,7 @@ class Ctx:
         self._out: list[Array] = []
         self._invoking = True
         self._deps: list[Dep] | None = None
+        self._seed: object = None
 
     @property
     def deps(self) -> Sequence[Dep]:
@@ -118,6 +119,26 @@ class Ctx:
             if not lifetime.open:
                 lifetime.signal._abort(lambda error: None)
         return lifetime.signal
+
+    @property
+    def seed(self) -> object:
+        """The seed's note on a seeded instance's first run; ``None`` on every other run."""
+
+        return self._seed
+
+    def rewire(self, deps: Sequence[str]) -> None:
+        """Change this node's own dependencies for its current lifetime (R-request-order).
+
+        A request: it runs after the current wave and is dropped once this lifetime has
+        closed. Kept dependencies keep their records; removed ones are released without
+        a wave; added ones are acquired, and their snapshots, if any, are one input wave.
+        The declared dependencies come back when the lifetime closes. A list with a
+        duplicate, the node itself or a node that depends on it is refused.
+        """
+
+        if not self._lifetime.open:
+            return
+        self._graph._ask_rewire(self._node, self._lifetime, list(deps))
 
     def down(self, array: Sequence[Message]) -> None:
         """Send one array: this invocation's output, or a later wave once it returned.

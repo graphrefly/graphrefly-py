@@ -7,11 +7,14 @@ only package user.
 
 from graphrefly._kernel.ctx import Ctx, Dep
 from graphrefly._kernel.graph import (
+    Definition,
+    Described,
     Graph,
     NodeState,
     NodeStatus,
     Policy,
     Report,
+    Seed,
     Setup,
     TraceEntry,
 )
@@ -41,7 +44,9 @@ __all__ = [
     "START",
     "Array",
     "Ctx",
+    "Definition",
     "Dep",
+    "Described",
     "Graph",
     "KernelError",
     "Message",
@@ -49,6 +54,7 @@ __all__ = [
     "NodeStatus",
     "Policy",
     "Report",
+    "Seed",
     "Setup",
     "Signal",
     "TraceEntry",

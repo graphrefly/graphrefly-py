@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from graphrefly._kernel import DATA, INVALIDATE, Ctx, Graph, Report
+from graphrefly._sentinel import SENTINEL
 
 DEFAULT_BENCH = (
     Path(__file__).resolve().parents[2] / "graphrefly/sessions/active/python-kernel-benchmark"
@@ -134,7 +135,7 @@ def run_scenario(sc: dict[str, Any]) -> list[dict[str, Any]]:
                 g.set(op[1], op[2])
             elif kind == "setfn":
                 b = op[2]
-                g.set(op[1], lambda p: (p or 0) + b)
+                g.set(op[1], lambda p: (0 if p is SENTINEL else p) + b)
             elif kind == "invalidate":
                 g.invalidate(op[1])
             elif kind == "complete":
