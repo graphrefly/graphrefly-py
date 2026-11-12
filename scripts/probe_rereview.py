@@ -20,7 +20,9 @@ def quiet_terminal() -> dict[str, object]:
     calls: list[tuple[list[list[object]], Any]] = []
     with Graph() as graph:
         source = graph.state(1)
-        quiet = graph.node([source], lambda ctx: ctx.emit(99), quiet=True)
+        quiet = graph.node(
+            [source], lambda ctx: ctx.emit(99) if ctx.deps[0].terminal else None, quiet=True
+        )
         graph.retain(
             graph.node(
                 [quiet],
@@ -96,10 +98,13 @@ def late_after_commit_failure() -> list[object]:
 def replace_cleanup() -> list[object]:
     seen: list[object] = []
     with Graph() as graph:
+        ledger = graph.state(0)
+        ledger.subscribe(lambda messages: seen.extend(m[1] for m in messages if m[0] == DATA))
+        seen.clear()
 
         def setup(ctx: Ctx) -> Callable[[], None]:
             ctx.state = 42
-            return lambda: seen.append(ctx.state)
+            return lambda: ledger.set(ctx.state)
 
         node = graph.node([], lambda ctx: None, setup=setup)
         graph.retain(node)
