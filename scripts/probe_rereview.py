@@ -19,7 +19,7 @@ from graphrefly import DATA, Ctx, Graph, Recipe, restore_graph
 def quiet_terminal() -> dict[str, object]:
     calls: list[tuple[list[list[object]], Any]] = []
     with Graph() as graph:
-        source = graph.state(1)
+        source = graph.state(0)
         quiet = graph.node(
             [source], lambda ctx: ctx.emit(99) if ctx.deps[0].terminal else None, quiet=True
         )
@@ -35,35 +35,38 @@ def quiet_terminal() -> dict[str, object]:
     return {"runs": len(calls), "waves": calls[0][0], "terminal": calls[0][1][0]}
 
 
-def stop_trace(observe: bool) -> list[object]:
-    seen: list[object] = []
+def stop_traces() -> tuple[list[object], list[object]]:
+    observed: list[object] = []
+    subscribed: list[object] = []
     with Graph() as graph:
         source = graph.state(0)
 
         def run(ctx: Ctx) -> None:
-            ctx.emit(1)
-            ctx.emit(2)
+            if ctx.deps[0].value == 1:
+                ctx.emit(1)
+                ctx.emit(2)
 
         node = graph.node([source], run)
-        ready = False
-        stop: Callable[[], None]
 
-        def sink(messages: Any) -> None:
-            if ready:
-                seen.extend(message[1] for message in messages if message[0] == DATA)
-                stop()
+        def observe_sink(messages: Any) -> None:
+            values = [message[1] for message in messages if message[0] == DATA]
+            if values:
+                observed.extend(values)
+                stop_observed()
 
-        stop = (
-            graph.observe([node], lambda event: sink(event.msgs))
-            if observe
-            else node.subscribe(sink)
-        )
-        ready = True
+        def subscribe_sink(messages: Any) -> None:
+            values = [message[1] for message in messages if message[0] == DATA]
+            if values:
+                subscribed.extend(values)
+                stop_subscribed()
+
+        stop_observed = graph.observe([node], lambda event: observe_sink(event.msgs))
+        stop_subscribed = node.subscribe(subscribe_sink)
         source.set(1)
-    return seen
+    return observed, subscribed
 
 
-def empty_down() -> dict[str, int]:
+def empty_and_late() -> tuple[dict[str, int], list[object]]:
     with Graph() as graph:
         held: list[Ctx] = []
         arrays: list[object] = []
@@ -71,20 +74,13 @@ def empty_down() -> dict[str, int]:
         node.subscribe(arrays.append)
         arrays.clear()
         held[0].down([])
-        graph.batch(lambda: held[0].down([]))
-    return {"arrays": len(arrays)}
-
-
-def late_after_commit_failure() -> list[object]:
-    with Graph() as graph:
+        empty = {"arrays": len(arrays)}
         state = graph.state(0)
-        held: list[Ctx] = []
         seen: list[object] = []
-        node = graph.node([], lambda ctx: held.append(ctx))
         node.subscribe(lambda messages: seen.extend(m[1] for m in messages if m[0] == DATA))
 
         def fail(value: object) -> object:
-            raise ValueError("commit")
+            raise ValueError("failed updater")
 
         def body() -> None:
             state.set(fail)
@@ -92,7 +88,7 @@ def late_after_commit_failure() -> list[object]:
 
         with suppress(ValueError):
             graph.batch(body)
-    return seen
+    return empty, seen
 
 
 def replace_cleanup() -> list[object]:
@@ -122,7 +118,7 @@ def ended_batch() -> dict[str, int]:
 
         def updater(value: object) -> int:
             runs.append(value)
-            return 2
+            return 1
 
         def request(messages: Any) -> None:
             if any(m == (DATA, 1) for m in messages):
@@ -137,8 +133,7 @@ def ended_batch() -> dict[str, int]:
 
 def missing_recipe() -> str:
     with Graph() as graph:
-        node = graph.node([], lambda ctx: ctx.emit(1), name="n", recipe=Recipe("missing"))
-        graph.retain(node)
+        graph.node([], lambda ctx: None, name="n", recipe=Recipe("absent"))
         try:
             restore_graph(graph.checkpoint(), registry={})
         except Exception as error:
@@ -147,12 +142,14 @@ def missing_recipe() -> str:
 
 
 def main() -> None:
+    observed, subscribed = stop_traces()
+    empty, late = empty_and_late()
     result = {
         "quietTerminal": quiet_terminal(),
-        "observeStop": stop_trace(True),
-        "subscribeStop": stop_trace(False),
-        "emptyDown": empty_down(),
-        "lateAfterCommitFailure": late_after_commit_failure(),
+        "observeStop": observed,
+        "subscribeStop": subscribed,
+        "emptyDown": empty,
+        "lateAfterCommitFailure": late,
         "replaceCleanup": replace_cleanup(),
         "endedBatch": ended_batch(),
         "checkpointMissingRecipe": missing_recipe(),
