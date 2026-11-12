@@ -10,10 +10,11 @@ import json
 import sys
 from collections.abc import Callable
 from contextlib import suppress
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from graphrefly import DATA, Ctx, Graph, Recipe, restore_graph
+from graphrefly import DATA, ERROR, Ctx, Graph, GraphReflyRestoreError, Recipe, restore_graph
 
 
 def quiet_terminal() -> dict[str, object]:
@@ -173,6 +174,55 @@ def missing_recipe() -> str:
     raise AssertionError("restore unexpectedly succeeded")
 
 
+def checkpoint_reasons() -> dict[str, str]:
+    """Exercise refusals through public restore; the root fixture owns the wording."""
+    with Graph() as graph:
+        source = graph.state(1, name="a")
+        node = graph.node([source], lambda ctx: ctx.emit(1), name="n", recipe=Recipe("r"))
+        graph.retain(node)
+        original = graph.checkpoint()
+    reasons: dict[str, str] = {}
+    for case in (
+        "missingRecipe",
+        "retainedValues",
+        "receivedValues",
+        "privateState",
+        "recipeConfig",
+        "errorPayload",
+        "localOnly",
+        "missingReceived",
+    ):
+        checkpoint = deepcopy(original)
+        entry = next(node for node in checkpoint["nodes"] if node["id"] == "n")
+        saved = entry["saved"]
+        registry = {"r": lambda config, at: lambda ctx: None}
+        if case == "missingRecipe":
+            registry.clear()
+        elif case == "retainedValues":
+            saved["values"] = [object()]
+        elif case == "receivedValues":
+            saved["inputs"][0]["values"] = [object()]
+        elif case == "privateState":
+            saved["state"] = object()
+        elif case == "recipeConfig":
+            entry["recipe"]["config"] = object()
+        elif case == "errorPayload":
+            saved["ended"] = [ERROR, object()]
+        elif case == "localOnly":
+            entry["local"] = True
+        else:
+            del saved["inputs"]
+        try:
+            restore_graph(checkpoint, registry=registry)
+        except GraphReflyRestoreError as error:
+            prefix = "not restorable: n: "
+            assert str(error).startswith(prefix), str(error)
+            reasons[case] = str(error)[len(prefix) :]
+        else:
+            raise AssertionError(f"{case}: restore unexpectedly succeeded")
+    return reasons
+
+
 def main() -> None:
     observed, subscribed = stop_traces()
     empty, late = empty_and_late()
@@ -188,8 +238,11 @@ def main() -> None:
         "checkpointMissingRecipe": missing_recipe(),
     }
     if len(sys.argv) > 1:
-        expected = json.loads(Path(sys.argv[1]).read_text())["probeExpected"]
+        fixture = json.loads(Path(sys.argv[1]).read_text())
+        expected = fixture["probeExpected"]
         assert result == expected, (result, expected)
+        reasons = checkpoint_reasons()
+        assert reasons == fixture["checkpointReasons"], (reasons, fixture["checkpointReasons"])
     print(json.dumps(result, sort_keys=True))
 
 
