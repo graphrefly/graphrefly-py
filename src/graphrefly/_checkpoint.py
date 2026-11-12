@@ -94,6 +94,18 @@ def _check(node_id: str, value: object, reason: str) -> None:
         raise _not_restorable(node_id, reason) from None
 
 
+def _check_saved(node_id: str, saved: Mapping[str, Any]) -> None:
+    """Attribute non-JSON contents to the same node and reason on capture and restore."""
+
+    _check(node_id, saved.get("values"), "its retained values are not JSON")
+    _check(node_id, saved.get("state"), "its private state is not JSON")
+    _check(node_id, saved.get("ended"), "its ERROR payload is not JSON")
+    inputs = saved.get("inputs")
+    for received in inputs if isinstance(inputs, list) else []:
+        _check(node_id, received.get("values"), "its received values are not JSON")
+        _check(node_id, received.get("ended"), "its ERROR payload is not JSON")
+
+
 def _ended(message: Message | None) -> list[object] | None:
     return None if message is None else list(message)
 
@@ -119,7 +131,7 @@ def capture(graph: Graph) -> Checkpoint:
     for described in graph.describe():
         node_id = described.id
         held = graph.get(node_id)
-        _check(node_id, list(held.values), "a value it holds is not JSON")
+        _check(node_id, list(held.values), "its retained values are not JSON")
         _check(node_id, _ended(held.ended), "its ERROR payload is not JSON")
         state = graph.private_state(node_id)
         if state is not None:
@@ -162,9 +174,9 @@ def capture(graph: Graph) -> Checkpoint:
             }
             if current != declared:
                 node_saved["deps"] = current  # a ctx.rewire's dependencies come back with it
-        _check(node_id, definition.recipe, "its recipe is not JSON")
+        _check(node_id, definition.recipe, "its recipe config is not JSON")
         if node_saved is not None:
-            _check(node_id, node_saved, "a value it holds or received is not JSON")
+            _check_saved(node_id, node_saved)
             if state is not None:
                 node_saved["state"] = state
             entry["saved"] = node_saved
@@ -294,7 +306,6 @@ def restore(
 
     if not isinstance(checkpoint, dict) or checkpoint.get("format") != FORMAT:
         raise CheckpointError(f"restore: not a {FORMAT} checkpoint")
-    checkpoint = _json(checkpoint, "the checkpoint", "restore")
     nodes = cast("list[dict[str, Any]]", checkpoint.get("nodes"))
     if not isinstance(nodes, list):
         raise CheckpointError("restore: the checkpoint has no nodes")
@@ -305,11 +316,16 @@ def restore(
     def make(ref: str, config: object, node_id: str) -> Built:
         factory = registry.get(ref)
         if factory is None:
-            raise CheckpointError(f"restore: no recipe {ref}")
+            raise _not_restorable(node_id, "missing recipe")
         built = factory(config, RecipeContext(graph, node_id, make))
         return built if isinstance(built, Built) else Built(built)
 
     for node in nodes:
+        node_id = str(node["id"])
+        if isinstance(node.get("saved"), dict):
+            _check_saved(node_id, node["saved"])
+        if node.get("recipe") is not None:
+            _check(node_id, node["recipe"], "its recipe config is not JSON")
         if node.get("local"):
             raise _not_restorable(str(node["id"]), "local-only, built or replaced without a recipe")
     for node in nodes:
@@ -319,11 +335,10 @@ def restore(
         deps = saved.get("deps", node["deps"])
         inputs = saved.get("inputs")
         if not isinstance(inputs, list) or len(inputs) != len(deps):
-            raise CheckpointError(
-                f"restore: {node['id']} has no record of what it received; "
-                "the checkpoint is not in this format"
-            )
+            raise _not_restorable(str(node["id"]), "missing received records")
 
+    checkpoint = _json(checkpoint, "the checkpoint", "restore")
+    nodes = checkpoint["nodes"]
     try:
         for node in _build_order(nodes):
             _restore_node(graph, node, make)
@@ -356,7 +371,9 @@ def _restore_node(
             else:
                 graph.error(node_id, ended[1])
         return
-    recipe_value = node["recipe"]
+    recipe_value = node.get("recipe")
+    if not isinstance(recipe_value, dict) or not isinstance(recipe_value.get("ref"), str):
+        raise _not_restorable(node_id, "missing recipe")
     built = make(recipe_value["ref"], recipe_value.get("config"), node_id)
     policies = node.get("policies", {})
     seed: Seed | None = None

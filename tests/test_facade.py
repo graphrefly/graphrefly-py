@@ -888,7 +888,7 @@ def test_a_node_that_cannot_be_restored_is_refused_as_not_restorable() -> None:
         g.state((1, 2), name="tuple")
         with pytest.raises(GraphReflyCheckpointError) as caught:
             g.checkpoint()
-        assert str(caught.value) == "not restorable: tuple: a value it holds is not JSON"
+        assert str(caught.value) == "not restorable: tuple: its retained values are not JSON"
     with Graph("state") as g:
         a = g.state(1, name="a")
 
@@ -933,7 +933,7 @@ def test_local_only_nodes_still_refuse_non_json_at_capture(part: str) -> None:
 
         g.retain(g.node([], run, name="local"))
         reason = {
-            "value": "a value it holds is not JSON",
+            "value": "its retained values are not JSON",
             "state": "its private state is not JSON",
             "error": "its ERROR payload is not JSON",
         }[part]

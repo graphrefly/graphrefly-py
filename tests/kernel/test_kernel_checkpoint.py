@@ -291,7 +291,7 @@ def test_c38_values_state_configs_and_error_payloads_that_are_not_json_are_refus
     h = Graph()
     h.state("a", 1)
     build(h, reg, "x", ["a"], "plus", {"k": (1, 2)})
-    with pytest.raises(CheckpointError, match="^not restorable: x: its recipe is not JSON$"):
+    with pytest.raises(CheckpointError, match="^not restorable: x: its recipe config is not JSON$"):
         capture(h)
     e = Graph()
     e.state("a", 1)
@@ -300,14 +300,16 @@ def test_c38_values_state_configs_and_error_payloads_that_are_not_json_are_refus
         capture(e)
     v = Graph()
     v.state("a", (1, 2))  # a tuple does not come back from JSON as itself
-    with pytest.raises(CheckpointError, match="^not restorable: a: a value it holds is not JSON$"):
+    with pytest.raises(
+        CheckpointError, match="^not restorable: a: its retained values are not JSON$"
+    ):
         capture(v)
 
 
 def test_c38_a_missing_recipe_a_local_only_node_and_an_earlier_format_fail() -> None:
     cp = round_trip(capture(original()))
     without_scan = {k: v for k, v in Registry().items() if k != "scan"}
-    with pytest.raises(CheckpointError, match="no recipe scan"):
+    with pytest.raises(CheckpointError, match="not restorable: t: missing recipe"):
         restore(cp, without_scan)
 
     reg = Registry()
@@ -332,7 +334,7 @@ def test_c38_a_missing_recipe_a_local_only_node_and_an_earlier_format_fail() -> 
             for n in cp["nodes"]
         ],
     }
-    with pytest.raises(CheckpointError, match="s has no record of what it received"):
+    with pytest.raises(CheckpointError, match="not restorable: s: missing received records"):
         restore(older, Registry())
     with pytest.raises(CheckpointError, match="not a graphrefly-py/checkpoint@1"):
         restore({"nodes": cp["nodes"]}, Registry())
@@ -667,3 +669,48 @@ def test_a_checkpoint_shares_no_object_with_the_live_graph_either_way() -> None:
     assert r.get("n").value == [1]
     r.set("a", 5)
     assert r.get("n").value == [2]
+
+
+@pytest.mark.parametrize(
+    ("case", "reason"),
+    [
+        ("missing", "missing recipe"),
+        ("values", "its retained values are not JSON"),
+        ("inputs", "its received values are not JSON"),
+        ("state", "its private state is not JSON"),
+        ("config", "its recipe config is not JSON"),
+        ("error", "its ERROR payload is not JSON"),
+        ("local", "local-only, built or replaced without a recipe"),
+        ("received", "missing received records"),
+    ],
+)
+def test_checkpoint_node_refusals_have_one_exact_cross_runtime_reason(
+    case: str, reason: str
+) -> None:
+    g = Graph()
+    g.state("a", 1)
+    g.node("n", ["a"], lambda ctx: ctx.down([(DATA, 1)]), recipe=recipe("r"))
+    g.subscribe("sink", "n")
+    cp = capture(g)
+    node = entry(cp, "n")
+    saved = node["saved"]
+    registry: dict[str, Factory] = {"r": lambda config, at: lambda ctx: None}
+    if case == "missing":
+        registry.clear()
+    elif case == "values":
+        saved["values"] = [object()]
+    elif case == "inputs":
+        saved["inputs"][0]["values"] = [object()]
+    elif case == "state":
+        saved["state"] = object()
+    elif case == "config":
+        node["recipe"]["config"] = object()
+    elif case == "error":
+        saved["ended"] = [ERROR, object()]
+    elif case == "local":
+        node["local"] = True
+    else:
+        del saved["inputs"]
+    with pytest.raises(CheckpointError) as caught:
+        restore(cp, registry)
+    assert str(caught.value) == f"not restorable: n: {reason}"
