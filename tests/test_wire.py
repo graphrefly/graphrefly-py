@@ -9,6 +9,7 @@ tests/kernel/test_kernel_bridge.py.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,8 @@ FIXTURES = Path(__file__).resolve().parents[2] / "graphrefly" / "spec" / "fixtur
 
 def vectors(name: str) -> list[dict[str, Any]]:
     path = FIXTURES / name
+    if not path.exists() and os.environ.get("CI"):
+        pytest.fail(f"canonical protocol fixtures are required in CI: {path}")
     if not path.exists():
         pytest.skip(f"graphrefly fixtures not checked out next to this repository ({path})")
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
@@ -371,3 +374,12 @@ def test_c1c_no_hidden_timer_or_retry_pump_in_the_bridge() -> None:
         "monotonic(",
     ):
         assert word not in text, word
+
+
+def test_ci_refuses_missing_canonical_fixtures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(globals(), "FIXTURES", tmp_path)
+    monkeypatch.setenv("CI", "true")
+    with pytest.raises(pytest.fail.Exception, match="canonical protocol fixtures are required"):
+        vectors("wire_bridge_envelope.v1.jsonl")
