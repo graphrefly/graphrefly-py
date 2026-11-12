@@ -920,6 +920,39 @@ def test_callback_error_is_public_taxonomy() -> None:
     assert issubclass(SubscriberCallbackError, CallbackError)
 
 
+@pytest.mark.parametrize("part", ["value", "state", "error"])
+def test_local_only_nodes_still_refuse_non_json_at_capture(part: str) -> None:
+    with Graph() as g:
+        def run(ctx: Ctx) -> None:
+            if part == "value":
+                ctx.emit(object())
+            elif part == "state":
+                ctx.state = object()
+            else:
+                ctx.down([("ERROR", object())])
+
+        g.retain(g.node([], run, name="local"))
+        reason = {
+            "value": "a value it holds is not JSON",
+            "state": "its private state is not JSON",
+            "error": "its ERROR payload is not JSON",
+        }[part]
+        with pytest.raises(GraphReflyCheckpointError) as caught:
+            g.checkpoint()
+        assert str(caught.value) == f"not restorable: local: {reason}"
+
+
+def test_local_only_json_node_can_be_captured_but_not_restored() -> None:
+    with Graph() as g:
+        g.retain(g.node([], lambda ctx: ctx.emit({"ok": [1]}), name="local"))
+        cp = g.checkpoint()
+        with pytest.raises(GraphReflyRestoreError) as caught:
+            graphrefly.restore_graph(cp, registry={})
+        assert str(caught.value) == (
+            "not restorable: local: local-only, built or replaced without a recipe"
+        )
+
+
 # ---- review fixes: close, definition, recipes and set(fn) -----------------------------
 
 

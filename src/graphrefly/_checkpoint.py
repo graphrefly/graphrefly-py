@@ -119,10 +119,13 @@ def capture(graph: Graph) -> Checkpoint:
     for described in graph.describe():
         node_id = described.id
         held = graph.get(node_id)
+        _check(node_id, list(held.values), "a value it holds is not JSON")
+        _check(node_id, _ended(held.ended), "its ERROR payload is not JSON")
+        state = graph.private_state(node_id)
+        if state is not None:
+            _check(node_id, state, "its private state is not JSON")
         if described.kind == "state":
             saved = {"values": list(held.values), "ended": _ended(held.ended)}
-            _check(node_id, saved["values"], "a value it holds is not JSON")
-            _check(node_id, saved["ended"], "its ERROR payload is not JSON")
             nodes.append(
                 _json(
                     {"id": node_id, "kind": "state", "deps": [], "saved": saved}, f"node {node_id}"
@@ -146,7 +149,6 @@ def capture(graph: Graph) -> Checkpoint:
                 "quiet": definition.quiet,
             },
         }
-        state = graph.private_state(node_id)
         node_saved: dict[str, object] | None = None
         if isinstance(held.seed, dict):
             # Restored and not activated since: what it holds is its seed, saved again.
@@ -164,7 +166,6 @@ def capture(graph: Graph) -> Checkpoint:
         if node_saved is not None:
             _check(node_id, node_saved, "a value it holds or received is not JSON")
             if state is not None:
-                _check(node_id, state, "its private state is not JSON")
                 node_saved["state"] = state
             entry["saved"] = node_saved
         nodes.append(_json(entry, f"node {node_id}"))
