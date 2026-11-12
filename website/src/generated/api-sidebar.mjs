@@ -296,6 +296,14 @@ export const apiSidebar = [
         "link": "/api/wirebridgeissue"
       },
       {
+        "label": "WireBridgeEvent",
+        "link": "/api/wirebridgeevent"
+      },
+      {
+        "label": "WireBridgeIndexedEvent",
+        "link": "/api/wirebridgeindexedevent"
+      },
+      {
         "label": "WireBridgeStatus",
         "link": "/api/wirebridgestatus"
       },
