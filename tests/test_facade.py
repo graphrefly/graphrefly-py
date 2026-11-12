@@ -1289,3 +1289,16 @@ def test_dependency_views_expire_after_their_own_setup_or_function_invocation() 
         stop()
         expired()
         assert cleanup == [42] and kept[0].signal.aborted
+
+
+def test_nested_recipe_lookup_uses_the_same_node_refusal() -> None:
+    with Graph() as g:
+        n = g.node([], lambda ctx: ctx.emit(1), name="n", recipe=Recipe("outer"))
+        g.retain(n)
+
+        def outer(config: object, at: RecipeContext) -> Any:
+            return at.make("missing", None, at.name)
+
+        with pytest.raises(GraphReflyRestoreError) as caught:
+            graphrefly.restore_graph(g.checkpoint(), registry={"outer": outer})
+        assert str(caught.value) == "not restorable: n: missing recipe"

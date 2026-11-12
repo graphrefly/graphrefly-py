@@ -1389,7 +1389,7 @@ def restore_graph(
     ) -> tuple[NodeCallback, SetupCallback | None]:
         factory = registry.get(ref)
         if factory is None:
-            raise GraphReflyRestoreError(f"restore: no recipe {ref}")
+            raise GraphReflyRestoreError(f"not restorable: {node_name}: missing recipe")
         made = factory(config, RecipeContext(graph, node_name, build))
         callback, setup = made if isinstance(made, tuple) else (made, None)
         if not callable(callback) or (setup is not None and not callable(setup)):
