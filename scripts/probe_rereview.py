@@ -117,7 +117,7 @@ def ended_batch() -> dict[str, int]:
     runs: list[object] = []
     with Graph(report=reports.append) as graph:
         trigger = graph.state(0)
-        ended = graph.state(1)
+        ended = graph.state(0)
         other = graph.state(0)
 
         def updater(value: object) -> int:
@@ -127,7 +127,7 @@ def ended_batch() -> dict[str, int]:
         def request(messages: Any) -> None:
             if any(m == (DATA, 1) for m in messages):
                 ended.complete()
-                graph.batch(lambda: (ended.set(updater), other.set(1)))
+                graph.batch(lambda: (other.set(updater), ended.set(updater)))
 
         trigger.subscribe(request)
         trigger.set(1)
