@@ -232,10 +232,14 @@ def test_c23_ctx_deps_shows_arrays_terminal_and_latest_value(harness: Harness) -
         a.down([(COMPLETE,)])
         g.error("B", "e")
 
+    seen.clear()
     g.batch(ends)
-    (a_entry, b_entry) = seen[-1]
-    assert a_entry[1] == [] and a_entry[2] == (COMPLETE,)
-    assert b_entry[1] == [] and b_entry[2] == (ERROR, "e")
+    # D808: the host ERROR commits first; the late COMPLETE is the next request.
+    assert len(seen) == 2
+    assert seen[0][1][1:3] == ([], (ERROR, "e"))
+    assert seen[0][0][2] is None
+    assert seen[1][0][1:3] == ([], (COMPLETE,))
+    assert seen[1][1][2] is None
 
 
 def test_c23_what_came_before_an_inputs_last_invalidate_is_gone(harness: Harness) -> None:
@@ -312,7 +316,7 @@ def test_c28_one_array_of_three_occurrences_stays_intact_through_a_diamond(
     assert seen == [[[[23, 23, 30]], [[23, 23, 30]]]]
 
 
-def test_c28_separate_calls_stay_separate_arrays_and_a_batch_accumulates(
+def test_c28_late_calls_stay_separate_requests_and_host_batch_accumulates(
     harness: Harness,
 ) -> None:
     g = harness.graph
@@ -327,7 +331,10 @@ def test_c28_separate_calls_stay_separate_arrays_and_a_batch_accumulates(
         a.down([(DATA, 30)])
 
     assert during(g, two_calls) == ["o <- A: [PENDING, DATA(23)]", "o <- A: [PENDING, DATA(30)]"]
-    assert during(g, lambda: g.batch(two_calls)) == ["o <- A: [PENDING, DATA(23), DATA(30)]"]
+    assert during(g, lambda: g.batch(two_calls)) == [
+        "o <- A: [PENDING, DATA(23)]",
+        "o <- A: [PENDING, DATA(30)]",
+    ]
 
     def three_sets() -> None:
         for v in (1, 2, 3):
@@ -396,7 +403,7 @@ def test_c28_pending_and_resolved_in_output_end_the_node(harness: Harness, array
     assert g.get("N").ended is not None
 
 
-def test_c28_a_rejected_submission_leaves_earlier_batch_staging_unchanged(
+def test_c28_a_rejected_late_submission_preserves_body_request_order(
     harness: Harness,
 ) -> None:
     g = harness.graph
@@ -417,8 +424,12 @@ def test_c28_a_rejected_submission_leaves_earlier_batch_staging_unchanged(
         except KernelError as error:
             rejected.append(str(error))
 
-    assert during(g, lambda: g.batch(body)) == ["o <- A: [PENDING, DATA(1), COMPLETE]"]
-    assert len(rejected) == 2
+    assert during(g, lambda: g.batch(body)) == [
+        "o <- A: [PENDING, DATA(1)]",
+        "o <- A: [PENDING, COMPLETE]",
+    ]
+    # The final DATA request was valid when made, but its lifetime closed before it ran.
+    assert len(rejected) == 1
 
 
 def test_c28_a_batch_opened_from_a_callback_commits_after_the_wave(harness: Harness) -> None:
