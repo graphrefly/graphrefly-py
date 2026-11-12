@@ -391,30 +391,35 @@ class Dep:
     def id(self) -> str:
         """Return the dependency's name."""
 
+        _check_dependency_scope(self._dep._ctx)
         return self._dep.id
 
     @property
     def waves(self) -> list[list[object]]:
         """Return this invocation's arrays from the dependency, as their DATA values."""
 
+        _check_dependency_scope(self._dep._ctx)
         return self._dep.waves
 
     @property
     def terminal(self) -> ControlMessage | ErrorMessage | None:
         """Return the dependency's COMPLETE or ERROR of this invocation, or ``None``."""
 
+        _check_dependency_scope(self._dep._ctx)
         return cast("ControlMessage | ErrorMessage | None", self._dep.terminal)
 
     @property
     def has(self) -> bool:
         """Return whether a value was received from the dependency and not invalidated."""
 
+        _check_dependency_scope(self._dep._ctx)
         return self._dep.has
 
     @property
     def value(self) -> object:
         """Return the latest value received, or ``graphrefly.SENTINEL`` without one."""
 
+        _check_dependency_scope(self._dep._ctx)
         dep = self._dep
         return dep.value if dep.has else SENTINEL
 
@@ -422,10 +427,18 @@ class Dep:
     def invalidated(self) -> bool:
         """Return whether an INVALIDATE arrived on this input (manual policy only)."""
 
+        _check_dependency_scope(self._dep._ctx)
         return self._dep.invalidated
 
     def __repr__(self) -> str:
         return f"Dep({self.id!r})"
+
+
+def _check_dependency_scope(ctx: _k.Ctx) -> None:
+    try:
+        ctx._check_deps()
+    except _k.KernelError as error:
+        raise GraphReflyRuntimeError(str(error)) from error
 
 
 class Ctx:
@@ -445,9 +458,14 @@ class Ctx:
 
     @property
     def deps(self) -> tuple[Dep, ...]:
-        """Return each dependency of this lifetime, in order, as this invocation sees it."""
+        """Return this invocation's dependency views during setup or function execution.
+
+        Reads through this ctx or its saved views are refused after this invocation
+        returns, including while a later invocation of the same node runs.
+        """
 
         self._check()
+        _check_dependency_scope(self._ctx)
         deps = self._deps
         if deps is None:
             deps = self._deps = tuple(Dep(dep) for dep in self._ctx.deps)

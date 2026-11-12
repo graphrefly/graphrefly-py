@@ -9,7 +9,7 @@ description: "A graph of nodes: one single-threaded domain on the Python kernel.
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:673`
+**Source:** `src/graphrefly/_facade.py:691`
 
 ## Signature
 
@@ -38,7 +38,7 @@ close() -> None
 
 Close this graph: release facade subscriptions, retains and async work.
 
-Source: `src/graphrefly/_facade.py:712`
+Source: `src/graphrefly/_facade.py:730`
 
 ### `state`
 
@@ -48,7 +48,7 @@ state(value: object = _ABSENT, name: str | None = None) -> State[Any]
 
 Create a state node, with an initial value or empty.
 
-Source: `src/graphrefly/_facade.py:726`
+Source: `src/graphrefly/_facade.py:744`
 
 ### `producer`
 
@@ -60,7 +60,7 @@ Create or decorate a dependency-free node whose callback's value it sends
 once per activation (Python sugar). A ``recipe`` makes it restorable: its
 factory gives this callback again.
 
-Source: `src/graphrefly/_facade.py:749`
+Source: `src/graphrefly/_facade.py:767`
 
 ### `derived`
 
@@ -74,7 +74,7 @@ Python sugar, not protocol: it runs once every dependency has a value and
 recomputes when a dependency sent DATA in the wave. A ``recipe`` makes it
 restorable: its factory gives this value-level callback again.
 
-Source: `src/graphrefly/_facade.py:789`
+Source: `src/graphrefly/_facade.py:807`
 
 ### `effect`
 
@@ -86,7 +86,7 @@ Create or decorate a value-level side effect over dependencies (Python
 sugar, with derived's gate); it sends nothing. A ``recipe`` makes it
 restorable: its factory gives this callback again.
 
-Source: `src/graphrefly/_facade.py:834`
+Source: `src/graphrefly/_facade.py:852`
 
 ### `node`
 
@@ -102,7 +102,7 @@ policy; a quiet node passes no pending mark on. ``setup(ctx)`` runs once per
 lifetime before the first run and may return the lifetime's cleanup. A
 ``recipe`` makes the node restorable.
 
-Source: `src/graphrefly/_facade.py:886`
+Source: `src/graphrefly/_facade.py:904`
 
 ### `batch`
 
@@ -116,7 +116,7 @@ Nothing is delivered while it runs; it returns what ``callback`` returned. A
 callback that raises commits nothing. During a wave the commit waits until
 the wave ends.
 
-Source: `src/graphrefly/_facade.py:947`
+Source: `src/graphrefly/_facade.py:965`
 
 ### `replace`
 
@@ -126,7 +126,7 @@ replace(node: Node[Any], deps: Iterable[Node[Any]], callback: NodeCallback, *, s
 
 Give a computed node a new instance under the same name and subscribers.
 
-Source: `src/graphrefly/_facade.py:959`
+Source: `src/graphrefly/_facade.py:977`
 
 ### `definition`
 
@@ -136,7 +136,7 @@ definition(node: Node[Any]) -> NodeDefinition
 
 Return the node's current definition; reading changes nothing.
 
-Source: `src/graphrefly/_facade.py:986`
+Source: `src/graphrefly/_facade.py:1004`
 
 ### `find`
 
@@ -149,7 +149,7 @@ Return the node with this id, or ``None``; it activates nothing (R-graph-surface
 A state node comes back as its ``State``, so it can be written after a lookup or
 a restore; narrow the result with ``isinstance(node, State)``.
 
-Source: `src/graphrefly/_facade.py:1006`
+Source: `src/graphrefly/_facade.py:1024`
 
 ### `describe`
 
@@ -164,7 +164,7 @@ Every node in creation order as exactly ``&#123;"id", "kind", "deps", "quiet"&#1
 a ``ctx.rewire``'s included, while ``definition`` gives the declared ones. A
 value or a status is read from the node. It activates and runs nothing.
 
-Source: `src/graphrefly/_facade.py:1019`
+Source: `src/graphrefly/_facade.py:1037`
 
 ### `observe`
 
@@ -181,7 +181,7 @@ is observing every node ``describe`` gives. Calling the returned ``stop()`` stop
 it; nothing more is handed on after that. A callback that raises goes to the graph's
 reporter as a ``SubscriberCallbackError``, as a subscriber's does.
 
-Source: `src/graphrefly/_facade.py:1034`
+Source: `src/graphrefly/_facade.py:1052`
 
 ### `retain`
 
@@ -194,7 +194,7 @@ Hold a node active as a subscriber that ignores what it receives
 its own subscription, so a node retained twice stays active until both are
 released.
 
-Source: `src/graphrefly/_facade.py:1085`
+Source: `src/graphrefly/_facade.py:1103`
 
 ### `reentry_queue`
 
@@ -204,7 +204,7 @@ reentry_queue() -> GraphReentryQueue
 
 Return this graph's explicit owner-thread async re-entry queue.
 
-Source: `src/graphrefly/_facade.py:1103`
+Source: `src/graphrefly/_facade.py:1121`
 
 ### `checkpoint`
 
@@ -214,4 +214,4 @@ checkpoint() -> GraphCheckpoint
 
 Capture this graph at a wave boundary as strict JSON (R-checkpoint).
 
-Source: `src/graphrefly/_facade.py:1117`
+Source: `src/graphrefly/_facade.py:1135`

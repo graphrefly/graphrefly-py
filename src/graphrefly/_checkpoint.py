@@ -193,19 +193,22 @@ class _Unchanged(Dep):
     __slots__ = ("_end",)
 
     def __init__(self, dep: Dep, end: Message | None) -> None:
-        super().__init__(dep.id, dep._input, dep._manual_invalidate)
+        super().__init__(dep.id, dep._input, dep._manual_invalidate, dep._ctx)
         self._end = end
 
     @property
     def waves(self) -> list[list[object]]:
+        self._ctx._check_deps()
         return []
 
     @property
     def sent_data(self) -> bool:
+        self._ctx._check_deps()
         return False
 
     @property
     def terminal(self) -> Message | None:
+        self._ctx._check_deps()
         return self._end
 
 

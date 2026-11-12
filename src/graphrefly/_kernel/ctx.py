@@ -5,7 +5,15 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Final
 
-from graphrefly._kernel.messages import DATA, Array, Message, is_terminal, is_value, prepare_output
+from graphrefly._kernel.messages import (
+    DATA,
+    Array,
+    KernelError,
+    Message,
+    is_terminal,
+    is_value,
+    prepare_output,
+)
 from graphrefly._kernel.signal import Signal
 
 if TYPE_CHECKING:
@@ -14,17 +22,26 @@ if TYPE_CHECKING:
 # The input record's "a DATA arrived" bit, one of graph.py's _SAW bits; it lives here
 # because graph.py imports this module.
 SAW_DATA: Final = 16
+DEPS_SCOPE_ERROR: Final = "ctx.deps is only available during setup or function invocation"
 
 
 class Dep:
     """One dependency as this invocation sees it."""
 
-    __slots__ = ("_input", "_manual_invalidate", "id")
+    __slots__ = ("_ctx", "_id", "_input", "_manual_invalidate")
 
-    def __init__(self, dep_id: str, record: _Input, manual_invalidate: bool) -> None:
-        self.id = dep_id
+    def __init__(self, dep_id: str, record: _Input, manual_invalidate: bool, ctx: Ctx) -> None:
+        self._ctx = ctx
+        self._id = dep_id
         self._input = record
         self._manual_invalidate = manual_invalidate
+
+    @property
+    def id(self) -> str:
+        """The dependency's graph-registered identity during its invocation."""
+
+        self._ctx._check_deps()
+        return self._id
 
     @property
     def waves(self) -> list[list[object]]:
@@ -34,6 +51,7 @@ class Dep:
         Arrays without a value (an INVALIDATE, a terminal alone) are not listed.
         """
 
+        self._ctx._check_deps()
         return [
             [message[1] for message in frame if message[0] == DATA]
             for frame in self._input.frames
@@ -45,12 +63,14 @@ class Dep:
         """Whether this dependency sent a DATA to this invocation: ``any(self.waves)``,
         read from the input record without building the arrays."""
 
+        self._ctx._check_deps()
         return bool(self._input.saw & SAW_DATA)
 
     @property
     def terminal(self) -> Message | None:
         """The COMPLETE or ERROR this dependency sent in this invocation, if any."""
 
+        self._ctx._check_deps()
         for frame in self._input.frames:
             for message in frame:
                 if is_terminal(message):
@@ -61,18 +81,21 @@ class Dep:
     def has(self) -> bool:
         """Whether a value has been received from this dependency and not invalidated."""
 
+        self._ctx._check_deps()
         return self._input.has
 
     @property
     def value(self) -> object:
         """The latest value received from this dependency, or ``None`` without one."""
 
+        self._ctx._check_deps()
         return self._input.value
 
     @property
     def invalidated(self) -> bool:
         """Whether an INVALIDATE arrived on this input (manual INVALIDATE policy only)."""
 
+        self._ctx._check_deps()
         return self._manual_invalidate and self._input.invalidated
 
 
@@ -94,14 +117,19 @@ class Ctx:
     def deps(self) -> Sequence[Dep]:
         """Each declared dependency of this lifetime, in order."""
 
+        self._check_deps()
         if self._deps is None:
             node = self._node
             manual = node.invalidate_policy == "manual"
             self._deps = [
-                Dep(dep_id, record, manual)
+                Dep(dep_id, record, manual, self)
                 for dep_id, record in zip(node.deps, node.inputs, strict=True)
             ]
         return self._deps
+
+    def _check_deps(self) -> None:
+        if not self._invoking:
+            raise KernelError(DEPS_SCOPE_ERROR)
 
     @property
     def state(self) -> object:

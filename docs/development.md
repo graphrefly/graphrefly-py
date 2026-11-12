@@ -84,7 +84,9 @@ reference kernel on random graphs (needs `node`; reads the root checkout only).
 - `Graph.node(deps, callback, ...)` gives the callback a `Ctx`: `ctx.deps[i]` (`id`,
   `waves`, `terminal`, `has`, `value`, `invalidated`), private `state`, `emit`,
   `down(list)` (checked by the kernel), the lifetime `signal` and `rewire`. A
-  node's `setup` runs once per lifetime and may return its cleanup. `derived`,
+  dependency views are readable only during their own setup/function invocation;
+  saved contexts and saved views refuse later reads with the shared D808 error.
+  A node's `setup` runs once per lifetime and may return its cleanup. `derived`,
   `effect` and `producer` keep a first-run gate: Python sugar, not protocol.
 - `node`, `derived`, `effect` and `producer` take an optional `recipe`, which makes
   the node restorable; for the sugar, the registered factory gives the value-level

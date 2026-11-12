@@ -925,6 +925,7 @@ def test_callback_error_is_public_taxonomy() -> None:
 @pytest.mark.parametrize("part", ["value", "state", "error"])
 def test_local_only_nodes_still_refuse_non_json_at_capture(part: str) -> None:
     with Graph() as g:
+
         def run(ctx: Ctx) -> None:
             if part == "value":
                 ctx.emit(object())
@@ -1241,3 +1242,50 @@ def test_a_restored_derived_whose_dependency_only_ended_does_not_recompute() -> 
     r.retain(rd)
     assert calls == [] and rd.cache() == 3  # an end alone brings no new value
     r.close()
+
+
+def test_dependency_views_expire_after_their_own_setup_or_function_invocation() -> None:
+    message = "ctx.deps is only available during setup or function invocation"
+    kept: list[Ctx] = []
+    views: list[graphrefly.Dep] = []
+    snapshots: list[list[list[object]]] = []
+    cleanup: list[object] = []
+
+    def expired() -> None:
+        for ctx in kept:
+            with pytest.raises(GraphReflyRuntimeError) as caught:
+                _ = ctx.deps
+            assert str(caught.value) == message
+        for dep in views:
+            for name in ("id", "waves", "terminal", "value", "has", "invalidated"):
+                with pytest.raises(GraphReflyRuntimeError) as caught:
+                    getattr(dep, name)
+                assert str(caught.value) == message
+
+    with Graph() as g:
+        s = g.state(1, name="s")
+
+        def setup(ctx: Ctx) -> Callable[[], None]:
+            assert ctx.deps[0].id == "s"
+            ctx.state = 42
+            return lambda: cleanup.append(ctx.state)
+
+        def run(ctx: Ctx) -> None:
+            expired()  # a new invocation cannot reopen an earlier ctx or Dep
+            kept.append(ctx)
+            views.append(ctx.deps[0])
+            snapshots.append(ctx.deps[0].waves)
+            ctx.emit(ctx.deps[0].value)
+
+        n = g.node([s], run, setup=setup, invalidate="manual")
+        stop = g.retain(n)
+        expired()
+        s.set(2)
+        expired()
+        assert snapshots == [[[1]], [[2]]]
+        assert kept[0].state == 42 and not kept[0].signal.aborted
+        kept[0].emit(9)  # output remains lifetime-scoped
+        assert n.cache() == 9
+        stop()
+        expired()
+        assert cleanup == [42] and kept[0].signal.aborted
