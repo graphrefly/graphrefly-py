@@ -381,8 +381,11 @@ def test_ci_refuses_missing_canonical_fixtures(
 ) -> None:
     monkeypatch.setitem(globals(), "FIXTURES", tmp_path)
     monkeypatch.setenv("CI", "true")
-    with pytest.raises(pytest.fail.Exception, match="canonical protocol fixtures are required"):
-        vectors("wire_bridge_envelope.v1.jsonl")
+    try:
+        with pytest.raises(pytest.fail.Exception, match="canonical protocol fixtures are required"):
+            vectors("wire_bridge_envelope.v1.jsonl")
+    except pytest.skip.Exception:
+        pytest.fail("CI must fail rather than skip missing canonical fixtures")
 
 
 def test_bridge_retains_commands_and_event_indices_without_external_subscribers() -> None:
