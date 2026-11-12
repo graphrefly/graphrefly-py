@@ -9,7 +9,7 @@ description: "Build the sender side of a wire edge group: a node whose values ar
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_wire_facade.py:86`
+**Source:** `src/graphrefly/_wire_facade.py:90`
 
 ## Signature
 

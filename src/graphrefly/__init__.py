@@ -62,6 +62,8 @@ from graphrefly._wire.envelope import (
     WireBridgeAckDriverIssue,
     WireBridgeAckDriverStatus,
     WireBridgeAckTimeout,
+    WireBridgeEvent,
+    WireBridgeIndexedEvent,
     WireBridgeIssue,
     WireBridgeStatus,
 )
@@ -146,6 +148,8 @@ __all__ = [
     "WireBridgeAckDriverStatus",
     "WireBridgeAckTimeout",
     "WireBridgeIssue",
+    "WireBridgeEvent",
+    "WireBridgeIndexedEvent",
     "WireBridgeStatus",
     "WireEdgeArrays",
     "WireEdgeCause",

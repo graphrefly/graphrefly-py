@@ -127,6 +127,8 @@ def test_package_surface_is_the_d4_api() -> None:
         "WireEdgeGroupIssue",
         "WireBridge",
         "WireBridgeIssue",
+        "WireBridgeEvent",
+        "WireBridgeIndexedEvent",
         "WireBridgeStatus",
         "WireBridgeAckTimeout",
         "WireBridgeAckDriver",

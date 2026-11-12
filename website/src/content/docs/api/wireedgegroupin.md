@@ -9,7 +9,7 @@ description: "The receiver side of a wire edge group: its gate, one inbound node
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_wire_facade.py:168`
+**Source:** `src/graphrefly/_wire_facade.py:172`
 
 ## Signature
 

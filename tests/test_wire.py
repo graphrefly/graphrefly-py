@@ -383,3 +383,74 @@ def test_ci_refuses_missing_canonical_fixtures(
     monkeypatch.setenv("CI", "true")
     with pytest.raises(pytest.fail.Exception, match="canonical protocol fixtures are required"):
         vectors("wire_bridge_envelope.v1.jsonl")
+
+
+def test_bridge_retains_commands_and_event_indices_without_external_subscribers() -> None:
+    with Graph() as g:
+        source = g.state(name="source")
+        bridge = wire_bridge(g, session_id="s", outbound=[source], name="bridge")
+        for value in (b"a", b"b", b"c"):
+            source.set(value)
+        indexed = collect(bridge.events)
+        assert len(indexed) == 1 and set(indexed[0]) == {"index", "event"}
+        assert indexed[0]["index"] == 3
+        assert indexed[0]["event"]["kind"] == "outbound"
+        assert indexed[0]["event"]["envelope"].metadata.seq == 3
+        statuses = collect(bridge.status)
+        assert statuses[-1].next_seq == 4
+        assert statuses[-1].pending == ((1, 1), (2, 1), (3, 1))
+        source.set(b"d")
+        assert indexed[-1]["index"] == 4
+        assert indexed[-1]["event"]["envelope"].metadata.seq == 4
+        bridge.release()
+        source.set(b"ignored")
+        bridge.ack_timeouts.set(WireBridgeAckTimeout(1, 1))
+        assert indexed[-1]["index"] == 4
+
+
+def test_bridge_status_ledger_skips_replayed_events_and_catches_up_after_inactive() -> None:
+    with Graph() as g:
+        source = g.state(name="source")
+        received = g.state(name="received")
+        bridge = wire_bridge(g, session_id="s", outbound=[source], received=received, name="b")
+        statuses: list[WireBridgeStatus] = []
+        stop = bridge.status.subscribe(lambda ms: statuses.extend(data_of([ms])))
+        source.set(b"a")
+        stop()
+        source.set(b"b")
+        for seq in (1, 2):
+            received.set(
+                pb.encode_envelope(
+                    pb.Envelope(
+                        "peer", pb.Metadata(seq, 0, f"peer:{seq}", 1, 2, ack_for_seq=seq), "ack"
+                    )
+                )
+            )
+        stop = bridge.status.subscribe(lambda ms: statuses.extend(data_of([ms])))
+        assert statuses[-1].acked == 2 and statuses[-1].pending == ()
+        stop()
+        ledger = g.find("b.status_ledger")
+        assert ledger is not None and ledger.cache()["highWater"] == 6
+        stop = bridge.status.subscribe(lambda ms: statuses.extend(data_of([ms])))
+        assert statuses[-1].acked == 2
+        stop()
+        assert ledger.cache()["highWater"] == 6
+        assert "b.status_ledger" in next(n for n in g.describe() if n["id"] == "b.status")["deps"]
+
+
+def test_bridge_release_drops_internal_retains_and_ack_driver_stops() -> None:
+    t = _sender()
+    g, bridge, ack, clock = t["g"], t["bridge"], t["ack"], t["clock"]
+    # No external subscribers: the driver still sees the clock and emits a retry.
+    clock.set(1005)
+    events = bridge.events.cache()
+    assert events["event"]["kind"] == "outbound"
+    assert events["event"]["envelope"].metadata.attempt == 2
+    bridge.release()
+    bridge.release()
+    for name in ("bridge", "bridge.events", "ack"):
+        node = g.find(name)
+        assert node is not None and node.status.lifecycle == "inactive"
+    clock.set(1010)
+    assert bridge.released and ack.released
+    g.close()

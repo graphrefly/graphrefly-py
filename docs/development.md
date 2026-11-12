@@ -44,7 +44,14 @@ reference kernel on random graphs (needs `node`; reads the root checkout only).
   edge groups, gate, frame source and sink), `envelope` (numbered envelopes, acks,
   ack-timeout facts) and `protobuf` (the strict canonical codec, no dependency);
   `graphrefly._wire_facade` is its public facade (graphrefly-py:D8). The C-1a tests
-  read the golden vectors from the sibling `graphrefly` checkout and skip without it.
+  read the golden vectors from the sibling `graphrefly` checkout. CI checks out a pinned
+  root revision and fails if those fixtures are missing; local runs may skip them.
+  `wire_bridge.events` emits `{index, event}` with a monotonically increasing index.
+  The core, events and ack driver use public retains until release/graph close, so
+  removing external subscribers neither loses ingress commands nor resets sequence
+  numbers. The status projection declares a JSON ledger dependency; its high water
+  filters snapshot replay and its cumulative state catches up after inactivity
+  (graphrefly-py:D19).
 - `graphrefly._facade` is the public facade (graphrefly-py:D4); `graphrefly` exports it.
 - `tests/kernel/` qualifies the kernel scenarios against `graphrefly._kernel`;
   the other tests cover the facade.

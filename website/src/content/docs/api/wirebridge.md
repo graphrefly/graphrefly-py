@@ -9,7 +9,7 @@ description: "A wire bridge: the envelope layer between frames and canonical pro
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_wire_facade.py:217`
+**Source:** `src/graphrefly/_wire_facade.py:221`
 
 ## Signature
 
@@ -21,6 +21,8 @@ WireBridge(graph: Graph, nodes: _envelope.BridgeNodes, switch: _envelope.Release
 
 A wire bridge: the envelope layer between frames and canonical protobuf bytes.
 
+``events`` sends ``&#123;index, event&#125;`` facts with a monotonic index. The bridge is
+retained until ``release()`` or graph close, even without external subscribers.
 ``outbound_bytes`` sends canonical ``WireBridgeEnvelope`` bytes to the transport;
 ``frames`` and ``values`` are what arrived; ``ack_timeouts`` is the explicit ingress
 of ack-timeout facts; ``status`` and ``issues`` are graph-visible facts. ``release()``
@@ -30,6 +32,7 @@ is idempotent host lifetime cleanup: the bridge and its drivers stop acting.
 
 | Name | Type | Description |
 | --- | --- | --- |
+| `events` | `Node[WireBridgeIndexedEvent]` |  |
 | `outbound_bytes` | `Node[bytes]` |  |
 | `frames` | `Node[WireEdgeCause]` |  |
 | `values` | `Node[bytes]` |  |
@@ -48,4 +51,4 @@ release() -> None
 
 Stop the bridge and its ack drivers; later facts change nothing.
 
-Source: `src/graphrefly/_wire_facade.py:249`
+Source: `src/graphrefly/_wire_facade.py:258`

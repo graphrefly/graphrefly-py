@@ -9,7 +9,7 @@ description: "A subscribe callback that hands each value a subscription delivers
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_wire_facade.py:116`
+**Source:** `src/graphrefly/_wire_facade.py:120`
 
 ## Signature
 

@@ -19,8 +19,8 @@ timeout facts from a clock node the host writes.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
-from typing import Literal
+from dataclasses import asdict, dataclass, field
+from typing import Any, Literal, NotRequired, TypedDict
 
 from graphrefly._kernel import DATA, Ctx, Graph
 from graphrefly._wire.protobuf import (
@@ -80,6 +80,26 @@ class WireBridgeIssue:
     seq: int | None = None
 
 
+class WireBridgeEvent(TypedDict):
+    """A wire fact; common kinds and field names match the TypeScript and Rust bridge."""
+
+    kind: Literal["outbound", "inbound", "ack", "nack", "timeout", "retry", "exhausted", "invalid"]
+    envelope: NotRequired[Envelope]
+    outbound: NotRequired[Envelope]
+    ackForSeq: NotRequired[int]
+    seq: NotRequired[int]
+    attempt: NotRequired[int]
+    delayMs: NotRequired[int]
+    error: NotRequired[str]
+
+
+class WireBridgeIndexedEvent(TypedDict):
+    """One bridge event with a monotonic index, retained across external subscription changes."""
+
+    index: int
+    event: WireBridgeEvent
+
+
 @dataclass(slots=True)
 class _Pending:
     envelope: Envelope
@@ -88,6 +108,7 @@ class _Pending:
 
 @dataclass(slots=True)
 class _BridgeState:
+    next_index: int = 1
     next_seq: int = 1
     pending: dict[int, _Pending] = field(default_factory=dict)
     acked: int = 0
@@ -99,6 +120,7 @@ class _BridgeState:
 
 @dataclass(frozen=True, slots=True)
 class _BridgeOutput:
+    events: tuple[WireBridgeIndexedEvent, ...]
     envelopes: tuple[Envelope, ...]
     frames: tuple[WireEdgeCause, ...]
     values: tuple[bytes, ...]
@@ -116,6 +138,8 @@ class Released:
 @dataclass(frozen=True, slots=True)
 class BridgeNodes:
     core: str
+    events: str
+    status_ledger: str
     ack_timeouts: str
     outbound_bytes: str
     frames: str
@@ -155,13 +179,15 @@ def wire_bridge(
         return Envelope(session_id, meta, "data", **body)  # type: ignore[arg-type]
 
     def setup(ctx: Ctx) -> None:
-        ctx.state = _BridgeState()
+        if ctx.state is None:
+            ctx.state = _BridgeState()
 
     def run(ctx: Ctx) -> None:
         if switch.released:
             return
         state = ctx.state
         assert isinstance(state, _BridgeState)
+        events: list[WireBridgeEvent] = []
         out: list[Envelope] = []
         frames: list[WireEdgeCause] = []
         values: list[bytes] = []
@@ -189,12 +215,15 @@ def wire_bridge(
                     state.next_seq += 1
                     state.pending[seq] = _Pending(env, 1)
                     out.append(env)
+                    events.append({"kind": "outbound", "envelope": env})
             elif index == n_out:
                 for fact in items:
-                    _timeout(state, fact, out, issues, max_attempts, session_id)
+                    _timeout(state, fact, out, issues, events, max_attempts, session_id)
             else:
                 for raw in items:
-                    _receive(state, raw, out, frames, values, issues, session_id, max_attempts)
+                    _receive(
+                        state, raw, out, frames, values, issues, events, session_id, max_attempts
+                    )
         if not changed:
             return
         if state.pending and state.last != "exhausted":
@@ -211,7 +240,16 @@ def wire_bridge(
             state.retries,
             state.exhausted,
         )
-        output = _BridgeOutput(tuple(out), tuple(frames), tuple(values), status, tuple(issues))
+        for issue in issues:
+            if issue.code not in ("nack", "exhausted"):
+                events.append({"kind": "invalid", "error": issue.message})
+        indexed: list[WireBridgeIndexedEvent] = []
+        for event in events:
+            indexed.append({"index": state.next_index, "event": event})
+            state.next_index += 1
+        output = _BridgeOutput(
+            tuple(indexed), tuple(out), tuple(frames), tuple(values), status, tuple(issues)
+        )
         ctx.down([(DATA, output)])
 
     g.node(
@@ -225,6 +263,8 @@ def wire_bridge(
     )
     nodes = BridgeNodes(
         node_id,
+        f"{node_id}.events",
+        f"{node_id}.status_ledger",
         ack_timeouts,
         f"{node_id}.outbound_bytes",
         f"{node_id}.frames",
@@ -232,6 +272,7 @@ def wire_bridge(
         f"{node_id}.status",
         f"{node_id}.issues",
     )
+    _project(g, nodes.events, node_id, guard, lambda o: list(o.events))
     _project(
         g, nodes.outbound_bytes, node_id, guard, lambda o: [encode_envelope(e) for e in o.envelopes]
     )
@@ -239,7 +280,7 @@ def wire_bridge(
     # nothing downstream, and what did arrive goes out as a wave of its own.
     _project(g, nodes.frames, node_id, guard, lambda o: list(o.frames), first=False, quiet=True)
     _project(g, nodes.values, node_id, guard, lambda o: list(o.values), first=False, quiet=True)
-    _project_status(g, nodes.status, node_id, guard)
+    _project_status(g, nodes, session_id, guard)
     _project(g, nodes.issues, node_id, guard, lambda o: list(o.issues), first=False)
     return nodes
 
@@ -272,14 +313,54 @@ def _project(
     g.node(node_id, [core], guard(run), complete="manual", error="manual", quiet=quiet)
 
 
-def _project_status(g: Graph, node_id: str, core: str, guard: Guard) -> None:
-    def run(ctx: Ctx) -> None:
-        outputs = [o for wave in ctx.deps[0].waves for o in wave if isinstance(o, _BridgeOutput)]
-        if outputs and outputs[-1].status != ctx.state:
-            ctx.state = outputs[-1].status
-            ctx.down([(DATA, outputs[-1].status)])
+def _project_status(g: Graph, nodes: BridgeNodes, session_id: str, guard: Guard) -> None:
+    initial: dict[str, Any] = {
+        "highWater": 0,
+        "status": asdict(WireBridgeStatus("open", session_id, 1)),
+    }
+    # Use JSON arrays in the ledger, not the public status dataclass's tuples.
+    initial["status"]["pending"] = []
+    g.state(nodes.status_ledger, initial)
 
-    g.node(node_id, [core], guard(run), complete="manual", error="manual")
+    def setup(ctx: Ctx) -> Callable[[], None]:
+        if ctx.state is None:
+            saved = ctx.deps[2].value
+            assert isinstance(saved, dict)
+            ctx.state = {"highWater": saved["highWater"], "status": dict(saved["status"])}
+
+        def cleanup() -> None:
+            g.set(nodes.status_ledger, ctx.state)
+
+        return cleanup
+
+    def run(ctx: Ctx) -> None:
+        working = ctx.state
+        assert isinstance(working, dict)
+        events = [event for wave in ctx.deps[0].waves for event in wave]
+        latest = ctx.deps[1].value
+        for indexed in events:
+            if not isinstance(indexed, dict) or indexed["index"] <= working["highWater"]:
+                continue
+            working["highWater"] = indexed["index"]
+            # Core's cumulative state includes facts that arrived while this projection
+            # was inactive. High water suppresses the last-array replay on reactivation.
+            if isinstance(latest, _BridgeOutput):
+                status = asdict(latest.status)
+                status["pending"] = [list(p) for p in latest.status.pending]
+                working["status"] = status
+        saved = working["status"]
+        ctx.down(
+            [(DATA, WireBridgeStatus(**{**saved, "pending": tuple(map(tuple, saved["pending"]))}))]
+        )
+
+    g.node(
+        nodes.status,
+        [nodes.events, nodes.core, nodes.status_ledger],
+        guard(run),
+        complete="manual",
+        error="manual",
+        setup=setup,
+    )
 
 
 def _timeout(
@@ -287,6 +368,7 @@ def _timeout(
     fact: object,
     out: list[Envelope],
     issues: list[WireBridgeIssue],
+    events: list[WireBridgeEvent],
     max_attempts: int,
     session_id: str,
 ) -> None:
@@ -308,6 +390,7 @@ def _timeout(
     pending = state.pending.get(fact.seq)
     if pending is None or pending.attempt != fact.attempt:
         return  # stale or mismatched: a fail-closed no-op
+    events.append({"kind": "timeout", "seq": fact.seq, "attempt": fact.attempt})
     if pending.attempt < max_attempts:
         attempt = pending.attempt + 1
         meta = pending.envelope.metadata
@@ -320,11 +403,24 @@ def _timeout(
         )
         state.pending[fact.seq] = _Pending(retry, attempt)
         state.retries += 1
+        events.append(
+            {
+                "kind": "retry",
+                "seq": fact.seq,
+                "attempt": attempt,
+                "delayMs": 0,
+                "error": "ack timeout",
+            }
+        )
         out.append(retry)
+        events.append({"kind": "outbound", "envelope": retry})
         return
     del state.pending[fact.seq]
     state.exhausted += 1
     state.last = "exhausted"
+    events.append(
+        {"kind": "exhausted", "seq": fact.seq, "attempt": pending.attempt, "error": "ack timeout"}
+    )
     issues.append(
         WireBridgeIssue(
             "exhausted",
@@ -341,6 +437,7 @@ def _receive(
     frames: list[WireEdgeCause],
     values: list[bytes],
     issues: list[WireBridgeIssue],
+    events: list[WireBridgeEvent],
     session_id: str,
     max_attempts: int,
 ) -> None:
@@ -355,6 +452,7 @@ def _receive(
         issues.append(WireBridgeIssue("invalid_bytes", f"wireBridge: {error}", error.category))
         return
     meta = env.metadata
+    events.append({"kind": "inbound", "envelope": env})
     if env.payload == "data":
         seq = state.next_seq
         state.next_seq += 1
@@ -365,16 +463,36 @@ def _receive(
                 "ack",
             )
         )
+        events.append({"kind": "outbound", "envelope": out[-1]})
         if env.edge_cause is not None:
             frames.append(env.edge_cause)
         elif env.value is not None:
             values.append(env.value)
     elif env.payload == "ack":
-        if state.pending.pop(meta.ack_for_seq or 0, None) is not None:
+        pending = state.pending.pop(meta.ack_for_seq or 0, None)
+        if pending is not None:
             state.acked += 1
+            events.append(
+                {
+                    "kind": "ack",
+                    "ackForSeq": meta.ack_for_seq or 0,
+                    "envelope": env,
+                    "outbound": pending.envelope,
+                }
+            )
     elif env.payload == "nack":
-        if state.pending.pop(meta.ack_for_seq or 0, None) is not None:
+        pending = state.pending.pop(meta.ack_for_seq or 0, None)
+        if pending is not None:
             state.nacked += 1
+            events.append(
+                {
+                    "kind": "nack",
+                    "ackForSeq": meta.ack_for_seq or 0,
+                    "envelope": env,
+                    "outbound": pending.envelope,
+                    "error": "nack",
+                }
+            )
             issues.append(
                 WireBridgeIssue(
                     "nack", f"wireBridge: nack for seq {meta.ack_for_seq}", seq=meta.ack_for_seq

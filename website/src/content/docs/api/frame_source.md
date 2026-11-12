@@ -9,7 +9,7 @@ description: "The receiving end of a transport, as a node with no dependencies."
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_wire_facade.py:134`
+**Source:** `src/graphrefly/_wire_facade.py:138`
 
 ## Signature
 

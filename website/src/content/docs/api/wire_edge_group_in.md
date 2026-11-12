@@ -9,7 +9,7 @@ description: "Build the receiver side of a wire edge group over ``frames``."
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_wire_facade.py:178`
+**Source:** `src/graphrefly/_wire_facade.py:182`
 
 ## Signature
 

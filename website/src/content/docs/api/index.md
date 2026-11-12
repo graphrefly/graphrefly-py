@@ -94,6 +94,8 @@ Update Python docstrings or exports, then rerun `pnpm --dir website docs:gen`.
 - [`WireBridgeAckDriverStatus`](/api/wirebridgeackdriverstatus/)
 - [`WireBridgeAckTimeout`](/api/wirebridgeacktimeout/)
 - [`WireBridgeIssue`](/api/wirebridgeissue/)
+- [`WireBridgeEvent`](/api/wirebridgeevent/)
+- [`WireBridgeIndexedEvent`](/api/wirebridgeindexedevent/)
 - [`WireBridgeStatus`](/api/wirebridgestatus/)
 - [`WireEdgeArrays`](/api/wireedgearrays/)
 - [`WireEdgeCause`](/api/wireedgecause/)

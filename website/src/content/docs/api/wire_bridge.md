@@ -9,7 +9,7 @@ description: "Build a wire bridge over ``outbound`` nodes and a ``received`` byt
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_wire_facade.py:261`
+**Source:** `src/graphrefly/_wire_facade.py:272`
 
 ## Signature
 

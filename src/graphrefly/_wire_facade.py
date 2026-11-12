@@ -35,6 +35,8 @@ from graphrefly._wire.envelope import (
     WireBridgeAckDriverIssue,
     WireBridgeAckDriverStatus,
     WireBridgeAckTimeout,
+    WireBridgeEvent,
+    WireBridgeIndexedEvent,
     WireBridgeIssue,
     WireBridgeStatus,
 )
@@ -48,6 +50,8 @@ __all__ = [
     "WireBridgeAckDriverStatus",
     "WireBridgeAckTimeout",
     "WireBridgeIssue",
+    "WireBridgeEvent",
+    "WireBridgeIndexedEvent",
     "WireBridgeStatus",
     "WireEdgeArrays",
     "WireEdgeCause",
@@ -217,6 +221,8 @@ def wire_edge_group_in(
 class WireBridge:
     """A wire bridge: the envelope layer between frames and canonical protobuf bytes.
 
+    ``events`` sends ``{index, event}`` facts with a monotonic index. The bridge is
+    retained until ``release()`` or graph close, even without external subscribers.
     ``outbound_bytes`` sends canonical ``WireBridgeEnvelope`` bytes to the transport;
     ``frames`` and ``values`` are what arrived; ``ack_timeouts`` is the explicit ingress
     of ack-timeout facts; ``status`` and ``issues`` are graph-visible facts. ``release()``
@@ -230,6 +236,8 @@ class WireBridge:
         self._switch = switch
         self._drivers: list[WireBridgeAckDriver] = []
         self._nodes = nodes
+        self.events: Node[WireBridgeIndexedEvent] = _adopt(graph, nodes.events)
+        _adopt(graph, nodes.status_ledger, state=True)
         self.outbound_bytes: Node[bytes] = _adopt(graph, nodes.outbound_bytes)
         self.frames: Node[WireEdgeCause] = _adopt(graph, nodes.frames)
         self.values: Node[bytes] = _adopt(graph, nodes.values)
@@ -238,7 +246,8 @@ class WireBridge:
         self.ack_timeouts: State[WireBridgeAckTimeout] = _adopt(
             graph, nodes.ack_timeouts, state=True
         )  # type: ignore[assignment]
-        _adopt(graph, nodes.core)
+        core = _adopt(graph, nodes.core)
+        self._stops = [graph.retain(core), graph.retain(self.events)]
 
     @property
     def released(self) -> bool:
@@ -253,6 +262,8 @@ class WireBridge:
         for driver in reversed(self._drivers):
             driver.release()
         self._switch.released = True
+        for stop in reversed(self._stops):
+            stop()
 
     def _close_from_graph(self) -> None:
         self.release()
@@ -309,11 +320,12 @@ class WireBridgeAckDriver:
         self, graph: Graph, nodes: _envelope.DriverNodes, switch: _envelope.Released
     ) -> None:
         self._graph = graph
+        self._graph = graph
         self._switch = switch
         self.timeouts: Node[WireBridgeAckTimeout] = _adopt(graph, nodes.timeouts)
         self.status: Node[WireBridgeAckDriverStatus] = _adopt(graph, nodes.status)
         self.issues: Node[WireBridgeAckDriverIssue] = _adopt(graph, nodes.issues)
-        _adopt(graph, nodes.core)
+        self._stop = graph.retain(_adopt(graph, nodes.core))
 
     @property
     def released(self) -> bool:
@@ -324,7 +336,9 @@ class WireBridgeAckDriver:
     def release(self) -> None:
         """Stop deriving timeout facts; idempotent."""
 
+        self._graph._check_thread(allow_closed=True)
         self._switch.released = True
+        self._stop()
 
     def _close_from_graph(self) -> None:
         self.release()

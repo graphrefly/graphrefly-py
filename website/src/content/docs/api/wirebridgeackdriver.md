@@ -9,7 +9,7 @@ description: "Derives ack-timeout facts from a clock node and writes them to its
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_wire_facade.py:301`
+**Source:** `src/graphrefly/_wire_facade.py:312`
 
 ## Signature
 
@@ -43,4 +43,4 @@ release() -> None
 
 Stop deriving timeout facts; idempotent.
 
-Source: `src/graphrefly/_wire_facade.py:324`
+Source: `src/graphrefly/_wire_facade.py:336`

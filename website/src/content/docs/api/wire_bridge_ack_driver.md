@@ -9,7 +9,7 @@ description: "Derive ack-timeout facts for ``bridge`` from ``clock``, a node of 
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_wire_facade.py:333`
+**Source:** `src/graphrefly/_wire_facade.py:347`
 
 ## Signature
 
