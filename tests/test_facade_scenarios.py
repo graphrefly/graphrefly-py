@@ -98,7 +98,7 @@ class Kept:
 
 @pytest.mark.parametrize("policy", ["auto", "manual"])
 def test_c3_one_invalidate_out_private_state_kept_policy_decides(policy: str) -> None:
-    g = Graph("c3")
+    g = Graph()
     s = g.state(1, name="S")
     b = g.node([s], echo, name="B")
     c = g.node([s], echo, name="C")
@@ -138,7 +138,7 @@ def test_c3_one_invalidate_out_private_state_kept_policy_decides(policy: str) ->
 
 
 def test_c4_the_async_result_is_a_later_wave_and_nothing_waits_across_it() -> None:
-    g = Graph("c4")
+    g = Graph()
     a = g.state(0, name="A")
     b = g.node([a], echo, name="B")
     work = Kept()  # starts work and sends nothing in its run
@@ -168,7 +168,7 @@ def test_c4_the_async_result_is_a_later_wave_and_nothing_waits_across_it() -> No
 
 
 def test_c6_a_write_to_upstream_is_a_later_request_never_a_reentry() -> None:
-    g = Graph("c6")
+    g = Graph()
     s = g.state(name="S")
     d = g.derived([s], lambda n: n + 1, name="D")
     entered = [0]
@@ -203,7 +203,7 @@ def test_c6_a_write_to_upstream_is_a_later_request_never_a_reentry() -> None:
 
 
 def test_c11_an_operator_rewires_itself_to_each_inner_for_its_lifetime() -> None:
-    g = Graph("c11")
+    g = Graph()
     s = g.state(name="S")
     cleaned: list[str] = []
     inners: dict[str, tuple[Node[Any], Kept]] = {}
@@ -256,7 +256,7 @@ def test_c11_an_operator_rewires_itself_to_each_inner_for_its_lifetime() -> None
 
 
 def test_c12_equal_values_stay_data_a_silent_node_settles_and_resolved_is_rejected() -> None:
-    g = Graph("c12")
+    g = Graph()
     source = Kept()
     src = g.node([], source, name="src")
     seen = sink(src)
@@ -285,7 +285,7 @@ def test_c12_equal_values_stay_data_a_silent_node_settles_and_resolved_is_reject
 
 
 def _c15() -> tuple[Graph, State[Any], State[Any], list[tuple[list[str], object]], Arrays]:
-    g = Graph("c15")
+    g = Graph()
     a = g.state(1, name="A")
     a2 = g.state(1, name="A2")
     b = g.node([a], echo, name="B")
@@ -333,7 +333,7 @@ def test_c15_a_dependencys_terminal_settles_its_pending_mark() -> None:
 
 
 def test_c16_a_quiet_node_absorbs_its_waves_and_marks_its_cone_on_invalidate() -> None:
-    g = Graph("c16")
+    g = Graph()
     a = g.state(0, name="A")
     held: list[object] = []
     q = Kept(lambda ctx: held.extend(v for wave in ctx.deps[0].waves for v in wave))
@@ -373,7 +373,7 @@ def test_c16_a_quiet_node_absorbs_its_waves_and_marks_its_cone_on_invalidate() -
 
 @pytest.mark.parametrize("order", ["error-first", "complete-first"])
 def test_c17_auto_complete_after_every_dependency_ended_in_any_order(order: str) -> None:
-    g = Graph("c17")
+    g = Graph()
     b = g.state(0, name="B")
     c = g.state(0, name="C")
     runs: list[list[str]] = []
@@ -405,7 +405,7 @@ def test_c17_auto_complete_after_every_dependency_ended_in_any_order(order: str)
 
 
 def test_c17_only_the_last_terminal_alone_runs_the_function_then_completes() -> None:
-    g = Graph("c17-last")
+    g = Graph()
     b = g.state(1, name="B")
     c = g.state(2, name="C")
     runs: list[list[str]] = []
@@ -424,7 +424,7 @@ def test_c17_only_the_last_terminal_alone_runs_the_function_then_completes() -> 
 
 
 def test_c23_ctx_deps_shows_arrays_terminal_and_latest_value() -> None:
-    g = Graph("c23")
+    g = Graph()
     x = g.state(0, name="X")
     plan: list[Callable[[Ctx], None]] = []
 
@@ -482,7 +482,7 @@ def test_c23_ctx_deps_shows_arrays_terminal_and_latest_value() -> None:
 def test_c26_c42_a_message_outside_the_set_is_rejected_before_anything_applies(
     array: list[tuple[object, ...]],
 ) -> None:
-    g = Graph("closed")
+    g = Graph()
     a = g.state(1, name="A")
     caught: list[str] = []
 
@@ -506,7 +506,7 @@ def test_c26_c42_a_message_outside_the_set_is_rejected_before_anything_applies(
 
 def test_c28_arrays_stay_intact_and_requests_from_sinks_wait_for_the_fanout() -> None:
     reports: list[HostReport] = []
-    g = Graph("c28", report=reports.append)
+    g = Graph(report=reports.append)
     x = g.state(0, name="X")
     plan: list[Callable[[Ctx], None]] = []
     an = g.node([x], lambda ctx: plan.pop(0)(ctx) if plan else None, name="A")
@@ -578,7 +578,7 @@ def test_c28_arrays_stay_intact_and_requests_from_sinks_wait_for_the_fanout() ->
 
 def test_c29_a_batch_commits_once_and_its_topology_requests_follow() -> None:
     reports: list[HostReport] = []
-    g = Graph("c29", report=reports.append)
+    g = Graph(report=reports.append)
     a = g.state(0, name="A")
     c = g.state("c", name="C")
     kept = Kept(echo)
@@ -640,7 +640,7 @@ def test_c29_a_batch_commits_once_and_its_topology_requests_follow() -> None:
 
 def test_c33_a_closed_lifetime_revokes_old_ctx_and_cleanup_failures_stay_isolated() -> None:
     reports: list[HostReport] = []
-    g = Graph("c33", report=reports.append)
+    g = Graph(report=reports.append)
     a = g.state(1, name="A")
     order: list[str] = []
     p = g.node([a], echo, name="P", setup=lambda ctx: lambda: order.append("P cleanup"))
@@ -691,7 +691,7 @@ def test_c33_a_closed_lifetime_revokes_old_ctx_and_cleanup_failures_stay_isolate
 
 def test_c34_terminal_fanout_closes_the_lifetime_and_an_ended_node_gives_its_snapshot() -> None:
     reports: list[HostReport] = []
-    g = Graph("c34", report=reports.append)
+    g = Graph(report=reports.append)
     t = g.state(name="T")
     cleaned: list[str] = []
 
@@ -725,7 +725,7 @@ def test_c34_terminal_fanout_closes_the_lifetime_and_an_ended_node_gives_its_sna
 
 def test_c35_rewire_keeps_the_instance_and_a_cycle_is_refused_when_it_runs() -> None:
     reports: list[HostReport] = []
-    g = Graph("c35", report=reports.append)
+    g = Graph(report=reports.append)
     b = g.state(1, name="B")
     c = g.state(2, name="C")
     e = g.state(0, name="E")
@@ -798,7 +798,7 @@ def test_c35_rewire_keeps_the_instance_and_a_cycle_is_refused_when_it_runs() -> 
 
 @pytest.mark.parametrize("policy", ["manual", "auto"])
 def test_c36_one_invocation_sees_a_value_and_its_terminal(policy: str) -> None:
-    g = Graph("c36")
+    g = Graph()
     x = g.state(0, name="X")
     plan: list[Callable[[Ctx], None]] = []
     a = g.node([x], lambda ctx: plan.pop(0)(ctx) if plan else None, name="A")
@@ -825,7 +825,7 @@ def test_c36_one_invocation_sees_a_value_and_its_terminal(policy: str) -> None:
 
 
 def test_c36_data_then_invalidate_is_published_as_invalidate() -> None:
-    g = Graph("c36b")
+    g = Graph()
     x = g.state(0, name="X")
     plan: list[Callable[[Ctx], None]] = []
     a = g.node([x], lambda ctx: plan.pop(0)(ctx) if plan else ctx.emit(1), name="A")
@@ -843,7 +843,7 @@ def test_c36_data_then_invalidate_is_published_as_invalidate() -> None:
 
 
 def test_c37_rewire_keeps_the_lifetime_and_a_closed_one_drops_late_output() -> None:
-    g = Graph("c37")
+    g = Graph()
     a = g.state(1, name="A")
     b = g.state(2, name="B")
     kept = Kept()
@@ -882,7 +882,7 @@ def test_c38_restore_runs_no_callback_and_refreshes_once_on_a_changed_input() ->
     def no_make(ref: str, config: object, name: str) -> Any:
         raise AssertionError("total makes no other recipe")
 
-    g = Graph("c38")
+    g = Graph()
     a = g.state(1, name="a")
     p = g.node([a], total(None, RecipeContext(g, "p", no_make)), name="p", recipe=Recipe("total"))
     p.subscribe(lambda _: None)
@@ -898,7 +898,7 @@ def test_c38_restore_runs_no_callback_and_refreshes_once_on_a_changed_input() ->
     ra.set(5)
     assert calls[0] == 1 and rp.cache() == 5
 
-    local = Graph("c38-local")
+    local = Graph()
     la = local.state(1, name="a")
     local.node([la], echo, name="local")
     with pytest.raises(GraphReflyRestoreError, match="^not restorable: local: local-only"):
@@ -909,7 +909,7 @@ def test_c38_restore_runs_no_callback_and_refreshes_once_on_a_changed_input() ->
 
 
 def test_c40_an_ended_node_can_be_subscribed_depended_on_and_replaced() -> None:
-    g = Graph("c40")
+    g = Graph()
     s = g.state(1, name="S")
     s.complete()
     t = g.state(name="T")
@@ -939,7 +939,7 @@ def test_c40_an_ended_node_can_be_subscribed_depended_on_and_replaced() -> None:
 
 
 def test_c41_the_snapshot_is_the_last_array_that_carried_data() -> None:
-    g = Graph("c41")
+    g = Graph()
     x = g.state(0, name="X")
     plan: list[Callable[[Ctx], None]] = [lambda ctx: ctx.emit(1)]
     n = g.node([x], lambda ctx: plan.pop(0)(ctx) if plan else None, name="N")
@@ -974,7 +974,7 @@ def test_c41_the_snapshot_is_the_last_array_that_carried_data() -> None:
 
 
 def test_c44_value_and_quiet_clauses() -> None:
-    g = Graph("c44")
+    g = Graph()
     a = g.state(0, name="A")
     f = g.node(
         [a],
@@ -1008,7 +1008,7 @@ def test_c44_value_and_quiet_clauses() -> None:
 
 @pytest.mark.parametrize("policy", ["complete", "invalidate"])
 def test_c44_a_wave_of_terminals_or_invalidates_holds_a_manual_fan_in(policy: str) -> None:
-    g = Graph("c44-fan-in")
+    g = Graph()
     s = g.state(1, name="S")
     b = g.node([s], echo, name="B")
     c = g.node([s], echo, name="C")
@@ -1037,7 +1037,7 @@ def test_c44_a_wave_of_terminals_or_invalidates_holds_a_manual_fan_in(policy: st
 def test_a_derived_chain_three_times_the_recursion_limit_runs_and_closes() -> None:
     import sys
 
-    g = Graph("chain")
+    g = Graph()
     head = g.state(0, name="n0")
     node: Node[Any] = head
     for i in range(1, 3 * sys.getrecursionlimit() + 1):
@@ -1053,7 +1053,7 @@ def test_a_derived_chain_three_times_the_recursion_limit_runs_and_closes() -> No
 
 
 def test_c48_find_describe_observe_and_retain() -> None:
-    g = Graph("c48")
+    g = Graph()
     a = g.state(1, name="a")
     b = g.derived([a], lambda v: v * 10, name="b")
     c = g.derived([a], lambda v: v, name="c")

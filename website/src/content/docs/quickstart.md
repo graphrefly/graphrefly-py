@@ -19,7 +19,7 @@ Create a graph:
 from graphrefly import DATA, Graph
 
 
-with Graph("counter") as graph:
+with Graph() as graph:
     count = graph.state(0, name="count")
     doubled = graph.derived([count], lambda value: value * 2, name="doubled")
 
@@ -47,7 +47,7 @@ on every wave it is given; `setup` runs once per lifetime and may return a clean
 from graphrefly import Ctx, Graph
 
 
-with Graph("advanced") as graph:
+with Graph() as graph:
     source = graph.state(1, name="source")
 
     def add_ten(ctx: Ctx) -> None:
@@ -84,7 +84,7 @@ async def fetch_value() -> int:
 
 
 async def main() -> None:
-    graph = Graph("async-demo")
+    graph = Graph()
     async with trio.open_nursery() as nursery:
         node = from_awaitable(graph, trio_runner(nursery), fetch_value, name="value")
         with node.subscribe(lambda array: print([m[0] for m in array])):

@@ -26,7 +26,7 @@ pip install graphrefly
 ```python
 from graphrefly import Graph
 
-with Graph("hello") as graph:
+with Graph() as graph:
     count = graph.state(1, name="count")
     doubled = graph.derived([count], lambda value: value * 2, name="doubled")
 

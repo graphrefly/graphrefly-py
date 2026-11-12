@@ -9,12 +9,12 @@ description: "Build a new graph from ``checkpoint`` (R-checkpoint); no callback 
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_facade.py:1364`
+**Source:** `src/graphrefly/_facade.py:1356`
 
 ## Signature
 
 ```python
-restore_graph(checkpoint: GraphCheckpoint, *, registry: Mapping[str, RecipeFactory], name: str | None = None, report: Callable[[HostReport], object] | None = None)
+restore_graph(checkpoint: GraphCheckpoint, *, registry: Mapping[str, RecipeFactory], report: Callable[[HostReport], object] | None = None)
 ```
 
 ## Description

@@ -46,7 +46,7 @@ python -m venv /tmp/graphrefly-smoke
 /tmp/graphrefly-smoke/bin/python - <<'PY'
 from graphrefly import Graph
 
-with Graph("smoke") as graph:
+with Graph() as graph:
     source = graph.state(1)
     doubled = graph.derived([source], lambda value: value * 2)
     with doubled.subscribe(lambda array: None):

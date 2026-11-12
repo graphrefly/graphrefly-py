@@ -11,7 +11,7 @@ typing, lifetime, and exception behavior shipped by `graphrefly`.
 ```python
 from graphrefly import Graph
 
-with Graph("example") as graph:
+with Graph() as graph:
     source = graph.state(2, name="source")
     doubled = graph.derived([source], lambda value: value * 2, name="doubled")
 
@@ -28,7 +28,7 @@ Use a context manager when a graph should reject later facade use after cleanup:
 ```python
 from graphrefly import Graph
 
-with Graph("lifetime") as graph:
+with Graph() as graph:
     node = graph.state("open", name="state")
     assert node.cache() == "open"
 ```

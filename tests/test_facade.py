@@ -169,6 +169,44 @@ def test_host_input_lives_only_on_state() -> None:
         assert not hasattr(Ctx, name)
 
 
+def test_graph_has_no_graph_name_constructor_or_property() -> None:
+    with pytest.raises(TypeError):
+        Graph("removed")  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        Graph(name="removed")  # type: ignore[call-arg]
+    with Graph() as graph:
+        assert not hasattr(graph, "name")
+        assert not hasattr(graph, "_name")
+        checkpoint = graph.checkpoint()
+    with pytest.raises(TypeError):
+        graphrefly.restore_graph(checkpoint, registry={}, name="removed")
+
+
+@pytest.mark.parametrize("restored", [False, True])
+def test_graph_report_keyword_still_delivers_subscriber_failures(restored: bool) -> None:
+    reports: list[HostReport] = []
+    with Graph() as original:
+        original.state(1, name="source")
+        checkpoint = original.checkpoint()
+    graph = (
+        graphrefly.restore_graph(checkpoint, registry={}, report=reports.append)
+        if restored
+        else Graph(report=reports.append)
+    )
+    with graph:
+        node = graph.find("source") if restored else graph.state(1, name="source")
+        assert node is not None and node.name == "source"
+        assert not hasattr(graph, "name")
+
+        def fail(_: object) -> None:
+            raise RuntimeError("report preserved")
+
+        node.subscribe(fail)
+        assert len(reports) == 1
+        assert isinstance(reports[0].error, SubscriberCallbackError)
+        assert str(reports[0].error) == "report preserved"
+
+
 def test_no_equality_dedup_surface() -> None:
     from inspect import signature
 
@@ -180,7 +218,7 @@ def test_no_equality_dedup_surface() -> None:
 
 
 def test_subscribe_gets_one_tuple_per_array_starting_with_start() -> None:
-    with Graph("arrays") as g:
+    with Graph() as g:
         a = g.state(1, name="a")
         d = g.derived([a], lambda v: v * 2, name="d")
         seen: Arrays = []
@@ -193,7 +231,7 @@ def test_subscribe_gets_one_tuple_per_array_starting_with_start() -> None:
 
 
 def test_none_is_valid_data_and_absence_is_not_none() -> None:
-    with Graph("none") as g:
+    with Graph() as g:
         a = g.state(None, name="a")
         assert a.cache() is None and a.has_value
         empty = g.state(name="empty")
@@ -208,7 +246,7 @@ def test_none_is_valid_data_and_absence_is_not_none() -> None:
 
 
 def test_set_with_a_callable_computes_from_the_current_value() -> None:
-    with Graph("set-fn") as g:
+    with Graph() as g:
         a = g.state(1, name="a")
         seen: Arrays = []
         a.subscribe(seen.append)
@@ -224,7 +262,7 @@ def test_set_with_a_callable_computes_from_the_current_value() -> None:
 
 
 def test_invalidate_complete_and_error_are_state_host_inputs() -> None:
-    with Graph("host") as g:
+    with Graph() as g:
         a = g.state(1, name="a")
         seen: Arrays = []
         a.subscribe(seen.append)
@@ -248,7 +286,7 @@ def test_invalidate_complete_and_error_are_state_host_inputs() -> None:
 
 
 def test_batch_returns_its_result_commits_once_and_a_raising_body_commits_nothing() -> None:
-    with Graph("batch") as g:
+    with Graph() as g:
         a = g.state(0, name="a")
         seen: Arrays = []
         a.subscribe(seen.append)
@@ -283,7 +321,7 @@ def test_batch_returns_its_result_commits_once_and_a_raising_body_commits_nothin
 
 
 def test_node_ctx_reads_inputs_and_emits_one_array_per_call() -> None:
-    with Graph("ctx") as g:
+    with Graph() as g:
         a = g.state(None, name="a")
         b = g.state(name="b")
         reads: list[tuple[object, ...]] = []
@@ -316,7 +354,7 @@ def test_node_ctx_reads_inputs_and_emits_one_array_per_call() -> None:
 
 
 def test_ctx_deps_terminal_and_invalidated_reads() -> None:
-    with Graph("ctx-reads") as g:
+    with Graph() as g:
         a = g.state(1, name="a")
         seen: list[object] = []
 
@@ -335,7 +373,7 @@ def test_ctx_deps_terminal_and_invalidated_reads() -> None:
 
 
 def test_ctx_down_sends_mixed_arrays_and_rejects_kernel_only_types() -> None:
-    with Graph("down") as g:
+    with Graph() as g:
         a = g.state(1, name="a")
         rejected: list[str] = []
 
@@ -355,7 +393,7 @@ def test_ctx_down_sends_mixed_arrays_and_rejects_kernel_only_types() -> None:
 
 
 def test_a_callback_exception_is_the_nodes_error_as_graph_callback_error() -> None:
-    with Graph("error") as g:
+    with Graph() as g:
         a = g.state(1, name="a")
         boom = ValueError("boom")
 
@@ -377,7 +415,7 @@ def test_a_callback_exception_is_the_nodes_error_as_graph_callback_error() -> No
 
 
 def test_an_uncaught_rejected_down_is_the_nodes_error() -> None:
-    with Graph("reject") as g:
+    with Graph() as g:
         a = g.state(1, name="a")
         node = g.node([a], lambda ctx: ctx.down([("START",)]))
         seen: Arrays = []
@@ -391,7 +429,7 @@ def test_async_callbacks_are_rejected_at_registration() -> None:
     async def callback(*_: object) -> None:
         return None
 
-    with Graph("async") as g:
+    with Graph() as g:
         a = g.state(1)
         with pytest.raises(GraphReflyRuntimeError, match="async"):
             g.derived([a], callback)
@@ -405,7 +443,7 @@ def test_an_awaitable_returned_by_a_callback_is_an_error_without_leaking_it() ->
     async def later() -> None:
         return None
 
-    with Graph("awaitable") as g:
+    with Graph() as g:
         a = g.state(1)
         node = g.node([a], lambda ctx: later())
         seen: Arrays = []
@@ -417,7 +455,7 @@ def test_an_awaitable_returned_by_a_callback_is_an_error_without_leaking_it() ->
 
 def test_setup_runs_once_per_lifetime_and_its_cleanup_at_close() -> None:
     log: list[str] = []
-    with Graph("setup") as g:
+    with Graph() as g:
         a = g.state(1, name="a")
 
         def setup(ctx: Ctx) -> Any:
@@ -438,7 +476,7 @@ def test_setup_runs_once_per_lifetime_and_its_cleanup_at_close() -> None:
 
 def test_a_cleanup_failure_goes_to_the_host_reporter_not_the_node() -> None:
     reports: list[HostReport] = []
-    with Graph("cleanup", report=reports.append) as g:
+    with Graph(report=reports.append) as g:
         a = g.state(1)
 
         def setup(ctx: Ctx) -> Any:
@@ -456,7 +494,7 @@ def test_a_cleanup_failure_goes_to_the_host_reporter_not_the_node() -> None:
 
 
 def test_policies_quiet_and_manual_invalidate() -> None:
-    with Graph("policies") as g:
+    with Graph() as g:
         a = g.state(1, name="a")
         runs: list[list[bool]] = []
 
@@ -474,7 +512,7 @@ def test_policies_quiet_and_manual_invalidate() -> None:
 
 
 def test_ctx_rewire_replace_and_definition() -> None:
-    with Graph("topology") as g:
+    with Graph() as g:
         a = g.state(1, name="a")
         b = g.state(10, name="b")
         kept: list[Ctx] = []
@@ -502,7 +540,7 @@ def test_ctx_rewire_replace_and_definition() -> None:
 
 
 def test_describe_is_exactly_the_topology_of_each_node() -> None:
-    with Graph("describe") as g:
+    with Graph() as g:
         a = g.state(1, name="a")
         d = g.derived([a], lambda v: v, name="d")
         assert g.describe() == [
@@ -513,7 +551,7 @@ def test_describe_is_exactly_the_topology_of_each_node() -> None:
 
 
 def test_observe_is_a_subscriber_with_one_event_per_array() -> None:
-    with Graph("observe") as g:
+    with Graph() as g:
         a = g.state(1, name="a")
         d = g.derived([a], lambda v: v + 1, name="d")
         events: list[GraphEvent] = []
@@ -540,7 +578,7 @@ def test_observe_is_a_subscriber_with_one_event_per_array() -> None:
 
 
 def test_an_observer_stopped_in_its_callback_gets_nothing_more() -> None:
-    with Graph("observe-stop") as g:
+    with Graph() as g:
         a = g.state(1, name="a")
         b = g.derived([a], lambda v: v * 10, name="b")
         events: list[GraphEvent] = []
@@ -557,7 +595,7 @@ def test_an_observer_stopped_in_its_callback_gets_nothing_more() -> None:
 
 def test_an_observer_failure_goes_to_the_reporter() -> None:
     reports: list[HostReport] = []
-    with Graph("observe-errors", report=reports.append) as g:
+    with Graph(report=reports.append) as g:
         a = g.state(1)
 
         def failing(event: GraphEvent) -> None:
@@ -577,7 +615,7 @@ def test_an_observer_failure_goes_to_the_reporter() -> None:
 
 def test_a_subscriber_failure_goes_to_the_reporter_and_nothing_keeps_it() -> None:
     reports: list[HostReport] = []
-    with Graph("subscriber", report=reports.append) as g:
+    with Graph(report=reports.append) as g:
         a = g.state(0)
         later: Arrays = []
 
@@ -599,7 +637,7 @@ def test_a_subscriber_failure_goes_to_the_reporter_and_nothing_keeps_it() -> Non
 def test_without_a_reporter_a_subscriber_failure_is_logged(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    with Graph("logged") as g:
+    with Graph() as g:
         a = g.state(0)
 
         def failing(_: object) -> None:
@@ -616,7 +654,7 @@ def test_without_a_reporter_a_subscriber_failure_is_logged(
 def test_a_fatal_in_a_subscriber_propagates_and_poisons_the_facade(
     fatal: type[BaseException],
 ) -> None:
-    g = Graph("fatal-sink")
+    g = Graph()
     a = g.state(0)
 
     def sink(array: tuple[Message[int], ...]) -> None:
@@ -636,7 +674,7 @@ def test_a_fatal_in_a_subscriber_propagates_and_poisons_the_facade(
 def test_a_fatal_from_a_callback_propagates_without_a_graph_error(
     where: str, fatal: type[BaseException]
 ) -> None:
-    g = Graph("fatal")
+    g = Graph()
     a = g.state(0, name="a")
     armed = [False]
 
@@ -679,7 +717,7 @@ def test_a_fatal_from_a_callback_propagates_without_a_graph_error(
 
 
 def test_close_releases_subscriptions_and_rejects_later_use() -> None:
-    g = Graph("close")
+    g = Graph()
     a = g.state(1, name="a")
     stop = a.subscribe(lambda _: None)
     g.close()
@@ -693,7 +731,7 @@ def test_close_releases_subscriptions_and_rejects_later_use() -> None:
 
 
 def test_a_dropped_subscription_handle_stays_subscribed_until_close() -> None:
-    g = Graph("drop")
+    g = Graph()
     a = g.state(1, name="a")
     seen: Arrays = []
     a.subscribe(seen.append)
@@ -710,7 +748,7 @@ def test_subscribe_observe_and_retain_return_a_stop_to_call() -> None:
     subscribe or a retain is an unsubscribe request: called during a wave, it takes
     effect when the wave ends (R-request-order, C-33; graphrefly-py:D17)."""
 
-    with Graph("stop") as g:
+    with Graph() as g:
         a = g.state(1, name="a")
 
         def two_arrays(ctx: Ctx) -> None:  # two arrays in one run
@@ -754,7 +792,7 @@ def test_subscribe_observe_and_retain_return_a_stop_to_call() -> None:
 
 
 def test_retain_is_a_subscription_that_ignores_what_it_receives() -> None:
-    with Graph("retain") as g:
+    with Graph() as g:
         a = g.state(1)
         runs: list[int] = []
         d = g.derived([a], lambda v: runs.append(v) or v)
@@ -774,14 +812,14 @@ def test_retain_is_a_subscription_that_ignores_what_it_receives() -> None:
         release_d = g.retain(d)
         g.close()  # a retain is closed with the graph's other subscriptions
         assert release_d.closed
-    other = Graph("other")
+    other = Graph()
     with pytest.raises(GraphReflyRuntimeError, match="node must belong"):
         other.retain(d)
     other.close()
 
 
 def test_close_uses_the_reverse_resource_stack_and_continues_after_an_error() -> None:
-    g = Graph("stack")
+    g = Graph()
     order: list[str] = []
 
     class Resource:
@@ -802,7 +840,7 @@ def test_close_uses_the_reverse_resource_stack_and_continues_after_an_error() ->
 
 
 def test_a_graph_is_bound_to_its_owner_thread() -> None:
-    g = Graph("thread")
+    g = Graph()
     a = g.state(1)
     errors: list[BaseException] = []
 
@@ -820,7 +858,7 @@ def test_a_graph_is_bound_to_its_owner_thread() -> None:
 
 
 def test_find_returns_the_nodes_own_handle_and_a_state_as_state() -> None:
-    with Graph("find") as g:
+    with Graph() as g:
         a = g.state(1, name="a")
         d = g.derived([a], lambda v: v, name="d")
         assert g.find("a") is a and isinstance(g.find("a"), State)
@@ -830,7 +868,7 @@ def test_find_returns_the_nodes_own_handle_and_a_state_as_state() -> None:
 
 
 def test_node_names_are_unique_and_auto_names_are_reserved() -> None:
-    with Graph("names") as g:
+    with Graph() as g:
         g.state(1, name="a")
         with pytest.raises(GraphReflyValueError, match="already used"):
             g.state(2, name="a")
@@ -859,7 +897,7 @@ def _no_make(ref: str, config: object, name: str) -> Any:
 
 def test_checkpoint_and_restore_graph_round_trip() -> None:
     reg = _registry()
-    g = Graph("cp")
+    g = Graph()
     a = g.state(1, name="a")
     built = reg["total"](100, RecipeContext(g, "t", _no_make))
     t = g.node([a], built, name="t", recipe=Recipe("total", 100))
@@ -886,12 +924,12 @@ def test_a_node_that_cannot_be_restored_is_refused_as_not_restorable() -> None:
     its place: a local-only node fails at restore, private state that is not JSON at
     capture."""
 
-    with Graph("cp-errors") as g:
+    with Graph() as g:
         g.state((1, 2), name="tuple")
         with pytest.raises(GraphReflyCheckpointError) as caught:
             g.checkpoint()
         assert str(caught.value) == "not restorable: tuple: its retained values are not JSON"
-    with Graph("state") as g:
+    with Graph() as g:
         a = g.state(1, name="a")
 
         def keep(ctx: Ctx) -> None:
@@ -902,7 +940,7 @@ def test_a_node_that_cannot_be_restored_is_refused_as_not_restorable() -> None:
             g.checkpoint()
         assert str(caught.value) == "not restorable: k: its private state is not JSON"
         assert type(caught.value) is GraphReflyCheckpointError
-    with Graph("local") as g:
+    with Graph() as g:
         a = g.state(1)
         g.node([a], lambda ctx: None, name="raw")
         cp = g.checkpoint()  # capture keeps it, marked local-only
@@ -961,7 +999,7 @@ def test_local_only_json_node_can_be_captured_but_not_restored() -> None:
 
 def test_a_cleanup_that_graph_close_runs_can_still_use_its_ctx() -> None:
     reports: list[HostReport] = []
-    g = Graph("close", report=reports.append)
+    g = Graph(report=reports.append)
     a = g.state(1)
     read: list[object] = []
 
@@ -976,7 +1014,7 @@ def test_a_cleanup_that_graph_close_runs_can_still_use_its_ctx() -> None:
 
 def test_definition_follows_the_instance_the_kernel_runs() -> None:
     reports: list[HostReport] = []
-    g = Graph("definition", report=reports.append)
+    g = Graph(report=reports.append)
     a = g.state(1, name="a")
     b = g.state(2, name="b")
 
@@ -1017,7 +1055,7 @@ def test_a_recipe_factory_can_make_another_registered_recipe() -> None:
         return inner
 
     reg: dict[str, Any] = {"plus": plus, "twice": twice}
-    g = Graph("make")
+    g = Graph()
 
     def make(ref: str, config: object, name: str) -> Any:
         return reg[ref](config, RecipeContext(g, name, make)), None
@@ -1035,7 +1073,7 @@ def test_a_recipe_factory_can_make_another_registered_recipe() -> None:
 
 
 def test_set_takes_functions_methods_and_partials_as_updaters_others_as_values() -> None:
-    g = Graph("set")
+    g = Graph()
     s = g.state(0)
     s.set(str)  # a class is a value, as Graph.state(str) takes it
     assert s.cache() is str
@@ -1070,7 +1108,7 @@ def test_set_takes_functions_methods_and_partials_as_updaters_others_as_values()
 def test_an_updater_returning_an_equal_scalar_writes_nothing(
     start: object, updater: Callable[[Any], object]
 ) -> None:
-    g = Graph("same")
+    g = Graph()
     s = g.state(start)
     seen: Arrays = []
     s.subscribe(seen.append)
@@ -1079,7 +1117,7 @@ def test_an_updater_returning_an_equal_scalar_writes_nothing(
 
 
 def test_an_updater_returning_minus_zero_for_zero_or_an_equal_list_writes() -> None:
-    g = Graph("differ")
+    g = Graph()
     s = g.state(0.0)
     seen: Arrays = []
     s.subscribe(seen.append)
@@ -1098,7 +1136,7 @@ def test_an_updater_returning_minus_zero_for_zero_or_an_equal_list_writes() -> N
 def test_derived_and_effect_keep_what_arrived_while_their_gate_was_closed() -> None:
     # Q1 of the D797 review: the first-run gate lives in derived and effect, and
     # inputs that arrive while it is closed are kept, not dropped.
-    g = Graph("gate")
+    g = Graph()
     a = g.state(0, name="a")
     b = g.state(name="b")  # empty: the gate stays closed
     runs: list[tuple[object, object]] = []
@@ -1131,7 +1169,7 @@ def test_value_sugar_sees_only_values_whatever_the_protocol_does() -> None:
     """derived and effect never see PENDING, RESOLVED, START, INVALIDATE or a terminal,
     and never write a message: their callbacks get dependency values only."""
 
-    with Graph("primary-api-clean") as g:
+    with Graph() as g:
         a = g.state(1, name="a")
         b = g.state(10, name="b")
 
@@ -1187,7 +1225,7 @@ def test_derived_effect_and_producer_take_a_recipe_and_restore_as_the_same_sugar
         "log": lambda config, at: effects.append,
         "seven": lambda config, at: lambda: 7,
     }
-    g = Graph("sugar-recipes")
+    g = Graph()
     a = g.state(1, name="a")
     d = g.derived([a], plus(10, RecipeContext(g, "d", _no_make)), "d", recipe=Recipe("plus", 10))
     e = g.effect([d], effects.append, "e", recipe=Recipe("log"))
@@ -1225,7 +1263,7 @@ def test_a_restored_derived_whose_dependency_only_ended_does_not_recompute() -> 
 
         return add
 
-    g = Graph("ended-input")
+    g = Graph()
     a = g.state(1, name="a")
     b = g.state(2, name="b")
     d = g.derived([a, b], total(None, RecipeContext(g, "d", _no_make)), "d", recipe=Recipe("t"))

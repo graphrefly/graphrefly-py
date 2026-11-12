@@ -157,7 +157,7 @@ def test_network_adapter_public_surface_and_dataclasses():
 
 
 def test_from_http_emits_response_data_then_complete():
-    graph = Graph("py-from-http-smoke")
+    graph = Graph()
     runner = ManualRunner()
     driver = ManualHttpDriver(
         HttpResponse(
@@ -202,7 +202,7 @@ def test_from_http_emits_response_data_then_complete():
 
 
 def test_from_http_driver_error_becomes_graph_error():
-    graph = Graph("py-from-http-error")
+    graph = Graph()
     runner = ManualRunner()
     driver = ManualHttpDriver(GraphReflyRuntimeError("network down"))
     seen: list[Message[object]] = []
@@ -216,7 +216,7 @@ def test_from_http_driver_error_becomes_graph_error():
 
 
 def test_from_http_requires_explicit_runner_and_driver():
-    graph = Graph("py-from-http-missing")
+    graph = Graph()
     runner = ManualRunner()
 
     with pytest.raises(GraphReflyValueError, match="explicit AsyncRunner"):
@@ -226,7 +226,7 @@ def test_from_http_requires_explicit_runner_and_driver():
 
 
 def test_from_http_deactivation_cancels_job_before_driver_runs():
-    graph = Graph("py-from-http-cancel")
+    graph = Graph()
     runner = ManualRunner()
     driver = ManualHttpDriver(HttpResponse(status=200, body=b"late"))
     seen: list[Message[object]] = []
@@ -243,7 +243,7 @@ def test_from_http_deactivation_cancels_job_before_driver_runs():
 
 
 def test_from_sse_http_stream_fallback_parses_split_events_and_complete():
-    graph = Graph("py-from-sse-happy")
+    graph = Graph()
     runner = ManualRunner()
     driver = ManualHttpStreamDriver(
         [
@@ -278,7 +278,7 @@ def test_from_sse_http_stream_fallback_parses_split_events_and_complete():
 
 
 def test_from_sse_rejects_bad_head_and_ignores_later_chunks():
-    graph = Graph("py-from-sse-bad-head")
+    graph = Graph()
     runner = ManualRunner()
     driver = ManualHttpStreamDriver(
         [
@@ -301,7 +301,7 @@ def test_from_sse_rejects_bad_head_and_ignores_later_chunks():
 
 
 def test_from_sse_closes_host_stream_on_terminal_lifecycle_error():
-    graph = Graph("py-from-sse-close-on-error")
+    graph = Graph()
     runner = ManualRunner()
     stream = ClosableAsyncStream(
         [
@@ -324,7 +324,7 @@ def test_from_sse_closes_host_stream_on_terminal_lifecycle_error():
 
 
 def test_from_sse_rejects_illegal_stream_lifecycle():
-    graph = Graph("py-from-sse-lifecycle")
+    graph = Graph()
     runner = ManualRunner()
     chunk_first = ManualHttpStreamDriver(
         [HttpStreamChunkEvent(b"data: nope\n\n"), HttpStreamCompleteEvent()]
@@ -368,7 +368,7 @@ def test_from_sse_rejects_illegal_stream_lifecycle():
 
 
 def test_from_sse_complete_flushes_buffered_data_and_ignores_empty_tail():
-    graph = Graph("py-from-sse-complete-flush")
+    graph = Graph()
     runner = ManualRunner()
     driver = ManualHttpStreamDriver(
         [
@@ -409,7 +409,7 @@ def test_from_sse_complete_flushes_buffered_data_and_ignores_empty_tail():
 
 
 def test_from_sse_invalid_utf8_and_parser_overflow_emit_error():
-    graph = Graph("py-from-sse-parser-errors")
+    graph = Graph()
     runner = ManualRunner()
     invalid_utf8 = ManualHttpStreamDriver(
         [
@@ -455,7 +455,7 @@ def test_from_sse_invalid_utf8_and_parser_overflow_emit_error():
 
 
 def test_from_sse_explicit_stream_error_is_not_swallowed_as_cancellation():
-    graph = Graph("py-from-sse-explicit-cancel-named-error")
+    graph = Graph()
     runner = ManualRunner()
     driver = ManualHttpStreamDriver(
         [
@@ -478,7 +478,7 @@ def test_from_sse_explicit_stream_error_is_not_swallowed_as_cancellation():
 
 
 def test_from_sse_ignores_overlong_retry_without_parser_error():
-    graph = Graph("py-from-sse-overlong-retry")
+    graph = Graph()
     runner = ManualRunner()
     driver = ManualHttpStreamDriver(
         [
@@ -500,7 +500,7 @@ def test_from_sse_ignores_overlong_retry_without_parser_error():
 
 
 def test_from_sse_no_hidden_reconnect_retry_or_last_event_id():
-    graph = Graph("py-from-sse-no-reconnect")
+    graph = Graph()
     runner = ManualRunner()
     driver = ManualHttpStreamDriver(
         [
@@ -524,7 +524,7 @@ def test_from_sse_no_hidden_reconnect_retry_or_last_event_id():
 
 
 def test_from_sse_synchronous_runner_completion_is_fenced():
-    graph = Graph("py-from-sse-eager-runner")
+    graph = Graph()
     runner = EagerRunner()
     driver = ManualHttpStreamDriver(
         [

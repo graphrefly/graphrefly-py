@@ -693,13 +693,11 @@ class Graph:
 
     def __init__(
         self,
-        name: str | None = None,
         *,
         report: Callable[[HostReport], object] | None = None,
     ) -> None:
         self._owner_thread = get_ident()
         self._lifetime = _GraphLifetime(self._owner_thread)
-        self._name = name
         self._report_to = report
         self._kernel = _k.Graph(report=self._on_report)
         self._nodes: dict[str, Node[Any]] = {}
@@ -713,12 +711,6 @@ class Graph:
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         self.close()
-
-    @property
-    def name(self) -> str | None:
-        """Return the graph's name."""
-
-        return self._name
 
     @property
     def closed(self) -> bool:
@@ -1365,7 +1357,6 @@ def restore_graph(
     checkpoint: GraphCheckpoint,
     *,
     registry: Mapping[str, RecipeFactory],
-    name: str | None = None,
     report: Callable[[HostReport], object] | None = None,
 ) -> Graph:
     """Build a new graph from ``checkpoint`` (R-checkpoint); no callback runs.
@@ -1386,7 +1377,7 @@ def restore_graph(
         admitted = _checkpoint._admit(checkpoint)
     except _checkpoint.CheckpointError as error:
         raise GraphReflyRestoreError(str(error)) from error
-    graph = Graph(name, report=report)
+    graph = Graph(report=report)
 
     def build(
         ref: str, config: object, node_name: str

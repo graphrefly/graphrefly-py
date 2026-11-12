@@ -138,7 +138,7 @@ def install_fake_cancel_scope_module(monkeypatch: pytest.MonkeyPatch, name: str)
 
 
 def test_from_awaitable_source_emits_data_then_complete():
-    graph = Graph("py-from-awaitable-smoke")
+    graph = Graph()
     runner = ManualRunner()
     seen: list[Message[object]] = []
     calls = 0
@@ -166,7 +166,7 @@ def test_from_awaitable_source_emits_data_then_complete():
 
 
 def test_from_async_iter_source_emits_yields_then_complete():
-    graph = Graph("py-from-async-iter-smoke")
+    graph = Graph()
     runner = ManualRunner()
     seen: list[Message[object]] = []
 
@@ -185,7 +185,7 @@ def test_from_async_iter_source_emits_yields_then_complete():
 
 def test_asyncio_runner_uses_caller_owned_loop():
     async def main() -> None:
-        graph = Graph("py-asyncio-runner-smoke")
+        graph = Graph()
         seen: list[Message[object]] = []
 
         async def work() -> int:
@@ -222,7 +222,7 @@ def test_trio_runner_uses_caller_owned_nursery_start_soon(monkeypatch):
 
 def test_anyio_runner_wraps_reentry_queue_without_owning_task_group(monkeypatch):
     install_fake_cancel_scope_module(monkeypatch, "anyio")
-    graph = Graph("py-anyio-runner-reentry-smoke")
+    graph = Graph()
     queue = graph.reentry_queue()
     task_group = FakeStartSoonOwner()
     runner = queue.wrap_runner(anyio_runner(task_group))
@@ -245,7 +245,7 @@ def test_anyio_runner_wraps_reentry_queue_without_owning_task_group(monkeypatch)
 
 def test_trio_runner_wraps_reentry_queue_without_owning_nursery(monkeypatch):
     install_fake_cancel_scope_module(monkeypatch, "trio")
-    graph = Graph("py-trio-runner-reentry-smoke")
+    graph = Graph()
     queue = graph.reentry_queue()
     nursery = FakeStartSoonOwner()
     runner = queue.wrap_runner(trio_runner(nursery))
@@ -268,7 +268,7 @@ def test_trio_runner_wraps_reentry_queue_without_owning_nursery(monkeypatch):
 
 def test_trio_runner_deactivation_cancels_private_job_scope(monkeypatch):
     install_fake_cancel_scope_module(monkeypatch, "trio")
-    graph = Graph("py-trio-runner-cancel-smoke")
+    graph = Graph()
     nursery = FakeStartSoonOwner()
     runner = trio_runner(nursery)
     seen: list[Message[object]] = []
@@ -332,7 +332,7 @@ def test_trio_runner_rejects_wrong_thread_spawn_and_cancel(monkeypatch):
 
 def test_anyio_runner_graph_close_cancels_private_job_scope(monkeypatch):
     install_fake_cancel_scope_module(monkeypatch, "anyio")
-    graph = Graph("py-anyio-runner-close-cancel-smoke")
+    graph = Graph()
     task_group = FakeStartSoonOwner()
     runner = anyio_runner(task_group)
     seen: list[Message[object]] = []
@@ -353,7 +353,7 @@ def test_anyio_runner_graph_close_cancels_private_job_scope(monkeypatch):
 
 def test_anyio_runner_exception_typed_cancellation_is_cleanup_not_graph_error(monkeypatch):
     install_fake_cancel_scope_module(monkeypatch, "anyio")
-    graph = Graph("py-anyio-runner-exception-cancel-smoke")
+    graph = Graph()
     task_group = FakeStartSoonOwner()
     runner = anyio_runner(task_group)
     seen: list[Message[object]] = []
@@ -380,7 +380,7 @@ def test_trio_anyio_adapters_are_public_without_importing_optional_dependencies(
 
 
 def test_reentry_queue_enqueues_cross_thread_completion_and_owner_thread_drain_applies_it():
-    graph = Graph("py-reentry-cross-thread-smoke")
+    graph = Graph()
     queue = graph.reentry_queue()
     runner = ThreadedRunner()
     seen: list[Message[object]] = []
@@ -402,7 +402,7 @@ def test_reentry_queue_enqueues_cross_thread_completion_and_owner_thread_drain_a
 
 
 def test_reentry_queue_drain_rejects_non_owner_thread():
-    graph = Graph("py-reentry-owner-thread-smoke")
+    graph = Graph()
     queue = graph.reentry_queue()
     errors: list[BaseException] = []
 
@@ -424,8 +424,8 @@ def test_reentry_queue_drain_rejects_non_owner_thread():
 
 
 def test_reentry_queue_wrapped_runner_must_belong_to_target_graph():
-    graph_a = Graph("py-reentry-graph-a-smoke")
-    graph_b = Graph("py-reentry-graph-b-smoke")
+    graph_a = Graph()
+    graph_b = Graph()
     runner = graph_a.reentry_queue().wrap_runner(ManualRunner())
 
     async def work() -> int:
@@ -440,7 +440,7 @@ def test_reentry_queue_wrapped_runner_must_belong_to_target_graph():
 
 
 def test_reentry_queue_closed_wrapped_runner_is_rejected_before_activation():
-    graph = Graph("py-reentry-closed-runner-smoke")
+    graph = Graph()
     queue = graph.reentry_queue()
     runner = queue.wrap_runner(ManualRunner())
     queue.close()
@@ -453,7 +453,7 @@ def test_reentry_queue_closed_wrapped_runner_is_rejected_before_activation():
 
 
 def test_reentry_queue_closed_after_node_construction_does_not_spawn_on_activation():
-    graph = Graph("py-reentry-close-before-activation-smoke")
+    graph = Graph()
     queue = graph.reentry_queue()
     runner = ThreadedRunner()
     seen: list[Message[object]] = []
@@ -474,7 +474,7 @@ def test_reentry_queue_closed_after_node_construction_does_not_spawn_on_activati
 
 
 def test_reentry_queue_drain_respects_max_items_fifo():
-    graph = Graph("py-reentry-max-items-smoke")
+    graph = Graph()
     queue = graph.reentry_queue()
     runner = ThreadedRunner()
     seen: list[Message[object]] = []
@@ -496,7 +496,7 @@ def test_reentry_queue_drain_respects_max_items_fifo():
 
 
 def test_reentry_queue_graph_close_drops_pending_completions_without_graph_error():
-    graph = Graph("py-reentry-close-cleanup-smoke")
+    graph = Graph()
     queue = graph.reentry_queue()
     runner = ThreadedRunner()
     seen: list[Message[object]] = []
@@ -519,7 +519,7 @@ def test_reentry_queue_graph_close_drops_pending_completions_without_graph_error
 
 
 def test_reentry_queue_fatal_completion_poison_closes_without_graph_error():
-    graph = Graph("py-reentry-fatal-cleanup-smoke")
+    graph = Graph()
     queue = graph.reentry_queue()
     runner = ThreadedRunner()
     seen: list[Message[object]] = []
@@ -542,7 +542,7 @@ def test_reentry_queue_fatal_completion_poison_closes_without_graph_error():
 
 
 def test_reentry_queue_deactivation_drops_pending_completion_without_graph_error():
-    graph = Graph("py-reentry-deactivation-cleanup-smoke")
+    graph = Graph()
     queue = graph.reentry_queue()
     runner = ThreadedRunner()
     source = graph.state(1, name="source")
@@ -571,7 +571,7 @@ def test_reentry_queue_deactivation_drops_pending_completion_without_graph_error
 
 
 def test_reentry_queue_close_cancels_active_queue_owned_job_without_graph_error():
-    graph = Graph("py-reentry-close-active-job-smoke")
+    graph = Graph()
     queue = graph.reentry_queue()
     runner = ThreadedRunner()
     source = graph.state(1, name="source")
@@ -598,7 +598,7 @@ def test_reentry_queue_close_cancels_active_queue_owned_job_without_graph_error(
 
 
 def test_async_node_stale_generation_completion_is_ignored_after_queue_drain():
-    graph = Graph("py-reentry-async-node-generation-smoke")
+    graph = Graph()
     queue = graph.reentry_queue()
     runner = ThreadedRunner()
     source = graph.state(1, name="source")
@@ -622,7 +622,7 @@ def test_async_node_stale_generation_completion_is_ignored_after_queue_drain():
 
 
 def test_reentry_queue_stale_final_completion_unregisters_gate():
-    graph = Graph("py-reentry-stale-gate-cleanup-smoke")
+    graph = Graph()
     queue = graph.reentry_queue()
     runner = ThreadedRunner()
     source = graph.state(1, name="source")
@@ -643,7 +643,7 @@ def test_reentry_queue_stale_final_completion_unregisters_gate():
 
 
 def test_reentry_queue_drain_continues_after_non_final_failure_for_terminal_cleanup():
-    graph = Graph("py-reentry-drain-cleanup-after-error-smoke")
+    graph = Graph()
     queue = graph.reentry_queue()
     calls: list[str] = []
 
@@ -694,7 +694,7 @@ def test_asyncio_runner_closes_coroutine_when_create_task_fails(recwarn):
 
 
 def test_async_node_stale_generation_completion_is_ignored():
-    graph = Graph("py-async-node-generation-smoke")
+    graph = Graph()
     runner = ManualRunner()
     source = graph.state(1, name="source")
     seen: list[Message[object]] = []
@@ -716,7 +716,7 @@ def test_async_node_stale_generation_completion_is_ignored():
 
 
 def test_async_node_deactivation_cleans_up_pending_task_without_graph_error():
-    graph = Graph("py-async-node-cleanup-smoke")
+    graph = Graph()
     runner = ManualRunner()
     source = graph.state(1, name="source")
     seen: list[Message[object]] = []
@@ -736,7 +736,7 @@ def test_async_node_deactivation_cleans_up_pending_task_without_graph_error():
 
 
 def test_async_inputs_must_be_factory_shaped():
-    graph = Graph("py-async-factory-shape-smoke")
+    graph = Graph()
     runner = ManualRunner()
 
     async def work() -> int:
@@ -751,7 +751,7 @@ def test_async_inputs_must_be_factory_shaped():
 
 
 def test_sync_callback_surfaces_reject_coroutine_functions_at_registration():
-    graph = Graph("py-sync-registration-rejects-async-smoke")
+    graph = Graph()
     graph.reentry_queue()
     source = graph.state(1, name="source")
 
@@ -787,7 +787,7 @@ def test_sync_callback_surfaces_reject_coroutine_functions_at_registration():
 
 
 def test_sync_data_ingress_rejects_awaitables_without_leaking_warning(recwarn):
-    graph = Graph("py-sync-data-ingress-rejects-awaitables-smoke")
+    graph = Graph()
 
     async def work() -> int:
         return 1
@@ -810,7 +810,7 @@ def test_sync_data_ingress_rejects_awaitables_without_leaking_warning(recwarn):
 
 
 def test_ctx_state_emit_and_down_reject_async_material_without_leaking_warning(recwarn):
-    graph = Graph("py-ctx-async-material-rejects-smoke")
+    graph = Graph()
     source = graph.state(1, name="source")
 
     async def work() -> int:
@@ -877,7 +877,7 @@ def test_activated_sugar_keeps_no_private_state_so_checkpoint_succeeds() -> None
     private state, which would make every graph that ran it uncheckpointable; tasks
     and cleanups live in the lifetime and its closures (R-checkpoint)."""
 
-    graph = Graph("sugar-checkpoint")
+    graph = Graph()
     runner = ManualRunner()
     a = graph.state(1, name="a")
     seen: list[int] = []

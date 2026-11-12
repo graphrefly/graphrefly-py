@@ -16,7 +16,7 @@ def test_trio_runner_real_nursery_is_caller_owned_smoke() -> None:
     trio = pytest.importorskip("trio")
 
     async def main() -> None:
-        graph = Graph("py-real-trio-runner-smoke")
+        graph = Graph()
         seen: list[Message[object]] = []
 
         async def work() -> int:
@@ -46,7 +46,7 @@ def test_anyio_runner_real_task_group_is_caller_owned_smoke() -> None:
     anyio = pytest.importorskip("anyio")
 
     async def main() -> None:
-        graph = Graph("py-real-anyio-runner-smoke")
+        graph = Graph()
         seen: list[Message[object]] = []
 
         async def values():

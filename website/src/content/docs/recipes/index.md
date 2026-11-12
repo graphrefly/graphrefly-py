@@ -18,7 +18,7 @@ from graphrefly import Graph, from_awaitable, asyncio_runner
 async def load_value() -> int:
     return 7
 
-graph = Graph("runner")
+graph = Graph()
 node = from_awaitable(graph, asyncio_runner(), load_value, name="value")
 ```
 

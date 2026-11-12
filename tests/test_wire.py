@@ -89,7 +89,7 @@ def test_c1a_malformed_inbound_bytes_are_bridge_issues_not_terminals() -> None:
     envelope_vectors = {
         v["id"]: bytes.fromhex(v["hex"]) for v in vectors("wire_bridge_envelope.v1.jsonl")
     }
-    with Graph("c1a") as g:
+    with Graph() as g:
         received = g.state(name="received")
         bridge = wire_bridge(g, session_id="s1", received=received, name="bridge")
         issues = collect(bridge.issues)
@@ -108,7 +108,7 @@ def test_c1a_malformed_inbound_bytes_are_bridge_issues_not_terminals() -> None:
 
 
 def test_c1a_outbound_bytes_are_canonical_envelopes() -> None:
-    with Graph("c1a-out") as g:
+    with Graph() as g:
         x = g.state(b"x0", name="x")
         out = wire_edge_group_out(g, group="g", edges={"x": x}, name="out")
         bridge = wire_bridge(g, session_id="s1", outbound=[out], name="bridge")
@@ -154,7 +154,7 @@ class BytesLink:
 
 
 def test_c1_a_cross_graph_diamond_through_bridges_and_bytes() -> None:
-    g1, g2 = Graph("g1"), Graph("g2")
+    g1, g2 = Graph(), Graph()
     to_g2, to_g1 = BytesLink(), BytesLink()
     leg_runs: list[str] = []
 
@@ -211,7 +211,7 @@ def test_c1_a_cross_graph_diamond_through_bridges_and_bytes() -> None:
 
 
 def test_c1b_a_value_that_is_not_bytes_is_the_outbound_nodes_error() -> None:
-    with Graph("not-bytes") as g:
+    with Graph() as g:
         x: Any = g.state("text", name="x")
         out = wire_edge_group_out(g, group="g", edges={"x": x})
         seen: list[tuple[Message[Any], ...]] = []
@@ -222,7 +222,7 @@ def test_c1b_a_value_that_is_not_bytes_is_the_outbound_nodes_error() -> None:
 
 
 def test_c1b_frames_by_hand_through_the_public_receiver() -> None:
-    with Graph("receiver") as g:
+    with Graph() as g:
         deliver: list[Callable[[object], None]] = []
 
         def open_(d: Callable[[object], None]) -> None:
@@ -247,7 +247,7 @@ def test_c1b_frames_by_hand_through_the_public_receiver() -> None:
 
 
 def _sender(timeout_ms: int = 5) -> dict[str, Any]:
-    g = Graph("c1c")
+    g = Graph()
     source = g.state(b"first", name="edge-source")
     out = wire_edge_group_out(g, group="g", edges={"edge-a": source}, name="group")
     bridge = wire_bridge(g, session_id="s1", outbound=[out], name="bridge")
@@ -305,7 +305,7 @@ def test_c1c_stale_mismatched_and_malformed_ingress_fail_closed() -> None:
 
 
 def test_c1c_the_ack_path_clears_pending_on_the_sending_bridge() -> None:
-    g = Graph("ack-path")
+    g = Graph()
     source = g.state(b"v", name="source")
     received = g.state(name="received")
     out = wire_edge_group_out(g, group="g", edges={"x": source}, name="out")
