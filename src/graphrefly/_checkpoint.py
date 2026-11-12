@@ -102,6 +102,8 @@ def _check_saved(node_id: str, saved: Mapping[str, Any]) -> None:
     _check(node_id, saved.get("ended"), "its ERROR payload is not JSON")
     inputs = saved.get("inputs")
     for received in inputs if isinstance(inputs, list) else []:
+        if not isinstance(received, dict):
+            continue  # restore's received-record admission reports the structural refusal
         _check(node_id, received.get("values"), "its received values are not JSON")
         _check(node_id, received.get("ended"), "its ERROR payload is not JSON")
 
@@ -179,7 +181,7 @@ def capture(graph: Graph) -> Checkpoint:
             _check_saved(node_id, node_saved)
             if state is not None:
                 node_saved["state"] = state
-            entry["saved"] = node_saved
+        entry["saved"] = node_saved  # explicit null marks a cold node, not a truncated lifetime
         nodes.append(_json(entry, f"node {node_id}"))
     return {"format": FORMAT, "nodes": nodes}
 
@@ -333,11 +335,21 @@ def restore(
             raise _not_restorable(str(node["id"]), "local-only, built or replaced without a recipe")
     for node in nodes:
         saved = node.get("saved")
-        if node["kind"] == "state" or not saved or saved.get("ended"):
+        if node["kind"] == "state":
             continue
+        if "saved" not in node:
+            raise _not_restorable(str(node["id"]), "missing received records")
+        if saved is None or isinstance(saved, dict) and saved.get("ended"):
+            continue
+        if not isinstance(saved, dict):
+            raise _not_restorable(str(node["id"]), "missing received records")
         deps = saved.get("deps", node["deps"])
         inputs = saved.get("inputs")
-        if not isinstance(inputs, list) or len(inputs) != len(deps):
+        if (
+            not isinstance(inputs, list)
+            or len(inputs) != len(deps)
+            or not all(_complete_input(record) for record in inputs)
+        ):
             raise _not_restorable(str(node["id"]), "missing received records")
 
     checkpoint = _json(checkpoint, "the checkpoint", "restore")
@@ -348,6 +360,20 @@ def restore(
     except KernelError as error:
         raise CheckpointError(f"restore: {error}") from error
     return graph
+
+
+def _complete_input(record: object) -> bool:
+    if not isinstance(record, dict) or type(record.get("has")) is not bool or "ended" not in record:
+        return False
+    values = record.get("values", [])
+    if not isinstance(values, list) or bool(values) != record["has"]:
+        return False
+    ended = record["ended"]
+    return (
+        ended is None
+        or ended == [COMPLETE]
+        or (isinstance(ended, list) and len(ended) == 2 and ended[0] == "ERROR")
+    )
 
 
 def _restore_node(

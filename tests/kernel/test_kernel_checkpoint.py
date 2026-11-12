@@ -536,7 +536,7 @@ def test_a_chain_of_restored_nodes_needs_no_run() -> None:
     assert during(r, lambda: r.set("a", 4)) == ["ku <- u: [PENDING, DATA(116)]"]
 
 
-def test_a_computed_node_without_a_lifetime_saves_nothing_and_its_policies_come_back() -> None:
+def test_a_computed_node_without_a_lifetime_saves_null_and_its_policies_come_back() -> None:
     reg = Registry()
     g = Graph()
     g.state("a", 1)
@@ -548,6 +548,7 @@ def test_a_computed_node_without_a_lifetime_saves_nothing_and_its_policies_come_
         "deps": ["a"],
         "recipe": {"ref": "plus", "config": {"k": 10}},
         "policies": {"complete": "manual", "error": "auto", "invalidate": "manual", "quiet": True},
+        "saved": None,
     }
     r = traced(cp, reg)
     assert r.definition("p") == r.definition("p")
@@ -714,3 +715,36 @@ def test_checkpoint_node_refusals_have_one_exact_cross_runtime_reason(
     with pytest.raises(CheckpointError) as caught:
         restore(cp, registry)
     assert str(caught.value) == f"not restorable: n: {reason}"
+
+
+@pytest.mark.parametrize("damage", ["lifetime", "empty", "has", "values", "ended", "null"])
+def test_restore_refuses_truncated_received_records_without_reconstructing_them(
+    damage: str,
+) -> None:
+    cp = capture(original())
+    node = entry(cp, "s")
+    if damage == "lifetime":
+        del node["saved"]
+    elif damage == "empty":
+        node["saved"]["inputs"][0] = {}
+    elif damage == "null":
+        node["saved"]["inputs"][0] = None
+    else:
+        del node["saved"]["inputs"][0][damage]
+    registry = Registry()
+    with pytest.raises(CheckpointError) as caught:
+        restore(cp, registry)
+    assert str(caught.value) == "not restorable: s: missing received records"
+    assert registry.calls == {"sum": 0, "scan": 0}
+
+
+def test_cold_checkpoint_explicitly_marks_no_saved_lifetime() -> None:
+    g = Graph()
+    g.state("a", 1)
+    g.node("n", ["a"], lambda ctx: None, recipe=recipe("n"))
+    cp = capture(g)
+    assert entry(cp, "n")["saved"] is None
+    restored = restore(cp, {"n": lambda config, at: lambda ctx: ctx.down([(DATA, 7)])})
+    assert not restored.get("n").active
+    restored.subscribe("sink", "n")
+    assert restored.get("n").value == 7
