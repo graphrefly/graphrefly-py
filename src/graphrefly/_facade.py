@@ -1391,6 +1391,9 @@ def restore_graph(
         if factory is None:
             raise GraphReflyRestoreError(f"not restorable: {node_name}: missing recipe")
         made = factory(config, RecipeContext(graph, node_name, build))
+        if isinstance(made, tuple) and len(made) != 2:
+            msg = f"recipe {ref} must give a callback, or a (callback, setup) pair"
+            raise GraphReflyRestoreError(msg)
         callback, setup = made if isinstance(made, tuple) else (made, None)
         if not callable(callback) or (setup is not None and not callable(setup)):
             msg = f"recipe {ref} must give a callback, or a (callback, setup) pair"

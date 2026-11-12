@@ -1302,3 +1302,89 @@ def test_nested_recipe_lookup_uses_the_same_node_refusal() -> None:
         with pytest.raises(GraphReflyRestoreError) as caught:
             graphrefly.restore_graph(g.checkpoint(), registry={"outer": outer})
         assert str(caught.value) == "not restorable: n: missing recipe"
+
+
+@pytest.mark.parametrize("made", [None, (lambda ctx: None, 7), (), (1, 2, 3)])
+def test_restore_attributes_invalid_public_factory_results_to_the_node(made: Any) -> None:
+    with Graph() as g:
+        g.node([], lambda ctx: None, name="n", recipe=Recipe("bad"))
+        with pytest.raises(GraphReflyRestoreError) as caught:
+            graphrefly.restore_graph(g.checkpoint(), registry={"bad": lambda config, at: made})
+        assert str(caught.value) == (
+            "not restorable: n: recipe bad must give a callback, or a (callback, setup) pair"
+        )
+
+
+@pytest.mark.parametrize("sugar", ["derived", "effect", "producer"])
+def test_restore_attributes_sugar_setup_refusals_to_the_node(sugar: str) -> None:
+    with Graph() as g:
+        if sugar == "producer":
+            g.producer(lambda: None, name="n", recipe=Recipe("bad"))
+        else:
+            getattr(g, sugar)([], lambda: None, name="n", recipe=Recipe("bad"))
+        with pytest.raises(GraphReflyRestoreError) as caught:
+            graphrefly.restore_graph(
+                g.checkpoint(),
+                registry={"bad": lambda config, at: (lambda: None, lambda ctx: None)},
+            )
+        assert str(caught.value) == (
+            f"not restorable: n: recipe bad for the {sugar} n gives a setup; sugar has none"
+        )
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        (ValueError("factory failed"), "not restorable: n: factory failed"),
+        (GraphReflyRestoreError("factory failed"), "not restorable: n: factory failed"),
+        (
+            GraphReflyRestoreError("not restorable: nested: missing recipe"),
+            "not restorable: nested: missing recipe",
+        ),
+    ],
+)
+def test_restore_attributes_factory_exceptions_without_double_wrapping(
+    error: Exception, message: str
+) -> None:
+    def factory(config: object, at: RecipeContext) -> Any:
+        raise error
+
+    with Graph() as g:
+        g.node([], lambda ctx: None, name="n", recipe=Recipe("bad"))
+        with pytest.raises(GraphReflyRestoreError) as caught:
+            graphrefly.restore_graph(g.checkpoint(), registry={"bad": factory})
+        assert str(caught.value) == message
+
+
+def test_restore_does_not_convert_fatal_factory_failure_to_a_node_refusal() -> None:
+    error = MemoryError("out of memory")
+
+    def factory(config: object, at: RecipeContext) -> Any:
+        raise error
+
+    with Graph() as g:
+        g.node([], lambda ctx: None, name="n", recipe=Recipe("bad"))
+        with pytest.raises(MemoryError) as caught:
+            graphrefly.restore_graph(g.checkpoint(), registry={"bad": factory})
+        assert caught.value is error
+
+
+@pytest.mark.parametrize(
+    ("deps", "reason"),
+    [
+        (["absent"], "depends on absent, which is not in the checkpoint"),
+        (["n"], "depends on itself"),
+    ],
+)
+def test_restore_attributes_topology_refusals_to_the_known_node(
+    deps: list[str], reason: str
+) -> None:
+    with Graph() as g:
+        g.node([], lambda ctx: None, name="n", recipe=Recipe("r"))
+        checkpoint = g.checkpoint()
+        checkpoint["nodes"][0]["deps"] = deps
+        with pytest.raises(GraphReflyRestoreError) as caught:
+            graphrefly.restore_graph(
+                checkpoint, registry={"r": lambda config, at: lambda ctx: None}
+            )
+        assert str(caught.value) == f"not restorable: n: {reason}"

@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from functools import wraps
 from typing import Any, Final, cast
 
-from graphrefly._kernel import COMPLETE, Ctx, Dep, Graph, KernelError, Message
+from graphrefly._kernel import COMPLETE, FATAL, Ctx, Dep, Graph, Message
 from graphrefly._kernel.graph import NodeFn, Reporter, Seed, Setup
 
 FORMAT: Final = "graphrefly-py/checkpoint@1"
@@ -273,13 +273,13 @@ def _build_order(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 stack[-1] = (node, index + 1)
                 dep_id = deps[index]
                 if dep_id not in by_id:
-                    raise CheckpointError(
-                        f"restore: {node['id']} depends on {dep_id}, which is not in the checkpoint"
+                    raise _not_restorable(
+                        str(node["id"]), f"depends on {dep_id}, which is not in the checkpoint"
                     )
                 if dep_id in done:
                     continue
                 if dep_id in path:
-                    raise CheckpointError(f"restore: {dep_id} depends on itself")
+                    raise _not_restorable(str(dep_id), "depends on itself")
                 path.add(dep_id)
                 stack.append((by_id[dep_id], 0))
                 continue
@@ -354,11 +354,18 @@ def restore(
 
     checkpoint = _json(checkpoint, "the checkpoint", "restore")
     nodes = checkpoint["nodes"]
-    try:
-        for node in _build_order(nodes):
+    for node in _build_order(nodes):
+        try:
             _restore_node(graph, node, make)
-    except KernelError as error:
-        raise CheckpointError(f"restore: {error}") from error
+        except FATAL:
+            raise
+        except Exception as error:
+            # Factory, adapter and kernel construction failures all belong to this
+            # known node. Keep an attributed nested recipe refusal intact.
+            reason = str(error)
+            if reason.startswith("not restorable: "):
+                raise CheckpointError(reason) from error
+            raise _not_restorable(str(node["id"]), reason) from error
     return graph
 
 
