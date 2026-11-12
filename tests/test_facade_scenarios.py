@@ -1113,3 +1113,23 @@ def test_c48_find_describe_observe_and_retain() -> None:
     assert g.definition(d).deps == (a,)
     release_d()
     g.close()
+
+
+def test_quiet_final_output_and_auto_complete_are_arrays_of_one_later_wave() -> None:
+    with Graph() as g:
+        s = g.state(1)
+        q = g.node([s], lambda ctx: ctx.emit(99), quiet=True)
+        calls: list[tuple[list[list[object]], object]] = []
+        arrays: list[tuple[Any, ...]] = []
+        q.subscribe(arrays.append)
+        d = g.node(
+            [q],
+            lambda ctx: calls.append((ctx.deps[0].waves, ctx.deps[0].terminal)),
+            complete="manual",
+        )
+        g.retain(d)
+        calls.clear()
+        arrays.clear()
+        s.complete()
+        assert calls == [([[99]], (COMPLETE,))]
+        assert arrays == [((PENDING,), (DATA, 99)), ((PENDING,), (COMPLETE,))]

@@ -1179,9 +1179,8 @@ class Graph:
             node.pending = False  # so its INVALIDATE marks its own cone first (R-invalidation)
 
             def publish() -> None:  # after the INVALIDATE has reached the whole cone
-                self._later_from(node, out)
-                if postlude:
-                    self._later_from(node, [[COMPLETE_MESSAGE]])
+                frames = [*out, [COMPLETE_MESSAGE]] if postlude else out
+                self._later_from(node, frames)
 
             self._deliver(node, lead, publish)
             return
