@@ -59,9 +59,9 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: graphrefly/graphrefly
-          ref: e39c54d20827003393d3823a3e95c0b86d120aee
+          ref: 4771691460538cd387197571d930128abdac90a2
           path: graphrefly
-          sparse-checkout: spec/fixtures/protobuf
+          sparse-checkout: spec/fixtures
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.3.2
@@ -73,6 +73,10 @@ jobs:
       - name: Test
         working-directory: graphrefly-py
         run: uv run pytest
+
+      - name: Compare shared protocol probes
+        working-directory: graphrefly-py
+        run: PYTHONPATH=src uv run python scripts/probe_rereview.py ../graphrefly/spec/fixtures/d797-rereview.v1.json
 
       - name: Test optional async runtime adapters
         working-directory: graphrefly-py
