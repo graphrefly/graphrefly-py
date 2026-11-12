@@ -23,7 +23,7 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import wraps
-from typing import Any, Final, cast
+from typing import Any, Final
 
 from graphrefly._kernel import COMPLETE, FATAL, Ctx, Dep, Graph, Message
 from graphrefly._kernel.graph import NodeFn, Reporter, Seed, Setup
@@ -116,9 +116,7 @@ def _received(graph: Graph, deps: Sequence[str]) -> list[dict[str, object]]:
     out: list[dict[str, object]] = []
     for dep_id in deps:
         held = graph.get(dep_id)
-        entry: dict[str, object] = {"has": held.has}
-        if held.has:
-            entry["values"] = list(held.values)
+        entry: dict[str, object] = {"has": held.has, "values": list(held.values)}
         entry["ended"] = _ended(held.ended)
         out.append(entry)
     return out
@@ -215,12 +213,12 @@ class _Unchanged(Dep):
 
 
 def _same_value(dep: Dep, was: Mapping[str, Any]) -> bool:
-    if dep.has != was.get("has"):
+    if dep.has != was["has"]:
         return False
     if not dep.has:
         return True
     waves = dep.waves
-    return (waves[-1] if waves else []) == was.get("values")
+    return bool((waves[-1] if waves else []) == was["values"])
 
 
 def _restorable(real: NodeFn) -> NodeFn:
@@ -238,7 +236,7 @@ def _restorable(real: NodeFn) -> NodeFn:
         for dep, was in zip(ctx.deps, note["inputs"], strict=True):
             value_changed = not _same_value(dep, was)
             terminal = dep.terminal
-            end_changed = (None if terminal is None else list(terminal)) != was.get("ended")
+            end_changed = (None if terminal is None else list(terminal)) != was["ended"]
             changed = changed or value_changed or end_changed
             deps.append(
                 dep if value_changed else _Unchanged(dep, terminal if end_changed else None)
@@ -297,6 +295,139 @@ def _message(saved: object) -> Message | None:
     return tuple(saved)
 
 
+@dataclass(frozen=True, slots=True)
+class _Admitted:
+    nodes: list[dict[str, Any]]
+
+
+def _terminal_valid(value: object) -> bool:
+    return value is None or (
+        isinstance(value, list)
+        and (
+            value == [COMPLETE]
+            or (len(value) == 2 and value[0] == "ERROR" and not isinstance(value[1], bool))
+        )
+    )
+
+
+def _deps_valid(value: object) -> bool:
+    return (
+        isinstance(value, list)
+        and all(isinstance(dep, str) for dep in value)
+        and len(set(value)) == len(value)
+    )
+
+
+def _complete_input(record: object) -> bool:
+    return (
+        isinstance(record, dict)
+        and type(record.get("has")) is bool
+        and isinstance(record.get("values"), list)
+        and bool(record["values"]) == record["has"]
+        and "ended" in record
+        and _terminal_valid(record["ended"])
+    )
+
+
+def _admit(checkpoint: Checkpoint) -> _Admitted:
+    """The single restore admission boundary, before any graph or factory exists."""
+
+    if not isinstance(checkpoint, dict) or checkpoint.get("format") != FORMAT:
+        raise CheckpointError(f"restore: not a {FORMAT} checkpoint")
+    nodes = checkpoint.get("nodes")
+    if not isinstance(nodes, list):
+        raise CheckpointError("restore: the checkpoint has no nodes")
+    ids: set[str] = set()
+    for node in nodes:
+        if not isinstance(node, dict) or not isinstance(node.get("id"), str):
+            raise CheckpointError("restore: every node needs a string id")
+        node_id = node["id"]
+        if node_id in ids:
+            raise _not_restorable(node_id, "duplicate node id")
+        ids.add(node_id)
+        if node.get("kind") not in ("state", "node"):
+            raise _not_restorable(node_id, "invalid node kind")
+        if not _deps_valid(node.get("deps")):
+            raise _not_restorable(node_id, "invalid dependencies")
+        if node.get("local"):
+            raise _not_restorable(node_id, "local-only, built or replaced without a recipe")
+        if node["kind"] == "state":
+            if node["deps"]:
+                raise _not_restorable(node_id, "a state cannot have dependencies")
+        else:
+            recipe_value = node.get("recipe")
+            if not isinstance(recipe_value, dict) or not isinstance(recipe_value.get("ref"), str):
+                raise _not_restorable(node_id, "missing recipe")
+            if "config" not in recipe_value:
+                raise _not_restorable(node_id, "missing recipe config")
+            _check(node_id, recipe_value, "its recipe config is not JSON")
+            policies = node.get("policies")
+            if (
+                not isinstance(policies, dict)
+                or any(
+                    policies.get(key) not in ("auto", "manual")
+                    for key in ("complete", "error", "invalidate")
+                )
+                or type(policies.get("quiet")) is not bool
+            ):
+                raise _not_restorable(node_id, "missing or invalid policies")
+        if "saved" not in node:
+            raise _not_restorable(
+                node_id,
+                "missing received records" if node["kind"] == "node" else "missing saved snapshot",
+            )
+        saved = node["saved"]
+        if saved is None and node["kind"] == "node":
+            continue  # Explicitly cold; it has never received inputs or held private state.
+        if not isinstance(saved, dict):
+            raise _not_restorable(node_id, "invalid saved snapshot")
+        if node["kind"] == "state" and any(key in saved for key in ("deps", "inputs", "state")):
+            raise _not_restorable(node_id, "invalid state snapshot")
+        _check_saved(node_id, saved)
+        if "values" not in saved or not isinstance(saved["values"], list):
+            raise _not_restorable(node_id, "missing or invalid saved values")
+        if "ended" not in saved or not _terminal_valid(saved["ended"]):
+            raise _not_restorable(node_id, "missing or invalid saved terminal")
+        if node["kind"] == "node":
+            deps = saved["deps"] if "deps" in saved else node["deps"]
+            if not _deps_valid(deps):
+                raise _not_restorable(node_id, "invalid lifetime dependencies")
+            inputs = saved.get("inputs")
+            if (
+                not isinstance(inputs, list)
+                or len(inputs) != len(deps)
+                or not all(_complete_input(record) for record in inputs)
+            ):
+                raise _not_restorable(node_id, "missing received records")
+    # Check declared and lifetime topology before constructors can mutate a graph.
+    for node in nodes:
+        saved = node["saved"]
+        if isinstance(saved, dict) and "deps" in saved:
+            for dep in saved["deps"]:
+                if dep not in ids:
+                    raise _not_restorable(
+                        node["id"], f"depends on {dep}, which is not in the checkpoint"
+                    )
+    detached = _json(checkpoint, "the checkpoint", "restore")
+    ordered = _build_order(detached["nodes"])
+    combined = [
+        {
+            **node,
+            "deps": list(
+                dict.fromkeys(
+                    [
+                        *node["deps"],
+                        *(node["saved"].get("deps", []) if isinstance(node["saved"], dict) else []),
+                    ]
+                )
+            ),
+        }
+        for node in ordered
+    ]
+    _build_order(combined)
+    return _Admitted(ordered)
+
+
 def restore(
     checkpoint: Checkpoint,
     registry: Mapping[str, Factory],
@@ -304,16 +435,18 @@ def restore(
     report: Reporter | None = None,
     into: Graph | None = None,
 ) -> Graph:
-    """Build a new graph from ``checkpoint``; no subscriber, no recipe function runs.
+    """Admit a detached checkpoint, then construct a cold graph without function runs."""
 
-    ``into`` is an empty graph to build into, for a host that made the graph itself.
-    """
+    return _restore_admitted(_admit(checkpoint), registry, report=report, into=into)
 
-    if not isinstance(checkpoint, dict) or checkpoint.get("format") != FORMAT:
-        raise CheckpointError(f"restore: not a {FORMAT} checkpoint")
-    nodes = cast("list[dict[str, Any]]", checkpoint.get("nodes"))
-    if not isinstance(nodes, list):
-        raise CheckpointError("restore: the checkpoint has no nodes")
+
+def _restore_admitted(
+    admitted: _Admitted,
+    registry: Mapping[str, Factory],
+    *,
+    report: Reporter | None = None,
+    into: Graph | None = None,
+) -> Graph:
     if into is not None and into.describe():
         raise CheckpointError("restore: the graph to restore into is not empty")
     graph = into if into is not None else Graph(report=report)
@@ -325,74 +458,28 @@ def restore(
         built = factory(config, RecipeContext(graph, node_id, make))
         return built if isinstance(built, Built) else Built(built)
 
-    for node in nodes:
-        node_id = str(node["id"])
-        if isinstance(node.get("saved"), dict):
-            _check_saved(node_id, node["saved"])
-        if node.get("recipe") is not None:
-            _check(node_id, node["recipe"], "its recipe config is not JSON")
-        if node.get("local"):
-            raise _not_restorable(str(node["id"]), "local-only, built or replaced without a recipe")
-    for node in nodes:
-        saved = node.get("saved")
-        if node["kind"] == "state":
-            continue
-        if "saved" not in node:
-            raise _not_restorable(str(node["id"]), "missing received records")
-        if saved is None or isinstance(saved, dict) and saved.get("ended"):
-            continue
-        if not isinstance(saved, dict):
-            raise _not_restorable(str(node["id"]), "missing received records")
-        deps = saved.get("deps", node["deps"])
-        inputs = saved.get("inputs")
-        if (
-            not isinstance(inputs, list)
-            or len(inputs) != len(deps)
-            or not all(_complete_input(record) for record in inputs)
-        ):
-            raise _not_restorable(str(node["id"]), "missing received records")
-
-    checkpoint = _json(checkpoint, "the checkpoint", "restore")
-    nodes = checkpoint["nodes"]
-    for node in _build_order(nodes):
+    for node in admitted.nodes:
         try:
             _restore_node(graph, node, make)
         except FATAL:
             raise
         except Exception as error:
-            # Factory, adapter and kernel construction failures all belong to this
-            # known node. Keep an attributed nested recipe refusal intact.
             reason = str(error)
             if reason.startswith("not restorable: "):
                 raise CheckpointError(reason) from error
-            raise _not_restorable(str(node["id"]), reason) from error
+            raise _not_restorable(node["id"], reason) from error
     return graph
-
-
-def _complete_input(record: object) -> bool:
-    if not isinstance(record, dict) or type(record.get("has")) is not bool or "ended" not in record:
-        return False
-    values = record.get("values", [])
-    if not isinstance(values, list) or bool(values) != record["has"]:
-        return False
-    ended = record["ended"]
-    return (
-        ended is None
-        or ended == [COMPLETE]
-        or (isinstance(ended, list) and len(ended) == 2 and ended[0] == "ERROR")
-    )
 
 
 def _restore_node(
     graph: Graph, node: dict[str, Any], make: Callable[[str, object, str], Built]
 ) -> None:
     node_id: str = node["id"]
-    saved: dict[str, Any] | None = node.get("saved")
+    saved: dict[str, Any] | None = node["saved"]
     if node["kind"] == "state":
         graph.state(node_id)
-        if saved is None:
-            return
-        values: list[object] = saved.get("values") or []
+        assert saved is not None  # admission requires a state snapshot
+        values: list[object] = saved["values"]
         if values:
             # Its last array's values come back as one array, with no subscriber to see it.
             def body() -> None:
@@ -400,28 +487,26 @@ def _restore_node(
                     graph.set(node_id, value)
 
             graph.batch(body)
-        ended = _message(saved.get("ended"))
+        ended = _message(saved["ended"])
         if ended is not None:
             if ended[0] == COMPLETE:
                 graph.complete(node_id)
             else:
                 graph.error(node_id, ended[1])
         return
-    recipe_value = node.get("recipe")
-    if not isinstance(recipe_value, dict) or not isinstance(recipe_value.get("ref"), str):
-        raise _not_restorable(node_id, "missing recipe")
-    built = make(recipe_value["ref"], recipe_value.get("config"), node_id)
-    policies = node.get("policies", {})
+    recipe_value = node["recipe"]
+    built = make(recipe_value["ref"], recipe_value["config"], node_id)
+    policies = node["policies"]
     seed: Seed | None = None
     if saved is not None:
-        ended = _message(saved.get("ended"))
+        ended = _message(saved["ended"])
         note: dict[str, object] | None = None
         if ended is None:  # an ended node never runs again, so it gets no note
             note = {"inputs": saved["inputs"]}
             if "deps" in saved:
                 note["deps"] = saved["deps"]
         seed = Seed(
-            values=saved.get("values") or [],
+            values=saved["values"],
             ended=ended,
             state=saved.get("state"),
             deps=saved.get("deps"),
@@ -431,10 +516,10 @@ def _restore_node(
         node_id,
         node["deps"],
         _restorable(built.fn) if saved is not None else built.fn,
-        complete=policies.get("complete", "auto"),
-        error=policies.get("error", "auto"),
-        invalidate=policies.get("invalidate", "auto"),
-        quiet=bool(policies.get("quiet", False)),
+        complete=policies["complete"],
+        error=policies["error"],
+        invalidate=policies["invalidate"],
+        quiet=policies["quiet"],
         setup=built.setup,
         recipe=recipe_value,
         seed=seed,

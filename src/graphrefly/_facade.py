@@ -1382,6 +1382,10 @@ def restore_graph(
     if not isinstance(registry, Mapping):
         msg = "registry must map recipe refs to factories"
         raise GraphReflyValueError(msg)
+    try:
+        admitted = _checkpoint._admit(checkpoint)
+    except _checkpoint.CheckpointError as error:
+        raise GraphReflyRestoreError(str(error)) from error
     graph = Graph(name, report=report)
 
     def build(
@@ -1400,7 +1404,7 @@ def restore_graph(
             raise GraphReflyRestoreError(msg)
         return callback, setup
 
-    sugar_of = _sugar_by_node(checkpoint)
+    sugar_of = _sugar_by_node({"nodes": admitted.nodes})
 
     def adapt(ref: str) -> _checkpoint.Factory:
         def make(config: object, at: _checkpoint.RecipeContext) -> _checkpoint.Built:
@@ -1421,7 +1425,7 @@ def restore_graph(
 
     adapted = {ref: adapt(ref) for ref in registry}
     try:
-        _checkpoint.restore(checkpoint, adapted, into=graph._kernel)
+        _checkpoint._restore_admitted(admitted, adapted, into=graph._kernel)
     except _checkpoint.CheckpointError as error:
         raise GraphReflyRestoreError(str(error)) from error
     for described in graph._kernel.describe():

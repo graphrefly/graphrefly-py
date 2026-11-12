@@ -1388,3 +1388,108 @@ def test_restore_attributes_topology_refusals_to_the_known_node(
                 checkpoint, registry={"r": lambda config, at: lambda ctx: None}
             )
         assert str(caught.value) == f"not restorable: n: {reason}"
+
+
+@pytest.mark.parametrize(
+    ("target", "path", "replacement"),
+    [
+        ("s", ("saved",), "delete"),
+        ("s", ("saved",), None),
+        ("s", ("saved", "values"), "delete"),
+        ("s", ("saved", "values"), 17),
+        ("s", ("saved", "ended"), "delete"),
+        ("s", ("saved", "ended"), ["DATA", 23]),
+        ("s", ("saved", "ended"), ["ERROR"]),
+        ("s", ("saved", "ended"), ["ERROR", 23, 99]),
+        ("s", ("saved", "ended"), ["ERROR", True]),
+        ("s", ("saved", "ended"), ["COMPLETE", 99]),
+        ("s", ("saved", "deps"), 7),
+        ("s", ("deps",), ["n"]),
+        ("n", ("id",), "delete"),
+        ("n", ("id",), 7),
+        ("n", ("id",), "s"),
+        ("n", ("kind",), "delete"),
+        ("n", ("kind",), "derived"),
+        ("n", ("deps",), "delete"),
+        ("n", ("deps",), "s"),
+        ("n", ("deps",), ["s", "s"]),
+        ("n", ("deps",), ["missing"]),
+        ("n", ("deps",), ["n"]),
+        ("n", ("recipe",), "delete"),
+        ("n", ("recipe", "config"), "delete"),
+        ("n", ("policies",), "delete"),
+        ("n", ("policies", "quiet"), "delete"),
+        ("n", ("policies", "quiet"), 1),
+        ("n", ("policies", "complete"), "delete"),
+        ("n", ("policies", "error"), "delete"),
+        ("n", ("policies", "invalidate"), "delete"),
+        ("n", ("policies", "complete"), "sometimes"),
+        ("n", ("policies", "error"), None),
+        ("n", ("policies", "invalidate"), True),
+        ("n", ("saved",), "delete"),
+        ("n", ("saved", "values"), "delete"),
+        ("n", ("saved", "ended"), "delete"),
+        ("n", ("saved", "ended"), ["RESOLVED"]),
+        ("n", ("saved", "inputs"), "delete"),
+        ("n", ("saved", "inputs", 0, "has"), "delete"),
+        ("n", ("saved", "inputs", 0, "values"), "delete"),
+        ("n", ("saved", "inputs", 0, "ended"), "delete"),
+        ("n", ("saved", "inputs", 0, "ended"), ["COMPLETE", 3]),
+        ("n", ("saved", "deps"), ["missing"]),
+        ("n", ("saved", "deps"), ["n"]),
+    ],
+)
+def test_restore_admits_all_records_before_graph_construction_or_factory_side_effects(
+    monkeypatch: pytest.MonkeyPatch, target: str, path: tuple[Any, ...], replacement: Any
+) -> None:
+    from graphrefly import _facade
+
+    with Graph() as g:
+        g.node([], lambda ctx: None, name="first", recipe=Recipe("r"))
+        s = g.state(17, name="s")
+        n = g.node([s], lambda ctx: ctx.emit(ctx.deps[0].value), name="n", recipe=Recipe("r"))
+        g.retain(n)
+        s.complete()
+        checkpoint = g.checkpoint()
+    record = next(node for node in checkpoint["nodes"] if node["id"] == target)
+    for key in path[:-1]:
+        record = record[key]
+    if replacement == "delete":
+        del record[path[-1]]
+    else:
+        record[path[-1]] = replacement
+    calls: list[str] = []
+
+    def forbidden_graph(*args: Any, **kwargs: Any) -> Any:
+        calls.append("graph")
+        raise AssertionError("invalid snapshot reached graph construction")
+
+    def forbidden_factory(config: object, at: RecipeContext) -> Any:
+        calls.append("factory")
+        raise AssertionError("invalid snapshot reached factory")
+
+    monkeypatch.setattr(_facade, "Graph", forbidden_graph)
+    with pytest.raises(GraphReflyRestoreError):
+        graphrefly.restore_graph(checkpoint, registry={"r": forbidden_factory})
+    assert calls == []
+
+
+def test_empty_received_records_are_explicit_and_cold_snapshot_stays_cold() -> None:
+    with Graph() as g:
+        a = g.state(name="a")
+        n = g.node([a], lambda ctx: None, name="n", recipe=Recipe("r"))
+        g.node([], lambda ctx: None, name="cold", recipe=Recipe("r"))
+        g.retain(n)
+        checkpoint = g.checkpoint()
+    saved = next(node for node in checkpoint["nodes"] if node["id"] == "n")["saved"]
+    assert saved["inputs"] == [{"has": False, "values": [], "ended": None}]
+    runs = []
+    restored = graphrefly.restore_graph(
+        checkpoint, registry={"r": lambda config, at: lambda ctx: runs.append(at.name)}
+    )
+    assert runs == []
+    assert (
+        next(node for node in restored.checkpoint()["nodes"] if node["id"] == "cold")["saved"]
+        is None
+    )
+    restored.close()
