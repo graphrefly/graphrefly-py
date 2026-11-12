@@ -923,12 +923,14 @@ class Graph:
             ctx._invoking = False
         return ctx._out
 
-    def _later(self, node: _Node, lifetime: _Lifetime, frames: list[Array]) -> None:
+    def _later(
+        self, node: _Node, lifetime: _Lifetime, frames: list[Array], *, invocation: bool = False
+    ) -> None:
         """Output sent after an invocation returned: a new wave from ``node`` (R-wave)."""
 
         if not frames:
             return
-        if self._staging is not None and lifetime.open:
+        if invocation and self._staging is not None and lifetime.open:
             self._stage(node, lifetime, [m for frame in frames for m in frame])
             return
 
@@ -1191,7 +1193,7 @@ class Graph:
     def _later_from(self, node: _Node, frames: list[Array]) -> None:
         lifetime = node.lifetime
         if lifetime is not None:
-            self._later(node, lifetime, frames)
+            self._later(node, lifetime, frames, invocation=True)
 
     def _run_wave(self, entries: list[tuple[_Node, list[Array]]]) -> None:
         live = [(node, frames) for node, frames in entries if node.ended is None]

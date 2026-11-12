@@ -1133,3 +1133,40 @@ def test_quiet_final_output_and_auto_complete_are_arrays_of_one_later_wave() -> 
         s.complete()
         assert calls == [([[99]], (COMPLETE,))]
         assert arrays == [((PENDING,), (DATA, 99)), ((PENDING,), (COMPLETE,))]
+
+
+def test_late_output_is_a_body_request_that_survives_commit_failure() -> None:
+    with Graph() as g:
+        s = g.state(0)
+        held: list[Ctx] = []
+        n = g.node([], lambda ctx: held.append(ctx))
+        seen: list[object] = []
+        stop = n.subscribe(lambda ms: seen.extend(m[1] for m in ms if m[0] == DATA))
+
+        def fail(value: object) -> object:
+            raise ValueError("commit refused")
+
+        def body() -> None:
+            s.set(fail)
+            held[0].emit(42)
+
+        with pytest.raises(ValueError, match="commit refused"):
+            g.batch(body)
+        assert seen == [42] and s.cache() == 0
+
+        def throws() -> None:
+            held[0].emit(43)
+            raise ValueError("body refused")
+
+        with pytest.raises(ValueError, match="body refused"):
+            g.batch(throws)
+        assert seen == [42]
+
+        def closes() -> None:
+            s.set(fail)
+            stop()  # precedes the output request after the failed commit
+            held[0].emit(44)
+
+        with pytest.raises(ValueError, match="commit refused"):
+            g.batch(closes)
+        assert seen == [42] and n.status.lifecycle == "inactive"
