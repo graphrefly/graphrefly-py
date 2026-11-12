@@ -1293,14 +1293,18 @@ class Graph:
 
         assert self._staging is not None
         entry = self._staging.get(node)
-        accumulated = [*(entry.msgs if entry is not None else []), *msgs]
+        # Checked against what is staged without copying it, so n writes cost O(n): the
+        # one rule is that a terminal is last, so the new messages are checked alone and
+        # nothing may follow a staged terminal.
         try:
-            split(accumulated)
+            split(msgs)
+            if msgs and entry is not None and entry.msgs and is_terminal(entry.msgs[-1]):
+                raise KernelError("a terminal must be the last message of its array")
         except KernelError as error:
             raise KernelError(f"{node.id}: {error} (batch)") from None
         if entry is None:
             entry = self._staging[node] = _Staged(lifetime)
-        entry.msgs = accumulated
+        entry.msgs.extend(msgs)
 
     def batch[R](self, body: Callable[[], R]) -> R:
         """Run ``body`` at once and commit its host inputs as one wave (R-request-order).

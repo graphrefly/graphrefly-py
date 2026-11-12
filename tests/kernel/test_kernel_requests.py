@@ -941,3 +941,43 @@ def test_two_rewires_from_one_sink_callback_cannot_close_a_cycle(harness: Harnes
     assert [(r.source, str(r.error)) for r in harness.reports] == [
         ("queued request", "rewire: B would depend on itself through A")
     ]
+
+
+def test_staging_many_writes_in_one_batch_is_linear(harness: Harness) -> None:
+    """Each staged write is checked against what is staged without copying it: 100,000
+    sets in one batch take a fraction of a second, where re-checking the whole staged
+    array on every set took about five minutes."""
+
+    import time
+
+    g = harness.graph
+    g.state("S", 0)
+    sink = harness.sink("S")
+    count = 100_000
+
+    def body() -> None:
+        for value in range(count):
+            g.set("S", value)
+
+    started = time.perf_counter()
+    g.batch(body)
+    assert time.perf_counter() - started < 10.0
+    assert len(sink.arrays[-1]) == count + 1  # PENDING and every value, one array
+    assert g.get("S").value == count - 1
+
+
+def test_a_write_after_a_staged_terminal_is_refused_and_the_staging_kept(
+    harness: Harness,
+) -> None:
+    g = harness.graph
+    g.state("S", 0)
+    sink = harness.sink("S")
+
+    def body() -> None:
+        g.set("S", 1)
+        g.complete("S")
+        with pytest.raises(KernelError, match=r"S: a terminal must be the last .* \(batch\)"):
+            g.set("S", 2)
+
+    g.batch(body)
+    assert sink.arrays[-1] == (("PENDING",), (DATA, 1), (COMPLETE,))
