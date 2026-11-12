@@ -1127,8 +1127,8 @@ class Graph:
             if invalidated_first:
                 end = [[INVALIDATE_MESSAGE], [dep_error]]
             if node.quiet:
-                node.pending = False
-                self._later_from(node, end)  # the INVALIDATE goes with the ERROR
+                immediate = self._apply(node, [[INVALIDATE_MESSAGE]]) if invalidated_first else []
+                self._quiet_output(node, immediate, [[dep_error]])
             else:
                 self._down(node, end)
             return
@@ -1177,18 +1177,18 @@ class Graph:
             and not any(is_terminal(message) for frame in out for message in frame)
         )
         if node.quiet:
-            # What a quiet node sends is a later wave; only an auto INVALIDATE goes on now.
-            node.pending = False  # so its INVALIDATE marks its own cone first (R-invalidation)
-
-            def publish() -> None:  # after the INVALIDATE has reached the whole cone
-                frames = [*out, [COMPLETE_MESSAGE]] if postlude else out
-                self._later_from(node, frames)
-
-            self._deliver(node, lead, publish)
+            frames = [*out, [COMPLETE_MESSAGE]] if postlude else out
+            self._quiet_output(node, lead, frames)
             return
         if postlude:
             out = [*out, [COMPLETE_MESSAGE]]
         self._deliver(node, [*lead, *self._apply(node, out)] if lead else self._apply(node, out))
+
+    def _quiet_output(self, node: _Node, lead: list[Array], frames: list[Array]) -> None:
+        # Effective INVALIDATE reaches the whole cone now, including before auto ERROR.
+        # Only the remaining output is deferred, guarded by this node's lifetime.
+        node.pending = False
+        self._deliver(node, lead, lambda: self._later_from(node, frames))
 
     def _later_from(self, node: _Node, frames: list[Array]) -> None:
         lifetime = node.lifetime

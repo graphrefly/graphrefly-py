@@ -35,6 +35,38 @@ def quiet_terminal() -> dict[str, object]:
     return {"runs": len(calls), "waves": calls[0][0], "terminal": calls[0][1][0]}
 
 
+def quiet_error() -> list[dict[str, object]]:
+    results: list[dict[str, object]] = []
+    for invalidate in ("auto", "manual"):
+        for retained in (True, False):
+            with Graph() as graph:
+                a, b = graph.state(1), graph.state(1)
+
+                def quiet(ctx: Ctx, retained: bool = retained) -> None:
+                    if retained and ctx.deps[0].waves:
+                        ctx.emit(ctx.deps[0].value)
+
+                q = graph.node([a], quiet, quiet=True, invalidate=invalidate)
+
+                def downstream(ctx: Ctx) -> None:
+                    if all(dep.has for dep in ctx.deps):
+                        ctx.emit(sum(dep.value for dep in ctx.deps))
+
+                events: list[Any] = []
+                graph.node([q, b], downstream).subscribe(events.extend)
+                events.clear()
+                graph.batch(lambda a=a, b=b: (a.invalidate(), a.error("boom"), b.set(2)))
+                results.append(
+                    {
+                        "invalidate": invalidate,
+                        "retained": retained,
+                        "values": [msg[1] for msg in events if msg[0] == DATA],
+                        "events": [msg[0] for msg in events if msg[0] != "PENDING"],
+                    }
+                )
+    return results
+
+
 def stop_traces() -> tuple[list[object], list[object]]:
     observed: list[object] = []
     subscribed: list[object] = []
@@ -146,6 +178,7 @@ def main() -> None:
     empty, late = empty_and_late()
     result = {
         "quietTerminal": quiet_terminal(),
+        "quietError": quiet_error(),
         "observeStop": observed,
         "subscribeStop": subscribed,
         "emptyDown": empty,

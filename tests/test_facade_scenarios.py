@@ -1170,3 +1170,48 @@ def test_late_output_is_a_body_request_that_survives_commit_failure() -> None:
         with pytest.raises(ValueError, match="commit refused"):
             g.batch(closes)
         assert seen == [42] and n.status.lifecycle == "inactive"
+
+
+@pytest.mark.parametrize("invalidate", ["auto", "manual"])
+@pytest.mark.parametrize("retained", [True, False])
+def test_quiet_auto_error_invalidates_before_another_branch_runs(invalidate, retained) -> None:
+    with Graph() as graph:
+        a, b = graph.state(1), graph.state(1)
+
+        def quiet(ctx):
+            if retained and ctx.deps[0].waves:
+                ctx.emit(ctx.deps[0].value)
+
+        q = graph.node([a], quiet, quiet=True, invalidate=invalidate)
+
+        def downstream(ctx):
+            if all(dep.has for dep in ctx.deps):
+                ctx.emit(sum(dep.value for dep in ctx.deps))
+
+        observed = []
+        graph.node([q, b], downstream).subscribe(observed.extend)
+        observed.clear()
+        graph.batch(lambda: (a.invalidate(), a.error("boom"), b.set(2)))
+        assert not [msg for msg in observed if msg[0] == DATA], "never emit stale DATA(3)"
+        assert [msg[0] for msg in observed if msg[0] != "PENDING"] == [
+            "INVALIDATE" if retained else "RESOLVED",
+            "ERROR",
+        ]
+
+
+def test_quiet_auto_error_later_terminal_cannot_end_a_replacement() -> None:
+    with Graph() as graph:
+        a = graph.state(1)
+        q = graph.node([a], lambda ctx: ctx.emit(ctx.deps[0].value), quiet=True)
+        observed = []
+
+        def sink(messages):
+            observed.extend(messages)
+            if any(msg[0] == "INVALIDATE" for msg in messages):
+                graph.replace(q, [], lambda ctx: ctx.emit(7))
+
+        q.subscribe(sink)
+        observed.clear()
+        graph.batch(lambda: (a.invalidate(), a.error("boom")))
+        assert q.cache() == 7
+        assert not [msg for msg in observed if msg[0] == "ERROR"]
