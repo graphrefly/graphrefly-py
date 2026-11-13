@@ -9,7 +9,7 @@ description: "A node's status, derived from what it holds and never stored."
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:118`
+**Source:** `src/graphrefly/_facade.py:119`
 
 ## Signature
 

@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: graphrefly/graphrefly
-          ref: 4771691460538cd387197571d930128abdac90a2
+          ref: f2e23490bafe94745f720da3ced5f0fff6fccd65
           path: graphrefly
           sparse-checkout: spec/fixtures
 
@@ -54,6 +54,10 @@ jobs:
       - name: Compare shared protocol probes
         working-directory: graphrefly-py
         run: PYTHONPATH=src uv run python scripts/probe_rereview.py ../graphrefly/spec/fixtures/d797-rereview.v1.json
+
+      - name: Compare shared module naming probes
+        working-directory: graphrefly-py
+        run: PYTHONPATH=src uv run python scripts/probe_naming.py ../graphrefly/spec/fixtures/node-naming.v1.json
 
       - name: Test optional async runtime adapters
         working-directory: graphrefly-py

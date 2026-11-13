@@ -1238,6 +1238,22 @@ class Graph:
             raise GraphReflyValueError(msg)
         return name
 
+    def _module_name(self, name: str | None, default: str) -> str:
+        """Allocate a module prefix without colliding with existing local paths."""
+
+        if name is not None:
+            return self._new_id(name)
+        if "::" in default:
+            raise GraphReflyValueError(NAME_ERROR)
+        if default.startswith(":") or default.endswith(":"):
+            raise GraphReflyValueError(BOUNDARY_NAME_ERROR)
+        candidate = default
+        suffix = 0
+        while any(node == candidate or node.startswith(f"{candidate}/") for node in self._nodes):
+            suffix += 1
+            candidate = f"{default}{suffix}"
+        return candidate
+
     def _new_sink_id(self) -> str:
         self._next_sink += 1
         return f"sink#{self._next_sink}"

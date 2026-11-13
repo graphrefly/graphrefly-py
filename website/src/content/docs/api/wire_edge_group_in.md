@@ -9,7 +9,7 @@ description: "Build the receiver side of a wire edge group over ``frames``."
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_wire_facade.py:182`
+**Source:** `src/graphrefly/_wire_facade.py:191`
 
 ## Signature
 
@@ -20,6 +20,9 @@ wire_edge_group_in(graph: Graph, *, group: str, frames: Node[Any], edges: Iterab
 ## Description
 
 Build the receiver side of a wire edge group over ``frames``.
+
+The default prefix is ``&lt;group>/in``; edges use ``&lt;name>/edges/&lt;edge>`` and
+diagnostics use ``&lt;name>/issues``. Occupied defaults get a numeric suffix.
 
 The gate takes the frames bearing ``group``'s name and releases a session's causes
 in order and at most once; a release is one wave in which each carried edge's

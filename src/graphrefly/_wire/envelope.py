@@ -138,6 +138,7 @@ class Released:
 
 @dataclass(frozen=True, slots=True)
 class BridgeNodes:
+    session_id: str
     core: str
     events: str
     status_ledger: str
@@ -174,7 +175,7 @@ def wire_bridge(
         msg = "session_id must be a non-empty str"
         raise ValueError(msg)
     switch = released if released is not None else Released()
-    ack_timeouts = f"{node_id}.ack_timeouts"
+    ack_timeouts = f"{node_id}/ackTimeouts"
     g.state(ack_timeouts)
     n_out = len(outbound)
     deps = [*outbound, ack_timeouts, *([received] if received is not None else [])]
@@ -267,15 +268,16 @@ def wire_bridge(
         setup=setup,
     )
     nodes = BridgeNodes(
+        session_id,
         node_id,
-        f"{node_id}.events",
-        f"{node_id}.status_ledger",
+        f"{node_id}/events",
+        f"{node_id}/statusLedger",
         ack_timeouts,
-        f"{node_id}.outbound_bytes",
-        f"{node_id}.frames",
-        f"{node_id}.values",
-        f"{node_id}.status",
-        f"{node_id}.issues",
+        f"{node_id}/outboundBytes",
+        f"{node_id}/frames",
+        f"{node_id}/values",
+        f"{node_id}/status",
+        f"{node_id}/issues",
     )
     _project(g, nodes.events, node_id, guard, lambda o: list(o.events))
     _project(
@@ -619,7 +621,7 @@ def wire_bridge_ack_driver(
         ctx.down([(DATA, _DriverOutput(tuple(timeouts), state.recent, tuple(issues), status))])
 
     g.node(node_id, [clock, bridge.status], guard(run), complete="manual", error="manual")
-    nodes = DriverNodes(node_id, f"{node_id}.timeouts", f"{node_id}.status", f"{node_id}.issues")
+    nodes = DriverNodes(node_id, f"{node_id}/timeouts", f"{node_id}/status", f"{node_id}/issues")
 
     def projection(
         pick: Callable[[_DriverOutput], Sequence[object]],

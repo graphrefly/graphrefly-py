@@ -9,7 +9,7 @@ description: "Build the sender side of a wire edge group: a node whose values ar
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_wire_facade.py:90`
+**Source:** `src/graphrefly/_wire_facade.py:95`
 
 ## Signature
 
@@ -20,6 +20,8 @@ wire_edge_group_out(graph: Graph, *, group: str, edges: Mapping[str, Node[bytes]
 ## Description
 
 Build the sender side of a wire edge group: a node whose values are its frames.
+
+The default local name is ``&lt;group>/out``, with a numeric suffix when occupied.
 
 It depends on ``edges`` (edge id to node) under manual policies; each wave in which
 an edge sent is one cause, one :class:`WireEdgeCause` carrying only the edges that

@@ -737,6 +737,8 @@ def from_awaitable[T](
 ) -> Node[T]:
     """Create a source from a fresh awaitable produced on each activation.
 
+    Its default local name is ``fromAwaitable`` with a numeric suffix when occupied.
+
     It sends the awaited value and COMPLETE in one array, or ERROR. Its lifetime's
     close cancels the job.
     """
@@ -764,7 +766,10 @@ def from_awaitable[T](
 
     return cast(
         "Node[T]",
-        graph._source(name, lambda ctx: _start_async(graph, ctx, runner, reentry_queue, body)),
+        graph._source(
+            graph._module_name(name, "fromAwaitable"),
+            lambda ctx: _start_async(graph, ctx, runner, reentry_queue, body),
+        ),
     )
 
 
@@ -776,6 +781,8 @@ def from_async_iter[T](
     name: str | None = None,
 ) -> Node[T]:
     """Create a source from a fresh async iterable produced on each activation.
+
+    Its default local name is ``fromAsyncIter`` with a numeric suffix when occupied.
 
     Each yielded value is one DATA array; the end is COMPLETE, a failure ERROR.
     """
@@ -806,7 +813,10 @@ def from_async_iter[T](
 
     return cast(
         "Node[T]",
-        graph._source(name, lambda ctx: _start_async(graph, ctx, runner, reentry_queue, body)),
+        graph._source(
+            graph._module_name(name, "fromAsyncIter"),
+            lambda ctx: _start_async(graph, ctx, runner, reentry_queue, body),
+        ),
     )
 
 
@@ -819,6 +829,8 @@ def async_node[T](
     name: str | None = None,
 ) -> Node[T]:
     """Create a value-level async compute node over declared dependencies.
+
+    Its default local name is ``asyncNode`` with a numeric suffix when occupied.
 
     Each run on new values (derived's gate) starts the callback; its result is a
     later wave. A completion of a superseded run is ignored (a generation fence), and
@@ -874,7 +886,10 @@ def async_node[T](
         if stop is not None:
             ctx.signal.on_abort(stop)
 
-    return cast("Node[T]", graph._add_node(name, dep_list, run, callback, None))
+    return cast(
+        "Node[T]",
+        graph._add_node(graph._module_name(name, "asyncNode"), dep_list, run, callback, None),
+    )
 
 
 def asyncio_runner(loop: object | None = None) -> AsyncRunner:

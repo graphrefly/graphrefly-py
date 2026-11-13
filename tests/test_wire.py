@@ -432,13 +432,13 @@ def test_bridge_status_ledger_skips_replayed_events_and_catches_up_after_inactiv
         stop = bridge.status.subscribe(lambda ms: statuses.extend(data_of([ms])))
         assert statuses[-1].acked == 2 and statuses[-1].pending == ()
         stop()
-        ledger = g.find("b.status_ledger")
+        ledger = g.find("b/statusLedger")
         assert ledger is not None and ledger.cache()["highWater"] == 6
         stop = bridge.status.subscribe(lambda ms: statuses.extend(data_of([ms])))
         assert statuses[-1].acked == 2
         stop()
         assert ledger.cache()["highWater"] == 6
-        assert "b.status_ledger" in next(n for n in g.describe() if n["id"] == "b.status")["deps"]
+        assert "b/statusLedger" in next(n for n in g.describe() if n["id"] == "b/status")["deps"]
 
 
 def test_bridge_release_drops_internal_retains_and_ack_driver_stops() -> None:
@@ -451,7 +451,7 @@ def test_bridge_release_drops_internal_retains_and_ack_driver_stops() -> None:
     assert events["event"]["envelope"].metadata.attempt == 2
     bridge.release()
     bridge.release()
-    for name in ("bridge", "bridge.events", "ack"):
+    for name in ("bridge", "bridge/events", "ack"):
         node = g.find(name)
         assert node is not None and node.status.lifecycle == "inactive"
     clock.set(1010)

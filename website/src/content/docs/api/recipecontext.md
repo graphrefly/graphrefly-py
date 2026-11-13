@@ -9,7 +9,7 @@ description: "What a recipe factory gets besides its config: the graph being res
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:135`
+**Source:** `src/graphrefly/_facade.py:136`
 
 ## Signature
 

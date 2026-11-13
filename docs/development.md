@@ -106,6 +106,34 @@ reference kernel on random graphs (needs `node`; reads the root checkout only).
 - Async enters only through runners, sources and adapters; their results are later
   waves on the graph owner thread (graphrefly:D477, D480).
 
+## Local and generated names
+
+Root `R-naming@1` reserves `::` for mounted addresses. Local node names and IDs
+reject it with `name must not contain '::'`. A leading or trailing single colon
+is refused with `name must not start or end with ':'`; an internal single colon
+remains legal. These checks include generated inbound edge IDs
+and checkpoint admission before a recipe factory runs. Python has no mount or
+topology-group API. Caller labels otherwise keep their spelling; anonymous core
+nodes still use the reserved `#N` allocation.
+
+Module-generated paths use `/` and lower camelCase roles. The wire bridge defaults
+to `wireBridge`, with `events`, `statusLedger`, `ackTimeouts`, `outboundBytes`,
+`frames`, `values`, `status` and `issues` beneath it. Edge groups default to
+`<group>/in` and `<group>/out`; inbound edge nodes live under `<name>/edges/<edge>`
+so an edge called `issues` stays distinct from `<name>/issues`. Frame sources
+use `frameSource`; ack drivers use `<sessionId>/ackDriver`, with `timeouts`,
+`status` and `issues` projections. Repeated defaults choose the first free numeric
+suffix (`wireBridge1`, `wireBridge2`, and so on), considering occupied descendants.
+
+Async and network factory defaults are `asyncNode`, `fromAwaitable`,
+`fromAsyncIter`, `fromHttp` and `fromSse`. Functions and returned Python attribute
+names retain their Python spelling. Old generated names have no aliases or
+checkpoint remapping; the checkpoint format marker remains unchanged.
+
+The shared naming probe compares every Python-created ID with its root fixture;
+corresponding roles align across packages while existing structural differences
+remain explicit. Python has no work-item or cascading-cache module.
+
 ## Existing contribution and migration constraints
 
 

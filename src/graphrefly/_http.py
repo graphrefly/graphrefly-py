@@ -135,7 +135,10 @@ def from_http(
     runner: AsyncRunner | None = None,
     name: str | None = None,
 ) -> Node[HttpResponse]:
-    """Create a source from one host-supplied HTTP request driver call per activation."""
+    """Create a source from one host-supplied HTTP request driver call per activation.
+
+    Its default local name is ``fromHttp`` with a numeric suffix when occupied.
+    """
 
     request = _normalize_http_request(request_or_url)
     _validate_network_source_args(
@@ -165,7 +168,10 @@ def from_http(
 
     return cast(
         "Node[HttpResponse]",
-        graph._source(name, lambda ctx: _start_async(graph, ctx, runner, reentry_queue, body)),
+        graph._source(
+            graph._module_name(name, "fromHttp"),
+            lambda ctx: _start_async(graph, ctx, runner, reentry_queue, body),
+        ),
     )
 
 
@@ -177,7 +183,10 @@ def from_sse(
     runner: AsyncRunner | None = None,
     name: str | None = None,
 ) -> Node[SseEvent]:
-    """Create an SSE source over a host-supplied HTTP byte-stream driver."""
+    """Create an SSE source over a host-supplied HTTP byte-stream driver.
+
+    Its default local name is ``fromSse`` with a numeric suffix when occupied.
+    """
 
     request = _sse_request_to_http_stream_request(_normalize_http_request(request_or_url))
     _validate_network_source_args(
@@ -262,7 +271,10 @@ def from_sse(
 
     return cast(
         "Node[SseEvent]",
-        graph._source(name, lambda ctx: _start_async(graph, ctx, runner, reentry_queue, body)),
+        graph._source(
+            graph._module_name(name, "fromSse"),
+            lambda ctx: _start_async(graph, ctx, runner, reentry_queue, body),
+        ),
     )
 
 

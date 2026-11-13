@@ -9,7 +9,7 @@ description: "Create a value-level async compute node over declared dependencies
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_async.py:813`
+**Source:** `src/graphrefly/_async.py:823`
 
 ## Signature
 
@@ -20,6 +20,8 @@ async_node(graph: Graph, deps: Iterable[Node[Any]], runner: AsyncRunner, callbac
 ## Description
 
 Create a value-level async compute node over declared dependencies.
+
+Its default local name is ``asyncNode`` with a numeric suffix when occupied.
 
 Each run on new values (derived's gate) starts the callback; its result is a
 later wave. A completion of a superseded run is ignored (a generation fence), and

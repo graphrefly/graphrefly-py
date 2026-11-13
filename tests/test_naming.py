@@ -104,3 +104,206 @@ def test_kernel_bridge_preflights_prefix_before_creating_child_nodes(
         kernel_wire_bridge(graph, name, session_id="s1")
     assert str(error.value) == message
     assert graph.describe() == []
+
+
+# Every exported factory whose return value owns a newly generated node is exercised
+# with its real defaults. Prerequisite nodes are named explicitly and excluded.
+class _ColdRunner:
+    def spawn(self, job: Any) -> None:
+        raise AssertionError("naming inspection must not launch an async job")
+
+
+class _ColdHttp:
+    async def request(self, request: Any) -> Any:
+        raise AssertionError("naming inspection must not send HTTP")
+
+    async def stream(self, request: Any) -> Any:
+        raise AssertionError("naming inspection must not open a stream")
+        yield  # pragma: no cover
+
+
+def _module_factory(graph: Graph, name: str) -> Any:
+    import graphrefly as api
+
+    runner = _ColdRunner()
+
+    async def value(*args: Any) -> int:
+        return 1
+
+    async def values() -> Any:
+        yield 1
+
+    if name == "wire_edge_group_out":
+        source = graph.state(b"x", name="input")
+        return lambda: api.wire_edge_group_out(graph, group="group", edges={"edge": source})
+    if name == "wire_edge_group_in":
+        frames = graph.state(name="input")
+        return lambda: api.wire_edge_group_in(
+            graph, group="group", frames=frames, edges=["edge", "issues"]
+        )
+    if name == "frame_source":
+        return lambda: api.frame_source(graph, lambda deliver: lambda: None)
+    if name == "wire_bridge":
+        return lambda: api.wire_bridge(graph, session_id="s1")
+    if name == "wire_bridge_ack_driver":
+        bridge = api.wire_bridge(graph, session_id="s1", name="transport")
+        clock = graph.state(0, name="clock")
+        return lambda: api.wire_bridge_ack_driver(graph, bridge, clock=clock, timeout_ms=10)
+    if name == "async_node":
+        source = graph.state(1, name="input")
+        return lambda: api.async_node(graph, [source], runner, value)
+    if name == "from_awaitable":
+        return lambda: api.from_awaitable(graph, runner, value)
+    if name == "from_async_iter":
+        return lambda: api.from_async_iter(graph, runner, values)
+    if name == "from_http":
+        return lambda: api.from_http(
+            graph, "https://example.test", driver=_ColdHttp(), runner=runner
+        )
+    if name == "from_sse":
+        return lambda: api.from_sse(
+            graph, "https://example.test", stream_driver=_ColdHttp(), runner=runner
+        )
+    raise AssertionError(f"unscanned node factory: {name}")
+
+
+MODULE_IDS = {
+    "wire_edge_group_out": ["group/out"],
+    "wire_edge_group_in": [
+        "group/in",
+        "group/in/edges/edge",
+        "group/in/edges/issues",
+        "group/in/issues",
+    ],
+    "frame_source": ["frameSource"],
+    "wire_bridge": [
+        "wireBridge",
+        "wireBridge/ackTimeouts",
+        "wireBridge/events",
+        "wireBridge/frames",
+        "wireBridge/issues",
+        "wireBridge/outboundBytes",
+        "wireBridge/status",
+        "wireBridge/statusLedger",
+        "wireBridge/values",
+    ],
+    "wire_bridge_ack_driver": [
+        "s1/ackDriver",
+        "s1/ackDriver/issues",
+        "s1/ackDriver/status",
+        "s1/ackDriver/timeouts",
+    ],
+    "async_node": ["asyncNode"],
+    "from_awaitable": ["fromAwaitable"],
+    "from_async_iter": ["fromAsyncIter"],
+    "from_http": ["fromHttp"],
+    "from_sse": ["fromSse"],
+}
+
+
+def _check_generated_names(ids: list[str]) -> None:
+    import re
+
+    for node_id in ids:
+        parts = node_id.split("/")
+        assert all(re.fullmatch(r"[a-z][a-zA-Z0-9]*", part) for part in parts), node_id
+        words = [
+            set(re.findall(r"[a-z]+|[A-Z][a-z]*", part.lower() if part.islower() else part))
+            for part in parts
+        ]
+        for before, after in zip(words, words[1:], strict=False):
+            assert not ({word.lower() for word in before} & {word.lower() for word in after}), (
+                node_id
+            )
+
+
+@pytest.mark.parametrize("name", MODULE_IDS)
+def test_every_public_module_default_has_readable_collision_safe_ids(name: str) -> None:
+    with Graph() as graph:
+        build = _module_factory(graph, name)
+        before = {row["id"] for row in graph.describe()}
+        build()
+        first = sorted(row["id"] for row in graph.describe() if row["id"] not in before)
+        _check_generated_names(first)
+        assert first == MODULE_IDS[name]
+        before.update(first)
+        build()
+        second = sorted(row["id"] for row in graph.describe() if row["id"] not in before)
+        _check_generated_names(second)
+        assert len(second) == len(first)
+        assert len(set(first + second)) == 2 * len(first)
+
+
+def test_public_node_factory_scan_is_complete() -> None:
+    import inspect
+
+    import graphrefly as api
+
+    actual = {
+        name
+        for name in api.__all__
+        if inspect.isfunction(value := getattr(api, name))
+        and any(
+            word in str(inspect.signature(value).return_annotation)
+            for word in ("Node[", "WireBridge", "WireEdgeGroupIn")
+        )
+    }
+    assert actual == set(MODULE_IDS)
+
+
+def test_default_module_prefix_skips_occupied_descendant_and_numbered_names() -> None:
+    from graphrefly import frame_source
+
+    with Graph() as graph:
+        graph.state(1, name="frameSource/existing")
+        graph.state(2, name="frameSource1")
+        source = frame_source(graph, lambda deliver: lambda: None)
+        assert source.name == "frameSource2"
+
+
+def test_inbound_edge_named_issues_stays_distinct_from_diagnostics() -> None:
+    with Graph() as graph:
+        frames = graph.state(name="frames")
+        incoming = wire_edge_group_in(
+            graph, group="g", frames=frames, edges=["issues"], name="bridge"
+        )
+        assert incoming.inbound["issues"].name == "bridge/edges/issues"
+        assert incoming.issues.name == "bridge/issues"
+        assert graph.find("bridge/edges/issues") is incoming.inbound["issues"]
+        assert graph.find("bridge/issues") is incoming.issues
+
+
+def test_user_labels_are_not_recased_or_normalized() -> None:
+    with Graph() as graph:
+        bridge = wire_bridge(graph, session_id="s::1", name="User.Label-name")
+        assert bridge.status.name == "User.Label-name/status"
+        assert graph.find("User.Label-name.status") is None
+        assert graph.state(1, name="custom-label.value").name == "custom-label.value"
+
+
+@pytest.mark.parametrize("scope, message", INVALID_NAMES)
+@pytest.mark.parametrize("module", ["in", "out", "ack"])
+def test_wire_identity_is_validated_when_used_as_a_default_name_prefix(
+    scope: str, message: str, module: str
+) -> None:
+    from graphrefly import wire_bridge_ack_driver, wire_edge_group_out
+
+    with Graph() as graph:
+        source = graph.state(b"x", name="source")
+        frames = graph.state(name="frames")
+        clock = graph.state(0, name="clock")
+        bridge = wire_bridge(graph, session_id=scope, name="transport")
+        before = graph.describe()
+
+        def build(name: str | None = None) -> Any:
+            if module == "in":
+                return wire_edge_group_in(graph, group=scope, frames=frames, edges=["x"], name=name)
+            if module == "out":
+                return wire_edge_group_out(graph, group=scope, edges={"x": source}, name=name)
+            return wire_bridge_ack_driver(graph, bridge, clock=clock, timeout_ms=10, name=name)
+
+        with pytest.raises(GraphReflyValueError) as error:
+            build()
+        assert str(error.value) == message
+        assert graph.describe() == before
+        build("custom")  # The same wire payload identity is legal with an explicit local name.

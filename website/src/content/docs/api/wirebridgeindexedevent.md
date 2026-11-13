@@ -9,7 +9,7 @@ description: "One bridge event with a monotonic index, retained across external 
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_wire/envelope.py:96`
+**Source:** `src/graphrefly/_wire/envelope.py:97`
 
 ## Description
 

@@ -9,7 +9,7 @@ description: "A bridge issue: never a terminal of a bridge node."
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_wire/envelope.py:65`
+**Source:** `src/graphrefly/_wire/envelope.py:66`
 
 ## Signature
 

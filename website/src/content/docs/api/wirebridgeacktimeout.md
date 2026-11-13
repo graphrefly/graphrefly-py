@@ -9,7 +9,7 @@ description: "An ack-timeout fact: the pending ``attempt`` of envelope ``seq`` t
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_wire/envelope.py:42`
+**Source:** `src/graphrefly/_wire/envelope.py:43`
 
 ## Signature
 

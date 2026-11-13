@@ -9,7 +9,7 @@ description: "Generated API reference for graphrefly.PENDING."
 
 **Kind:** attribute
 
-**Source:** `src/graphrefly/_facade.py:60`
+**Source:** `src/graphrefly/_facade.py:61`
 
 ## Value
 

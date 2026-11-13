@@ -9,7 +9,7 @@ description: "A drop, gap, refusal, ended edge or malformed frame at a group's g
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_wire/bridge.py:39`
+**Source:** `src/graphrefly/_wire/bridge.py:40`
 
 ## Signature
 

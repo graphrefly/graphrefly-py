@@ -9,7 +9,7 @@ description: "The receiving end of a transport, as a node with no dependencies."
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_wire_facade.py:138`
+**Source:** `src/graphrefly/_wire_facade.py:145`
 
 ## Signature
 
@@ -20,6 +20,8 @@ frame_source(graph: Graph, open: Callable[[Callable[[object], None]], Callable[[
 ## Description
 
 The receiving end of a transport, as a node with no dependencies.
+
+Its default local name is ``frameSource`` with a numeric suffix when occupied.
 
 At each activation it calls ``open(deliver)``, and what that returns is called when
 the lifetime closes. Each ``deliver(frame)`` on the graph's owner thread is one wave;

@@ -9,7 +9,7 @@ description: "Build a wire bridge over ``outbound`` nodes and a ``received`` byt
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_wire_facade.py:272`
+**Source:** `src/graphrefly/_wire_facade.py:291`
 
 ## Signature
 
@@ -20,6 +20,9 @@ wire_bridge(graph: Graph, *, session_id: str, outbound: Iterable[Node[Any]] = ()
 ## Description
 
 Build a wire bridge over ``outbound`` nodes and a ``received`` byte source.
+
+Its default prefix is ``wireBridge`` with a numeric suffix when occupied.
+Output roles use slash paths, such as ``wireBridge/events``.
 
 Each frame (or bytes value) an outbound node sends becomes a numbered DATA envelope,
 pending until the peer acks it; an ack-timeout fact for its pending attempt sends it

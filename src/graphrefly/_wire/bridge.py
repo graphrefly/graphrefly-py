@@ -225,7 +225,7 @@ def wire_edge_group_in(
     guard: Guard = _same,
 ) -> InboundGroup:
     """Build the receiver side: the gate ``node_id`` over ``frames``, an inbound node
-    ``{node_id}/{edge}`` per declared edge and the issues node ``{node_id}.issues``."""
+    ``{node_id}/edges/{edge}`` per declared edge and the issues node ``{node_id}/issues``."""
 
     declared = list(edges)
     if "::" in node_id or any("::" in edge for edge in declared):
@@ -242,10 +242,10 @@ def wire_edge_group_in(
         complete="manual",
         error="manual",
     )
-    inbound = {edge: f"{node_id}/{edge}" for edge in declared}
+    inbound = {edge: f"{node_id}/edges/{edge}" for edge in declared}
     for edge, inbound_id in inbound.items():
         g.node(inbound_id, [node_id], guard(_inbound_fn(edge)), complete="manual", error="manual")
-    issues = f"{node_id}.issues"
+    issues = f"{node_id}/issues"
     g.node(issues, [node_id], guard(_issues_fn), complete="manual", error="manual")
     return InboundGroup(node_id, inbound, issues)
 

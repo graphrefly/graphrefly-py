@@ -9,7 +9,7 @@ description: "An ack driver issue, such as a clock fact that is not a non-decrea
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_wire/envelope.py:514`
+**Source:** `src/graphrefly/_wire/envelope.py:521`
 
 ## Signature
 

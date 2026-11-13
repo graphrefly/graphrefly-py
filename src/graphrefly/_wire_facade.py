@@ -67,11 +67,15 @@ __all__ = [
 ]
 
 
-def _prefix(graph: Graph, name: str | None, kind: str) -> str:
+def _scoped_name(graph: Graph, name: str | None, scope: str, role: str) -> str:
+    """Validate a wire identity only when using it as a generated name prefix."""
+
     if name is None:
-        graph._next_id += 1
-        return f"#{kind}{graph._next_id}"
-    return graph._new_id(name)
+        if "::" in scope:
+            raise GraphReflyValueError(NAME_ERROR)
+        if scope.startswith(":") or scope.endswith(":"):
+            raise GraphReflyValueError(BOUNDARY_NAME_ERROR)
+    return graph._module_name(name, f"{scope}/{role}")
 
 
 def _adopt(graph: Graph, node_id: str, *, state: bool = False) -> Node[Any]:
@@ -97,6 +101,8 @@ def wire_edge_group_out(
 ) -> Node[WireEdgeCause]:
     """Build the sender side of a wire edge group: a node whose values are its frames.
 
+    The default local name is ``<group>/out``, with a numeric suffix when occupied.
+
     It depends on ``edges`` (edge id to node) under manual policies; each wave in which
     an edge sent is one cause, one :class:`WireEdgeCause` carrying only the edges that
     sent. A session is one lifetime of this node, and its first cause carries every
@@ -108,7 +114,7 @@ def wire_edge_group_out(
         msg = "group must be a non-empty str"
         raise GraphReflyValueError(msg)
     ids = {edge: graph._node_id(node) for edge, node in edges.items()}
-    node_id = _prefix(graph, name, "out")
+    node_id = _scoped_name(graph, name, group, "out")
     _build(
         graph,
         lambda: _bridge.wire_edge_group_out(
@@ -144,6 +150,8 @@ def frame_source(
 ) -> Node[Any]:
     """The receiving end of a transport, as a node with no dependencies.
 
+    Its default local name is ``frameSource`` with a numeric suffix when occupied.
+
     At each activation it calls ``open(deliver)``, and what that returns is called when
     the lifetime closes. Each ``deliver(frame)`` on the graph's owner thread is one wave;
     a transport on another thread re-enters through ``Graph.reentry_queue``.
@@ -151,7 +159,7 @@ def frame_source(
 
     _reject_async_callable(open)
     owner = graph._owner_thread
-    node_id = _prefix(graph, name, "frames")
+    node_id = graph._module_name(name, "frameSource")
 
     def kernel_open(deliver: Callable[[object], None]) -> Callable[[], object] | None:
         def checked(frame: object) -> None:
@@ -190,6 +198,9 @@ def wire_edge_group_in(
 ) -> WireEdgeGroupIn:
     """Build the receiver side of a wire edge group over ``frames``.
 
+    The default prefix is ``<group>/in``; edges use ``<name>/edges/<edge>`` and
+    diagnostics use ``<name>/issues``. Occupied defaults get a numeric suffix.
+
     The gate takes the frames bearing ``group``'s name and releases a session's causes
     in order and at most once; a release is one wave in which each carried edge's
     inbound node sends that edge's arrays. Stale causes are dropped, a gap is released
@@ -209,7 +220,7 @@ def wire_edge_group_in(
     if any(edge.startswith(":") or edge.endswith(":") for edge in declared):
         raise GraphReflyValueError(BOUNDARY_NAME_ERROR)
     frames_id = graph._node_id(frames)
-    node_id = _prefix(graph, name, "in")
+    node_id = _scoped_name(graph, name, group, "in")
     ids = _build(
         graph,
         lambda: _bridge.wire_edge_group_in(
@@ -235,7 +246,10 @@ class WireBridge:
     """
 
     def __init__(
-        self, graph: Graph, nodes: _envelope.BridgeNodes, switch: _envelope.Released
+        self,
+        graph: Graph,
+        nodes: _envelope.BridgeNodes,
+        switch: _envelope.Released,
     ) -> None:
         self._graph = graph
         self._switch = switch
@@ -285,6 +299,9 @@ def wire_bridge(
 ) -> WireBridge:
     """Build a wire bridge over ``outbound`` nodes and a ``received`` byte source.
 
+    Its default prefix is ``wireBridge`` with a numeric suffix when occupied.
+    Output roles use slash paths, such as ``wireBridge/events``.
+
     Each frame (or bytes value) an outbound node sends becomes a numbered DATA envelope,
     pending until the peer acks it; an ack-timeout fact for its pending attempt sends it
     again with the next attempt until ``max_attempts``, when it is exhausted and
@@ -294,7 +311,7 @@ def wire_bridge(
 
     out_ids = [graph._node_id(node) for node in outbound]
     received_id = None if received is None else graph._node_id(received)
-    node_id = _prefix(graph, name, "bridge")
+    node_id = graph._module_name(name, "wireBridge")
     switch = _envelope.Released()
     nodes = _build(
         graph,
@@ -359,7 +376,11 @@ def wire_bridge_ack_driver(
 ) -> WireBridgeAckDriver:
     """Derive ack-timeout facts for ``bridge`` from ``clock``, a node of non-decreasing
     millisecond ints the host writes: an attempt pending for ``timeout_ms`` or more
-    times out once. A clock fact that is not such an int is an issue."""
+    times out once. A clock fact that is not such an int is an issue.
+
+    The default prefix is ``<sessionId>/ackDriver`` with a numeric suffix when
+    occupied; its projection roles are ``timeouts``, ``status`` and ``issues``.
+    """
 
     if not isinstance(bridge, WireBridge) or bridge._graph is not graph:
         msg = "bridge must be a wire_bridge of this graph"
@@ -368,7 +389,7 @@ def wire_bridge_ack_driver(
         msg = "the bridge has been released"
         raise GraphReflyRuntimeError(msg)
     clock_id = graph._node_id(clock)
-    node_id = _prefix(graph, name, "ack")
+    node_id = _scoped_name(graph, name, bridge._nodes.session_id, "ackDriver")
     switch = _envelope.Released()
     nodes = _build(
         graph,

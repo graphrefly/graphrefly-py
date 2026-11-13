@@ -9,7 +9,7 @@ description: "A wire fact; common kinds and field names match the TypeScript and
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_wire/envelope.py:83`
+**Source:** `src/graphrefly/_wire/envelope.py:84`
 
 ## Description
 

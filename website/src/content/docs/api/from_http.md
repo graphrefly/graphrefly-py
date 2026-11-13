@@ -20,3 +20,5 @@ from_http(graph: Graph, request_or_url: HttpRequestLike, *, driver: LocalHttpDri
 ## Description
 
 Create a source from one host-supplied HTTP request driver call per activation.
+
+Its default local name is ``fromHttp`` with a numeric suffix when occupied.

@@ -9,7 +9,7 @@ description: "What subscribe, observe and retain return: call it to stop (R-grap
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_facade.py:299`
+**Source:** `src/graphrefly/_facade.py:300`
 
 ## Signature
 

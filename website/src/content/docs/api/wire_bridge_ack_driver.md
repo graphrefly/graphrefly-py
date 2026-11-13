@@ -9,7 +9,7 @@ description: "Derive ack-timeout facts for ``bridge`` from ``clock``, a node of 
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_wire_facade.py:347`
+**Source:** `src/graphrefly/_wire_facade.py:369`
 
 ## Signature
 
@@ -22,3 +22,6 @@ wire_bridge_ack_driver(graph: Graph, bridge: WireBridge, *, clock: Node[int], ti
 Derive ack-timeout facts for ``bridge`` from ``clock``, a node of non-decreasing
 millisecond ints the host writes: an attempt pending for ``timeout_ms`` or more
 times out once. A clock fact that is not such an int is an issue.
+
+The default prefix is ``&lt;sessionId>/ackDriver`` with a numeric suffix when
+occupied; its projection roles are ``timeouts``, ``status`` and ``issues``.

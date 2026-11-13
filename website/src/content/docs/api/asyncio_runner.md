@@ -9,7 +9,7 @@ description: "Return a convenience runner for a caller-owned asyncio event loop.
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_async.py:880`
+**Source:** `src/graphrefly/_async.py:895`
 
 ## Signature
 

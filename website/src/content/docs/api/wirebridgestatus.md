@@ -9,7 +9,7 @@ description: "What the bridge holds: its pending attempts as ``(seq, attempt)`` 
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_wire/envelope.py:51`
+**Source:** `src/graphrefly/_wire/envelope.py:52`
 
 ## Signature
 

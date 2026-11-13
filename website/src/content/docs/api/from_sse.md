@@ -9,7 +9,7 @@ description: "Create an SSE source over a host-supplied HTTP byte-stream driver.
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_http.py:172`
+**Source:** `src/graphrefly/_http.py:178`
 
 ## Signature
 
@@ -20,3 +20,5 @@ from_sse(graph: Graph, request_or_url: HttpRequestLike, *, stream_driver: LocalH
 ## Description
 
 Create an SSE source over a host-supplied HTTP byte-stream driver.
+
+Its default local name is ``fromSse`` with a numeric suffix when occupied.

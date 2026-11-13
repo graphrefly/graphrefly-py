@@ -9,7 +9,7 @@ description: "A wire bridge: the envelope layer between frames and canonical pro
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_wire_facade.py:221`
+**Source:** `src/graphrefly/_wire_facade.py:237`
 
 ## Signature
 
@@ -51,4 +51,4 @@ release() -> None
 
 Stop the bridge and its ack drivers; later facts change nothing.
 
-Source: `src/graphrefly/_wire_facade.py:258`
+Source: `src/graphrefly/_wire_facade.py:277`

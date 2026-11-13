@@ -9,7 +9,7 @@ description: "Create a source from a fresh async iterable produced on each activ
 
 **Kind:** function
 
-**Source:** `src/graphrefly/_async.py:771`
+**Source:** `src/graphrefly/_async.py:776`
 
 ## Signature
 
@@ -20,5 +20,7 @@ from_async_iter(graph: Graph, runner: AsyncRunner, factory: Callable[[], AsyncIt
 ## Description
 
 Create a source from a fresh async iterable produced on each activation.
+
+Its default local name is ``fromAsyncIter`` with a numeric suffix when occupied.
 
 Each yielded value is one DATA array; the end is COMPLETE, a failure ERROR.

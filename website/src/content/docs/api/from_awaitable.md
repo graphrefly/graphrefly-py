@@ -21,5 +21,7 @@ from_awaitable(graph: Graph, runner: AsyncRunner, factory: Callable[[], Awaitabl
 
 Create a source from a fresh awaitable produced on each activation.
 
+Its default local name is ``fromAwaitable`` with a numeric suffix when occupied.
+
 It sends the awaited value and COMPLETE in one array, or ERROR. Its lifetime's
 close cancels the job.

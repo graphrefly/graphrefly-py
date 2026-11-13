@@ -9,7 +9,7 @@ description: "The ack driver's status: its timeout and the last timeout fact it 
 
 **Kind:** class
 
-**Source:** `src/graphrefly/_wire/envelope.py:505`
+**Source:** `src/graphrefly/_wire/envelope.py:512`
 
 ## Signature
 
