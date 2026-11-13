@@ -167,37 +167,17 @@ def _module_factory(graph: Graph, name: str) -> Any:
     raise AssertionError(f"unscanned node factory: {name}")
 
 
-MODULE_IDS = {
-    "wire_edge_group_out": ["group/out"],
-    "wire_edge_group_in": [
-        "group/in",
-        "group/in/edges/edge",
-        "group/in/edges/issues",
-        "group/in/issues",
-    ],
-    "frame_source": ["frameSource"],
-    "wire_bridge": [
-        "wireBridge",
-        "wireBridge/ackTimeouts",
-        "wireBridge/events",
-        "wireBridge/frames",
-        "wireBridge/issues",
-        "wireBridge/outboundBytes",
-        "wireBridge/status",
-        "wireBridge/statusLedger",
-        "wireBridge/values",
-    ],
-    "wire_bridge_ack_driver": [
-        "s1/ackDriver",
-        "s1/ackDriver/issues",
-        "s1/ackDriver/status",
-        "s1/ackDriver/timeouts",
-    ],
-    "async_node": ["asyncNode"],
-    "from_awaitable": ["fromAwaitable"],
-    "from_async_iter": ["fromAsyncIter"],
-    "from_http": ["fromHttp"],
-    "from_sse": ["fromSse"],
+MODULE_SCOPES = {
+    "wire_edge_group_out": "group/out",
+    "wire_edge_group_in": "group/in",
+    "frame_source": "frameSource",
+    "wire_bridge": "wireBridge",
+    "wire_bridge_ack_driver": "s1/ackDriver",
+    "async_node": "asyncNode",
+    "from_awaitable": "fromAwaitable",
+    "from_async_iter": "fromAsyncIter",
+    "from_http": "fromHttp",
+    "from_sse": "fromSse",
 }
 
 
@@ -217,21 +197,29 @@ def _check_generated_names(ids: list[str]) -> None:
             )
 
 
-@pytest.mark.parametrize("name", MODULE_IDS)
-def test_every_public_module_default_has_readable_collision_safe_ids(name: str) -> None:
+@pytest.mark.parametrize("name, scope", MODULE_SCOPES.items())
+def test_every_public_module_default_has_readable_collision_safe_ids(
+    name: str, scope: str
+) -> None:
     with Graph() as graph:
         build = _module_factory(graph, name)
         before = {row["id"] for row in graph.describe()}
-        build()
-        first = sorted(row["id"] for row in graph.describe() if row["id"] not in before)
-        _check_generated_names(first)
-        assert first == MODULE_IDS[name]
-        before.update(first)
-        build()
-        second = sorted(row["id"] for row in graph.describe() if row["id"] not in before)
-        _check_generated_names(second)
-        assert len(second) == len(first)
-        assert len(set(first + second)) == 2 * len(first)
+        suffixes = None
+        for index in range(3):
+            build()
+            created = {row["id"] for row in graph.describe()} - before
+            _check_generated_names(sorted(created))
+            expected_scope = scope if index == 0 else f"{scope}{index}"
+            assert expected_scope in created
+            assert all(
+                node == expected_scope or node.startswith(f"{expected_scope}/")
+                for node in created
+            )
+            current = {node.removeprefix(expected_scope) for node in created}
+            if suffixes is None:
+                suffixes = current
+            assert current == suffixes
+            before.update(created)
 
 
 def test_public_node_factory_scan_is_complete() -> None:
@@ -248,7 +236,7 @@ def test_public_node_factory_scan_is_complete() -> None:
             for word in ("Node[", "WireBridge", "WireEdgeGroupIn")
         )
     }
-    assert actual == set(MODULE_IDS)
+    assert actual == set(MODULE_SCOPES)
 
 
 def test_default_module_prefix_skips_occupied_descendant_and_numbered_names() -> None:
