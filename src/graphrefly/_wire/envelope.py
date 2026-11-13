@@ -22,7 +22,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, NotRequired, TypedDict
 
-from graphrefly._kernel import DATA, Ctx, Graph
+from graphrefly._kernel import DATA, Ctx, Graph, KernelError
+from graphrefly._kernel.graph import BOUNDARY_NAME_ERROR, NAME_ERROR
 from graphrefly._wire.protobuf import (
     Envelope,
     Metadata,
@@ -162,6 +163,10 @@ def wire_bridge(
     """Build a bridge ``node_id`` over ``outbound`` nodes (whose DATA values are frames or
     bytes to send) and ``received`` (a node whose DATA values are received bytes)."""
 
+    if "::" in node_id:
+        raise KernelError(NAME_ERROR)
+    if node_id.startswith(":") or node_id.endswith(":"):
+        raise KernelError(BOUNDARY_NAME_ERROR)
     if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts < 1:
         msg = "max_attempts must be a positive int"
         raise ValueError(msg)

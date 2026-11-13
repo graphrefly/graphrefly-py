@@ -28,6 +28,7 @@ from graphrefly._facade import (
     _guard_fn,
     _reject_async_callable,
 )
+from graphrefly._kernel.graph import BOUNDARY_NAME_ERROR, NAME_ERROR
 from graphrefly._wire import bridge as _bridge
 from graphrefly._wire import envelope as _envelope
 from graphrefly._wire.bridge import WireEdgeGroupIssue
@@ -203,6 +204,10 @@ def wire_edge_group_in(
     if not declared or not all(isinstance(e, str) and e for e in declared):
         msg = "edges must be a non-empty list of edge id strings"
         raise GraphReflyValueError(msg)
+    if any("::" in edge for edge in declared):
+        raise GraphReflyValueError(NAME_ERROR)
+    if any(edge.startswith(":") or edge.endswith(":") for edge in declared):
+        raise GraphReflyValueError(BOUNDARY_NAME_ERROR)
     frames_id = graph._node_id(frames)
     node_id = _prefix(graph, name, "in")
     ids = _build(

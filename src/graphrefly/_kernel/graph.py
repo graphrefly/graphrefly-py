@@ -50,6 +50,8 @@ type SinkCallback = Callable[[tuple[Message, ...]], object]
 type Reporter = Callable[[Report], object]
 
 _NO_VALUE: Final = object()
+NAME_ERROR: Final = "name must not contain '::'"
+BOUNDARY_NAME_ERROR: Final = "name must not start or end with ':'"
 
 # What an input record saw in the current wave, accumulated as its arrays arrive, so
 # that a settlement needs no rescan in the common case.
@@ -490,6 +492,10 @@ class Graph:
         return node_id
 
     def _add(self, node: _Node) -> None:
+        if "::" in node.id:
+            raise KernelError(NAME_ERROR)
+        if node.id.startswith(":") or node.id.endswith(":"):
+            raise KernelError(BOUNDARY_NAME_ERROR)
         if node.id in self._nodes:
             raise KernelError(f"duplicate node {node.id}")
         self._nodes[node.id] = node

@@ -25,6 +25,7 @@ from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from graphrefly._kernel import COMPLETE, DATA, ERROR, INVALIDATE, Ctx, Dep, Graph, Message
+from graphrefly._kernel.graph import BOUNDARY_NAME_ERROR, NAME_ERROR
 from graphrefly._wire.protobuf import WireEdgeArrays, WireEdgeCause
 
 _CROSSING = frozenset({DATA, INVALIDATE, COMPLETE, ERROR})
@@ -227,6 +228,10 @@ def wire_edge_group_in(
     ``{node_id}/{edge}`` per declared edge and the issues node ``{node_id}.issues``."""
 
     declared = list(edges)
+    if "::" in node_id or any("::" in edge for edge in declared):
+        raise ValueError(NAME_ERROR)
+    if any(name.startswith(":") or name.endswith(":") for name in [node_id, *declared]):
+        raise ValueError(BOUNDARY_NAME_ERROR)
     if len(set(declared)) != len(declared):
         msg = f"{node_id}: edge ids must be distinct"
         raise ValueError(msg)

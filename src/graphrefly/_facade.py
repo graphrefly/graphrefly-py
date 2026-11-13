@@ -14,6 +14,7 @@ from weakref import ReferenceType, ref
 
 from graphrefly import _checkpoint
 from graphrefly import _kernel as _k
+from graphrefly._kernel.graph import BOUNDARY_NAME_ERROR, NAME_ERROR
 from graphrefly._sentinel import SENTINEL
 from graphrefly.exceptions import (
     CallbackError,
@@ -1225,6 +1226,10 @@ class Graph:
                 node_id = f"#{self._next_id}"
                 if node_id not in self._nodes:
                     return node_id
+        if isinstance(name, str) and "::" in name:
+            raise GraphReflyValueError(NAME_ERROR)
+        if isinstance(name, str) and (name.startswith(":") or name.endswith(":")):
+            raise GraphReflyValueError(BOUNDARY_NAME_ERROR)
         if not isinstance(name, str) or not name or name.startswith("#"):
             msg = "a node name is a non-empty str that does not start with '#'"
             raise GraphReflyValueError(msg)

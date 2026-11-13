@@ -26,7 +26,7 @@ from functools import wraps
 from typing import Any, Final
 
 from graphrefly._kernel import COMPLETE, FATAL, Ctx, Dep, Graph, Message
-from graphrefly._kernel.graph import NodeFn, Reporter, Seed, Setup
+from graphrefly._kernel.graph import BOUNDARY_NAME_ERROR, NAME_ERROR, NodeFn, Reporter, Seed, Setup
 
 FORMAT: Final = "graphrefly-py/checkpoint@1"
 
@@ -342,6 +342,10 @@ def _admit(checkpoint: Checkpoint) -> _Admitted:
         if not isinstance(node, dict) or not isinstance(node.get("id"), str):
             raise CheckpointError("restore: every node needs a string id")
         node_id = node["id"]
+        if "::" in node_id:
+            raise CheckpointError(NAME_ERROR)
+        if node_id.startswith(":") or node_id.endswith(":"):
+            raise CheckpointError(BOUNDARY_NAME_ERROR)
         if node_id in ids:
             raise _not_restorable(node_id, "duplicate node id")
         ids.add(node_id)
