@@ -1,8 +1,6 @@
 """Private pure-Python GraphReFly kernel (graphrefly-py:D2).
 
-It implements the kernel rules active by graphrefly:D798, graphrefly:D799 and
-graphrefly:D801. It is not part of the public API; the facade in ``graphrefly`` is its
-only package user.
+It is not part of the public API; the facade in ``graphrefly`` is its only package user.
 """
 
 from graphrefly._kernel.ctx import Ctx, Dep

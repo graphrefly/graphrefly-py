@@ -1,4 +1,4 @@
-"""The GraphReFly kernel: nodes, waves and requests over the D797 kernel rules.
+"""The GraphReFly kernel: nodes, waves and requests.
 
 One ``Graph`` is one single-thread domain (R-graph-domain). It is not thread-safe;
 the facade binds it to its owner thread. The kernel catches ``Exception`` only:
