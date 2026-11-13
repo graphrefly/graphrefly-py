@@ -8,7 +8,7 @@
 | Work | What is being done? | [Local work](../plan/work.jsonl), [root work locator](../../graphrefly/authority/work-ledgers.jsonl) | Keep empty work surfaces empty; do not infer a local cursor |
 | Evidence | What was checked? | Owning work receipts, [B142 checks](../../graphrefly/sessions/active/docs-reorganization-evidence/2026-11-05-py.md) | Source-bound checks do not activate rules or accept product behavior |
 | Design / guides | How do I use it? | [Package overview](index.md), [quick start](../website/src/content/docs/quickstart.md), [API](../website/src/content/docs/api/index.md), [development](development.md), [releases](../website/src/content/docs/release.md) | Docstrings/API generation own API bodies; the Starlight pages are the only copy of the quick start and release guide; index.md remains the package landing guide |
-| Archive | What did earlier work say? | [Changelog](../CHANGELOG.md) and retained Git history | No new archive/trash candidate established |
+| Archive | What did earlier work say? | Retained Git history | Earlier versions remain in Git |
 | Reference | What informs further work? | [Root reference kernel](../../graphrefly/reference/kernel/README.md), [root guides](../../graphrefly/guide/guide.jsonl) | Read for behavior only; do not copy foreign authority, code or shared site/blog content |
 
 [Docs policy](docs.jsonl) owns maintenance and generation checks. This map links
